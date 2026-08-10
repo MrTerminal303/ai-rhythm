@@ -114,7 +114,7 @@ def parse_hit_object_line(line: str, cs: int) -> Optional[HitObject]:
         lane = lane_from_x(x, cs)
 
         # Determine end_time based on type
-        if type_bitmask & 8 or type_bitmask & 2:
+        if type_bitmask & 8 or type_bitmask & 128 or type_bitmask & 2:
             # LN (type 8) or slider (type 2): end_time from ext field
             # ext is whatever remains after 5th comma, before first colon
             if len(parts) > 5:

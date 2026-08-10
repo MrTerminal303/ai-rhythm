@@ -59,7 +59,12 @@ class Song:
     waveform: np.ndarray = field(repr=False, default=None)  # (N,)
 
     def load_metadata(self) -> None:
-        meta = json.loads((self.dir / "metadata.json").read_text())
+        meta_path = self.dir / "metadata.json"
+        if not meta_path.is_file():
+            # preprocess writes {bid}_{slug}.json per-difficulty
+            candidates = sorted(self.dir.glob(f"{self.dir.name}_*.json"))
+            meta_path = candidates[0] if candidates else meta_path
+        meta = json.loads(meta_path.read_text())
         self.title = meta.get("title", "Unknown")
         self.artist = meta.get("artist", "Unknown")
         self.beatmapset_id = meta.get("beatmapset_id", 0)
@@ -165,7 +170,7 @@ def discover_songs() -> list[Song]:
         return []
     songs = []
     for d in sorted(DATA_DIR.iterdir()):
-        if d.is_dir() and (d / "metadata.json").exists():
+        if d.is_dir() and list(d.glob("*.json")):
             s = Song(dir=d)
             s.load_metadata()
             songs.append(s)

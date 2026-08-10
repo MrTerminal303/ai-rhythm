@@ -54,6 +54,7 @@ _FIELD_ALIASES: Dict[str, List[str]] = {
         "beatmapset",
         "id",
         "set_id",
+        "SetID",
     ],
     "title": ["title", "Title", "song_name"],
     "artist": ["artist", "Artist", "song_artist"],
@@ -88,8 +89,14 @@ def _normalize_beatmap_entry(item: dict) -> Optional[dict]:
     if beatmapset_id is None:
         return None
 
-    # Post-filter: only keep cs=4 (4K) maps
+    # Post-filter: only keep cs=4 (4K) maps.
+    # hinai top-level has no CS — read it from ChildrenBeatmaps[].CS.
     cs = _extract_field(item, "cs")
+    if cs is None and isinstance(item.get("ChildrenBeatmaps"), list):
+        for cb in item["ChildrenBeatmaps"]:
+            if _extract_field(cb, "cs") is not None:
+                cs = _extract_field(cb, "cs")
+                break
     if cs is not None:
         try:
             cs_int = int(float(cs))

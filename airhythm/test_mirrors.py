@@ -24,8 +24,9 @@ from airhythm.config import SERIAL_DELAY_MIN
 USER_AGENT = "airhythm/1.0 (+github.com/MrTerminal/airhythm)"
 TIMEOUT = 30
 
-# Beatmapset ID used for connectivity test (known to exist on all 3 sources)
-TEST_BEATMAPSET_ID = 4169716
+# Beatmapset IDs used for connectivity test (first live one wins per source).
+# Stale IDs make mirrors report "temporarily unavailable" (503), so keep several.
+TEST_BEATMAPSET_IDS = [2568994, 4169716]
 
 ResultDict = dict[str, Any]
 
@@ -92,37 +93,55 @@ def _test_source(
     return result
 
 
-def test_nerinyan(beatmapset_id: int = TEST_BEATMAPSET_ID) -> ResultDict:
+def _try_ids(make_url, source_name, ids) -> ResultDict:
+    """Return first OK result across a list of beatmapset ids, else the first failure."""
+    first = None
+    for bid in ids:
+        r = _test_source(make_url(bid), source_name)
+        if first is None:
+            first = r
+        if r["ok"]:
+            return r
+    return first
+
+
+def test_nerinyan(beatmapset_id: int | None = None) -> ResultDict:
     """Test Nerinyan mirror (free, no-auth).
 
     GET https://api.nerinyan.moe/d/{beatmapset_id}
     """
-    url = f"https://api.nerinyan.moe/d/{beatmapset_id}"
-    return _test_source(url, "nerinyan")
+    ids = TEST_BEATMAPSET_IDS if beatmapset_id is None else [beatmapset_id]
+    return _try_ids(
+        lambda bid: f"https://api.nerinyan.moe/d/{bid}", "nerinyan", ids
+    )
 
 
-def test_beatconnect(beatmapset_id: int = TEST_BEATMAPSET_ID) -> ResultDict:
+def test_beatconnect(beatmapset_id: int | None = None) -> ResultDict:
     """Test Beatconnect mirror (free API token, but we skip token setup unless it wins).
 
     GET https://beatconnect.io/api/download/{beatmapset_id}
 
     NOTE: Returns 401 without auth token — this is EXPECTED per D-02.
     """
-    url = f"https://beatconnect.io/api/download/{beatmapset_id}"
-    return _test_source(url, "beatconnect")
+    ids = TEST_BEATMAPSET_IDS if beatmapset_id is None else [beatmapset_id]
+    return _try_ids(
+        lambda bid: f"https://beatconnect.io/api/download/{bid}", "beatconnect", ids
+    )
 
 
-def test_hinamizawa(beatmapset_id: int = TEST_BEATMAPSET_ID) -> ResultDict:
+def test_hinamizawa(beatmapset_id: int | None = None) -> ResultDict:
     """Test Hinamizawa.ai mirror (free, no-auth).
 
     GET https://mirror.hinamizawa.ai/api/v1/hinai/d/{beatmapset_id}
     User-Agent header is REQUIRED per Hinamizawa docs (RESEARCH.md Section 1).
     """
-    url = f"https://mirror.hinamizawa.ai/api/v1/hinai/d/{beatmapset_id}"
-    return _test_source(url, "hinamizawa")
+    ids = TEST_BEATMAPSET_IDS if beatmapset_id is None else [beatmapset_id]
+    return _try_ids(
+        lambda bid: f"https://mirror.hinamizawa.ai/api/v1/hinai/d/{bid}", "hinamizawa", ids
+    )
 
 
-def test_all_sources(beatmapset_id: int = TEST_BEATMAPSET_ID) -> list[ResultDict]:
+def test_all_sources(beatmapset_id: int | None = None) -> list[ResultDict]:
     """Run all 3 source tests sequentially (serial per D-14), 0.5s delay between.
 
     Parameters
@@ -221,7 +240,7 @@ def main() -> int:
     int
         0 if at least one source works, 1 if all fail.
     """
-    print(f"Testing mirror sources (beatmapset_id={TEST_BEATMAPSET_ID})...\n")
+    print(f"Testing mirror sources (ids={TEST_BEATMAPSET_IDS})...\n")
     results = test_all_sources()
     print_source_report(results)
 

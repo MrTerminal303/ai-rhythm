@@ -365,16 +365,12 @@ def preprocess_osz(
             )
 
             # Save normalized spectrogram chunk
-            chunk_filename = (
-                f"{beatmapset_id}_{difficulty_slug}_{chunk_idx:04d}.npy"
-            )
+            chunk_filename = f"{chunk_idx:04d}.npy"
             chunk_filepath = os.path.join(output_dir, chunk_filename)
             np.save(chunk_filepath, normalized)
 
             # Save onset labels
-            labels_filename = (
-                f"{beatmapset_id}_{difficulty_slug}_{chunk_idx:04d}_labels.npy"
-            )
+            labels_filename = f"{chunk_idx:04d}_labels.npy"
             labels_filepath = os.path.join(output_dir, labels_filename)
             np.save(labels_filepath, labels)
 

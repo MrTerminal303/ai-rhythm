@@ -280,7 +280,7 @@ def preprocess_osz(
         List of dicts with keys: file_type, path, beatmapset_id,
         difficulty_name. Empty list if no mania maps found.
     """
-    from airhythm.osu_parser import parse_osz
+    from airhythm.osu_parser import find_audio_file, parse_osz
 
     parsed = parse_osz(osz_bytes)
     if not parsed:
@@ -347,6 +347,13 @@ def preprocess_osz(
         if not chunks:
             continue
 
+        # Save original audio bytes for debug/playback (not the model input)
+        try:
+            with open(os.path.join(output_dir, "original.audio"), "wb") as af:
+                af.write(find_audio_file(osz_bytes, audio_filename) or b"")
+        except OSError as exc:
+            logger.warning("Failed to save original audio for %d: %s", beatmapset_id, exc)
+
         # Sanitize difficulty name for filenames
         difficulty_slug = _sanitize_filename(metadata.difficulty_name) or "unknown"
 
@@ -369,8 +376,8 @@ def preprocess_osz(
             # Normalize chunk
             normalized = normalize_chunk(chunk)
 
-            # Extract onset labels for this chunk
-            labels = extract_onset_labels(
+            # Extract active/onset/count labels for this chunk
+            labels = extract_chunk_labels(
                 hit_objects,
                 chunk_start_frame=chunk_start_frame,
                 n_frames=config.N_FRAMES,

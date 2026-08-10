@@ -367,12 +367,28 @@ class SpectrogramViewer:
             chunk_spec, aspect="auto", origin="lower", extent=extent, cmap="viridis"
         )
 
-        # Onset markers within this chunk (absolute song times)
+        # Onset markers: red line, orange when chord (count > 1)
         onset_idx = np.where(self.song.onsets[start:end] == 1)[0]
-        self.onset_lines = [
-            self.ax.axvline(t0 + fi * FRAME_TIME, color=self.ONSET_COLOR, linewidth=0.8, alpha=0.7)
-            for fi in onset_idx
-        ]
+        self.onset_lines = []
+        for fi in onset_idx:
+            color = "#ffa500" if self.song.count[start + fi] > 1 else self.ONSET_COLOR
+            self.onset_lines.append(
+                self.ax.axvline(t0 + fi * FRAME_TIME, color=color, linewidth=0.8, alpha=0.7)
+            )
+
+        # Hold spans: green horizontal bars at plot bottom (y near 2)
+        for fi in onset_idx:
+            if self.song.active[start + fi] != 1:
+                continue
+            # find run length of active frames starting at fi
+            run = 1
+            while start + fi + run < end and self.song.active[start + fi + run] == 1:
+                run += 1
+            self.ax.barh(
+                2, run * FRAME_TIME,
+                left=t0 + fi * FRAME_TIME,
+                height=3, color=self.CURSOR_COLOR, alpha=0.85, edgecolor="none",
+            )
 
         # Play cursor at current song time
         self.cursor_line = self.ax.axvline(
@@ -380,6 +396,7 @@ class SpectrogramViewer:
         )
 
         self.ax.set_xlim(t0, t0 + CHUNK_DURATION)
+        self.ax.set_ylim(0, 132)  # leave room for hold bars at y=2..5
         self.chunk_label.config(text=f"Chunk {self.chunk_idx + 1}/{n}")
         self.canvas.draw()
 

@@ -18,7 +18,7 @@ CHUNK_DURATION = 4.0    # seconds, for documentation
 
 # Tensor shapes
 INPUT_SHAPE = (1, 128, 400)    # (channels, n_mels, time) per Conv2d expectation
-LABEL_SHAPE = (400,)           # binary onset vector per chunk
+LABEL_SHAPE = (3, 400)         # (active, onset, count) per chunk
 
 # .osu parsing
 MANIA_MODE = 3           # mode_int=3 for mania

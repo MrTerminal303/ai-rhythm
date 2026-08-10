@@ -53,7 +53,9 @@ class Song:
 
     # Lazy-loaded
     spec: np.ndarray = field(repr=False, default=None)  # (128, T)
+    active: np.ndarray = field(repr=False, default=None)  # (T,)
     onsets: np.ndarray = field(repr=False, default=None)  # (T,)
+    count: np.ndarray = field(repr=False, default=None)  # (T,)
     waveform: np.ndarray = field(repr=False, default=None)  # (N,)
 
     def load_metadata(self) -> None:
@@ -69,24 +71,30 @@ class Song:
         logger.info("Loading: %s", self.display_name)
         self.load_metadata()
         logger.info("  beatmapset_id=%d  chunks=%d", self.beatmapset_id, self.num_chunks)
-        self._load_spec_and_onsets()
+        self._load_spec_and_labels()
         logger.info("  spec=%s  onsets=%d  total_frames=%d", self.spec.shape, int(self.onsets.sum()), self.onsets.shape[0])
         if progress_cb:
-            progress_cb("Inverting mel-spectrogram to audio...")
-        self._reconstruct_audio()
+            progress_cb("Loading audio...")
+        self._load_original_audio()
+        if self.waveform is None:
+            if progress_cb:
+                progress_cb("Inverting mel-spectrogram to audio...")
+            self._reconstruct_audio()
         logger.info("  audio=%.1fs  waveform=%s", self.duration, self.waveform.shape)
 
-    def _load_spec_and_onsets(self) -> None:
+    def _load_spec_and_labels(self) -> None:
         """Load and stitch all chunks + labels into full arrays."""
         chunks, labels = [], []
         for i in range(self.num_chunks):
             c = np.load(self.dir / f"{i:04d}.npy")  # (1, 128, 400)
-            l = np.load(self.dir / f"{i:04d}_labels.npy")  # (400,)
+            l = np.load(self.dir / f"{i:04d}_labels.npy")  # (3, 400)
             chunks.append(c)
             labels.append(l)
-        # Concatenate along time axis
         full = np.concatenate(chunks, axis=2)  # (1, 128, T)
-        self.onsets = np.concatenate(labels)  # (T,)
+        lab = np.concatenate(labels, axis=1)  # (3, T)
+        self.active = lab[0]
+        self.onsets = lab[1]
+        self.count = lab[2]
 
         # De-normalize: each chunk was normalized to mean 0 / std 1 per-chunk.
         # Residual mean/std of the concatenated array is near 0/1, so this
@@ -109,6 +117,21 @@ class Song:
             self.spec, sr=SAMPLE_RATE, hop_length=220
         )
 
+    def _load_original_audio(self) -> None:
+        """Load original.audio (saved during scrape) if present."""
+        f = self.dir / "original.audio"
+        if not f.is_file():
+            return
+        try:
+            import io
+            self.waveform, _ = librosa.load(
+                io.BytesIO(f.read_bytes()), sr=SAMPLE_RATE, mono=True
+            )
+            logger.info("  loaded original audio: %.1fs", self.duration)
+        except Exception as exc:
+            logger.warning("  original.audio load failed (%s); falling back", exc)
+            self.waveform = None
+
     @property
     def duration(self) -> float:
         if self.waveform is None:
@@ -128,6 +151,8 @@ class Song:
             "spec_shape": self.spec.shape,
             "spec_range": (float(self.spec.min()), float(self.spec.max())),
             "onsets": int(self.onsets.sum()),
+            "active_frames": int(self.active.sum()),
+            "max_count": int(self.count.max()) if self.count is not None else 0,
             "waveform_len": len(self.waveform),
             "duration": self.duration,
         }

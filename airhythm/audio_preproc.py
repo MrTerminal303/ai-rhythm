@@ -31,7 +31,7 @@ __all__ = [
     "audio_to_mel_spec",
     "chunk_spectrogram",
     "normalize_chunk",
-    "extract_onset_labels",
+    "extract_chunk_labels",
     "preprocess_osz",
 ]
 
@@ -214,12 +214,17 @@ def normalize_chunk(chunk: np.ndarray) -> np.ndarray:
     return ((chunk - chunk.mean()) / (chunk.std() + 1e-8)).astype(np.float32)
 
 
-def extract_onset_labels(
+def extract_chunk_labels(
     hit_objects: list,
     chunk_start_frame: int,
     n_frames: int,
 ) -> np.ndarray:
-    """Extract binary onset labels for a chunk from parsed hit objects.
+    """Extract active/onset/count labels for a chunk from hit objects.
+
+    Rows (dtype int8, shape (3, n_frames)):
+        active: 1 for every frame inside a hold's [time, end_time) span.
+        onset:  1 at frame where a note starts.
+        count:  number of notes whose start frame is this frame (0-4+).
 
     Converts hit object times (milliseconds) to frame indices at 100Hz
     (10ms per frame, matching hop_length=220 at 22050Hz).
@@ -230,17 +235,24 @@ def extract_onset_labels(
         n_frames: Number of frames in the chunk.
 
     Returns:
-        Binary onset array shape (n_frames,) dtype int8.
-        1 at frame indices where an onset occurs, 0 elsewhere.
+        (3, n_frames) int8 label array. Row 0 active, row 1 onset, row 2 count.
     """
-    labels = np.zeros(n_frames, dtype=np.int8)
+    labels = np.zeros((3, n_frames), dtype=np.int8)
     chunk_end_frame = chunk_start_frame + n_frames
 
     for ho in hit_objects:
-        # Convert time (ms) to frame index at 100Hz
-        frame_index = int(round(ho.time / 1000 * 100))
-        if chunk_start_frame <= frame_index < chunk_end_frame:
-            labels[frame_index - chunk_start_frame] = 1
+        start = int(round(ho.time / 1000 * 100))
+        end = int(round(ho.end_time / 1000 * 100))
+        if not (chunk_start_frame <= start < chunk_end_frame):
+            continue
+        local = start - chunk_start_frame
+        labels[1, local] = 1              # onset at start
+        labels[2, local] += 1             # count += 1
+        # active: from start to end-1 (half-open span)
+        active_end = min(end, chunk_end_frame)
+        active_start = max(start, chunk_start_frame)
+        span_end = active_end if active_end > active_start else active_start + 1
+        labels[0, active_start - chunk_start_frame : span_end - chunk_start_frame] = 1
 
     return labels
 

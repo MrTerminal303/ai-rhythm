@@ -56,6 +56,15 @@ class TestParseHitObject:
         assert ho.type_bitmask == 8
         assert ho.end_time == 15000.0
 
+    def test_parse_hit_object_mania_hold(self):
+        # mania hold note (type bit 7 = 128) carries end_time in ext field
+        line = "64,192,20,128,0,420:0:0:0:0:"
+        ho = parse_hit_object_line(line, 4)
+        assert ho is not None
+        assert ho.time == 20.0
+        assert ho.type_bitmask == 128
+        assert ho.end_time == 420.0
+
     def test_parse_hit_object_slider(self):
         """Slider with curve data in ext field —
         non-numeric ext falls back to end_time = time."""

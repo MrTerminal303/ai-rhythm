@@ -34,15 +34,17 @@ logger = logging.getLogger(__name__)
 # User-Agent for all requests per mirror requirements
 USER_AGENT = "airhythm/1.0 (+github.com/MrTerminal/airhythm)"
 
-# Source API base URLs
-SOURCES: Dict[str, Dict[str, str]] = {
+# Source API base URLs. 'status' is the ranked-status param each API expects.
+SOURCES = {
     "nerinyan": {
         "search": "https://api.nerinyan.moe/v2/search",
         "download": "https://api.nerinyan.moe/d",
+        "status": 2,
     },
     "hinamizawa": {
         "search": "https://mirror.hinamizawa.ai/api/v1/hinai/search",
         "download": "https://mirror.hinamizawa.ai/api/v1/hinai/d",
+        "status": 1,
     },
 }
 
@@ -64,11 +66,7 @@ _FIELD_ALIASES: Dict[str, List[str]] = {
 
 
 def _extract_field(item: dict, name: str) -> Any:
-    """Extract a field from a response dict using known aliases.
-
-    Tries each alias for the given field name and returns the first
-    non-None match.
-    """
+    """First non-None alias value for a field, or None."""
     for alias in _FIELD_ALIASES.get(name, [name]):
         value = item.get(alias)
         if value is not None:
@@ -76,11 +74,23 @@ def _extract_field(item: dict, name: str) -> Any:
     return None
 
 
+def _headers(api_key: Optional[str]) -> Dict[str, str]:
+    headers = {"User-Agent": USER_AGENT}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _backoff_delay(retry: int) -> float:
+    return config.BACKOFF_START * (config.BACKOFF_MULTIPLIER ** retry)
+
+
 def _normalize_beatmap_entry(item: dict) -> Optional[dict]:
     """Normalize a single API response entry to a standard format.
 
     Returns None for entries missing beatmapset_id or that don't pass
-    the cs=4 filter.
+    the cs=4 filter. hinai top-level has no CS — read it from
+    ChildrenBeatmaps[].CS.
 
     Returns:
         Dict with keys: beatmapset_id, title, artist, bpm, cs.
@@ -90,7 +100,6 @@ def _normalize_beatmap_entry(item: dict) -> Optional[dict]:
         return None
 
     # Post-filter: only keep cs=4 (4K) maps.
-    # hinai top-level has no CS — read it from ChildrenBeatmaps[].CS.
     cs = _extract_field(item, "cs")
     if cs is None and isinstance(item.get("ChildrenBeatmaps"), list):
         for cb in item["ChildrenBeatmaps"]:
@@ -99,8 +108,7 @@ def _normalize_beatmap_entry(item: dict) -> Optional[dict]:
                 break
     if cs is not None:
         try:
-            cs_int = int(float(cs))
-            if cs_int != 4:
+            if int(float(cs)) != 4:
                 return None
         except (ValueError, TypeError):
             pass
@@ -114,9 +122,7 @@ def _normalize_beatmap_entry(item: dict) -> Optional[dict]:
     }
 
 
-def search_maps(
-    source: str, api_key: Optional[str] = None
-) -> List[dict]:
+def search_maps(source: str, api_key: Optional[str] = None) -> List[dict]:
     """Search the source API for ranked/loved mania 4K beatmaps.
 
     Args:
@@ -132,29 +138,16 @@ def search_maps(
         logger.warning("Unknown source: %s", source)
         return []
 
-    search_url = source_config["search"]
-
-    # Build query params per source
-    # Nerinyan: mode=3 (mania), status=2 (ranked), cs=4
-    # Hinamizawa: mode=3 (mania), status=1 (ranked), cs=4
-    params: Dict[str, Any] = {"mode": 3}
-    if source == "nerinyan":
-        params["status"] = 2
-        params["cs"] = 4
-    elif source == "hinamizawa":
-        params["status"] = 1
-        params["cs"] = 4
-
-    headers = {"User-Agent": USER_AGENT}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    params = {"mode": 3, "cs": 4, "status": source_config["status"]}
 
     try:
         response = requests.get(
-            search_url, params=params, headers=headers, timeout=30
+            source_config["search"],
+            params=params,
+            headers=_headers(api_key),
+            timeout=30,
         )
         response.raise_for_status()
-
         data = response.json()
     except requests.RequestException as e:
         logger.warning("Search request to %s failed: %s", source, e)
@@ -163,9 +156,7 @@ def search_maps(
         logger.warning("Invalid JSON from %s search: %s", source, e)
         return []
 
-    # Normalize response format to list of dicts
-    # Nerinyan v2 returns array directly
-    # Hinamizawa returns dict with 'results' key
+    # Nerinyan returns a flat array; hinamizawa a dict with 'results'.
     if isinstance(data, dict):
         items = data.get("results", data.get("beatmapsets", data.get("data", [])))
     elif isinstance(data, list):
@@ -183,7 +174,6 @@ def search_maps(
         normalized = _normalize_beatmap_entry(item)
         if normalized is not None:
             results.append(normalized)
-
     return results
 
 
@@ -211,88 +201,57 @@ def download_osz(
         return None
 
     download_url = f"{source_config['download']}/{beatmapset_id}"
-    headers = {"User-Agent": USER_AGENT}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    last_error: Optional[str] = None
+    headers = _headers(api_key)
 
     for retry in range(config.BACKOFF_MAX_RETRIES + 1):
         try:
-            response = requests.get(
-                download_url, headers=headers, timeout=120
-            )
+            response = requests.get(download_url, headers=headers, timeout=120)
 
             if response.status_code == 200:
                 content = response.content
-                # Validate: must have zip-like content-type or reasonable size
                 content_type = response.headers.get("content-type", "")
+                # Must have zip-like content-type or reasonable size.
                 if "zip" in content_type or len(content) > 1000:
                     return content
-                else:
-                    last_error = (
-                        f"Non-zip content-type={content_type}, "
-                        f"size={len(content)}"
-                    )
-                    logger.warning(
-                        "Invalid download for %d: %s",
-                        beatmapset_id,
-                        last_error,
-                    )
-                    return None
+                logger.warning(
+                    "Invalid download for %d: non-zip content-type=%s, size=%d",
+                    beatmapset_id,
+                    content_type,
+                    len(content),
+                )
+                return None
 
-            elif response.status_code == 429:
-                if retry < config.BACKOFF_MAX_RETRIES:
-                    delay = config.BACKOFF_START * (
-                        config.BACKOFF_MULTIPLIER ** retry
-                    )
-                    logger.info(
-                        "429 on %d, retry %d/%d, sleeping %.1fs",
-                        beatmapset_id,
-                        retry + 1,
-                        config.BACKOFF_MAX_RETRIES,
-                        delay,
-                    )
-                    time.sleep(delay)
-                else:
-                    last_error = (
-                        f"429 after {config.BACKOFF_MAX_RETRIES} retries"
-                    )
-                    logger.warning(
-                        "Exhausted retries for %d: %s",
-                        beatmapset_id,
-                        last_error,
-                    )
+            elif response.status_code == 429 and retry < config.BACKOFF_MAX_RETRIES:
+                delay = _backoff_delay(retry)
+                logger.info(
+                    "429 on %d, retry %d/%d, sleeping %.1fs",
+                    beatmapset_id,
+                    retry + 1,
+                    config.BACKOFF_MAX_RETRIES,
+                    delay,
+                )
+                time.sleep(delay)
 
             else:
-                last_error = f"HTTP {response.status_code}"
                 logger.warning(
-                    "Download failed for %d: %s", beatmapset_id, last_error
+                    "Download failed for %d: HTTP %s",
+                    beatmapset_id,
+                    response.status_code,
                 )
                 return None
 
         except requests.RequestException as e:
-            last_error = str(e)
             logger.warning(
-                "Request error for %d (retry %d): %s",
-                beatmapset_id,
-                retry,
-                e,
+                "Request error for %d (retry %d): %s", beatmapset_id, retry, e
             )
             if retry < config.BACKOFF_MAX_RETRIES:
-                delay = config.BACKOFF_START * (
-                    config.BACKOFF_MULTIPLIER ** retry
-                )
-                time.sleep(delay)
+                time.sleep(_backoff_delay(retry))
             else:
                 return None
 
-    # All retries exhausted
+    # All retries exhausted (429 on every attempt).
     logger.warning(
-        "Download failed for %d after %d retries: %s",
-        beatmapset_id,
-        config.BACKOFF_MAX_RETRIES,
-        last_error or "unknown",
+        "Download failed for %d after %d retries", beatmapset_id, config.BACKOFF_MAX_RETRIES
     )
     return None
 
@@ -349,74 +308,32 @@ class Scraper:
         # Phase 2: Quick check — parse .osz to see if there are mania .osu files
         parsed = parse_osz(osz_bytes)
         if not parsed:
-            logger.info(
-                "No mania beatmaps in %d, skipping", beatmapset_id
-            )
+            logger.info("No mania beatmaps in %d, skipping", beatmapset_id)
             self.skipped += 1
             return False
 
         # Phase 3: Full preprocessing
         try:
             saved_files = preprocess_osz(osz_bytes, beatmapset_id, self.output_dir)
-            if saved_files:
-                logger.info(
-                    "Preprocessed %d -> %d files",
-                    beatmapset_id,
-                    len(saved_files),
-                )
-            else:
-                logger.warning(
-                    "Preprocessing produced no output for %d", beatmapset_id
-                )
-                self.failed += 1
-                return False
         except Exception as e:
-            logger.error(
-                "Preprocessing failed for %d: %s", beatmapset_id, e
-            )
+            logger.error("Preprocessing failed for %d: %s", beatmapset_id, e)
             self.failed += 1
             return False
-        finally:
-            # Phase 4: Delete .osz bytes from memory immediately
-            del osz_bytes
 
-        # Phase 5: Per D-14, sleep between downloads
-        delay = random.uniform(
-            config.SERIAL_DELAY_MIN, config.SERIAL_DELAY_MAX
+        if not saved_files:
+            logger.warning("Preprocessing produced no output for %d", beatmapset_id)
+            self.failed += 1
+            return False
+
+        logger.info("Preprocessed %d -> %d files", beatmapset_id, len(saved_files))
+
+        # Phase 4: Per D-14, delay between downloads
+        time.sleep(
+            random.uniform(config.SERIAL_DELAY_MIN, config.SERIAL_DELAY_MAX)
         )
-        time.sleep(delay)
 
         self.downloaded += 1
         return True
-
-    def scrape_batch(self, ids: List[int]) -> Dict[str, Any]:
-        """Scrape a list of beatmap IDs serially.
-
-        Args:
-            ids: List of beatmapset IDs to scrape.
-
-        Returns:
-            Dict with keys: downloaded, failed, skipped, total,
-            ids_downloaded, ids_failed.
-        """
-        ids_downloaded: List[int] = []
-        ids_failed: List[int] = []
-
-        for beatmapset_id in ids:
-            success = self.scrape_one(beatmapset_id)
-            if success:
-                ids_downloaded.append(beatmapset_id)
-            else:
-                ids_failed.append(beatmapset_id)
-
-        return {
-            "downloaded": self.downloaded,
-            "failed": self.failed,
-            "skipped": self.skipped,
-            "total": len(ids),
-            "ids_downloaded": ids_downloaded,
-            "ids_failed": ids_failed,
-        }
 
     def scrape_all(
         self,
@@ -424,25 +341,24 @@ class Scraper:
         batch_size: int = 50,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Dict[str, Any]:
-        """Scrape IDs in batches with progress reporting.
+        """Scrape IDs serially, optionally in batches with progress reporting.
 
         Args:
-            ids: Full list of beatmapset IDs to scrape.
+            ids: List of beatmapset IDs to scrape.
             batch_size: Number of IDs per progress batch.
             progress_callback: Optional function(batch_index, total_batches).
 
         Returns:
-            Aggregated summary dict with keys: downloaded, failed,
-            skipped, total, ids_downloaded, ids_failed.
+            Dict with keys: downloaded, failed, skipped, total,
+            ids_downloaded, ids_failed.
         """
         ids_downloaded: List[int] = []
         ids_failed: List[int] = []
-        total = len(ids)
+        total_batches = (len(ids) + batch_size - 1) // batch_size
 
-        for i in range(0, total, batch_size):
+        for i in range(0, len(ids), batch_size):
             batch = ids[i : i + batch_size]
             batch_num = i // batch_size + 1
-            total_batches = (total + batch_size - 1) // batch_size
 
             logger.info(
                 "Batch %d/%d: processing %d IDs",
@@ -452,8 +368,7 @@ class Scraper:
             )
 
             for beatmapset_id in batch:
-                success = self.scrape_one(beatmapset_id)
-                if success:
+                if self.scrape_one(beatmapset_id):
                     ids_downloaded.append(beatmapset_id)
                 else:
                     ids_failed.append(beatmapset_id)
@@ -465,7 +380,7 @@ class Scraper:
             "downloaded": self.downloaded,
             "failed": self.failed,
             "skipped": self.skipped,
-            "total": total,
+            "total": len(ids),
             "ids_downloaded": ids_downloaded,
             "ids_failed": ids_failed,
         }
@@ -494,7 +409,6 @@ def batch_scrape(
         Summary dict with keys: phase, total_candidates, test_results,
         scale_results, all_downloaded, all_failed.
     """
-    # Phase 1: Search for candidate maps
     candidates = search_maps(source, api_key)
     if not candidates:
         logger.warning("No candidates found from %s", source)
@@ -508,13 +422,11 @@ def batch_scrape(
         }
 
     candidate_ids = [c["beatmapset_id"] for c in candidates]
-    logger.info(
-        "Found %d candidate maps from %s", len(candidate_ids), source
-    )
+    logger.info("Found %d candidate maps from %s", len(candidate_ids), source)
 
     scraper = Scraper(source, output_dir, api_key)
 
-    # Phase 2: Test batch — scrape first TEST_BATCH_SIZE
+    # Phase 1: Test batch — scrape first TEST_BATCH_SIZE, stop if all fail.
     test_ids = candidate_ids[: config.TEST_BATCH_SIZE]
     logger.info(
         "Phase 1: Testing with %d maps (first %d candidates)",
@@ -522,13 +434,10 @@ def batch_scrape(
         config.TEST_BATCH_SIZE,
     )
 
-    test_results = scraper.scrape_batch(test_ids)
+    test_results = scraper.scrape_all(test_ids, batch_size=len(test_ids))
 
     if test_results["downloaded"] == 0:
-        logger.warning(
-            "Test batch: all %d failed. Stopping.",
-            config.TEST_BATCH_SIZE,
-        )
+        logger.warning("Test batch: all %d failed. Stopping.", config.TEST_BATCH_SIZE)
         return {
             "phase": "test_batch_failed",
             "total_candidates": len(candidate_ids),
@@ -545,10 +454,9 @@ def batch_scrape(
         test_results["skipped"],
     )
 
-    # Phase 3: Scale to target
+    # Phase 2: Scale to target — 2x buffer for failures.
     remaining_ids = candidate_ids[config.TEST_BATCH_SIZE:]
-    scale_count = target_count - test_results["downloaded"]
-    scale_ids = remaining_ids[: scale_count * 2]  # 2x buffer for failures
+    scale_ids = remaining_ids[: (target_count - test_results["downloaded"]) * 2]
 
     if not scale_ids:
         logger.info("No remaining IDs to scrape after test batch")
@@ -569,20 +477,17 @@ def batch_scrape(
 
     scale_results = scraper.scrape_all(scale_ids)
 
-    all_downloaded = (
-        test_results["ids_downloaded"] + scale_results["ids_downloaded"]
-    )
-    all_failed = (
-        test_results["ids_failed"] + scale_results["ids_failed"]
-    )
-
     return {
         "phase": "complete",
         "total_candidates": len(candidate_ids),
         "test_results": test_results,
         "scale_results": scale_results,
-        "all_downloaded": all_downloaded,
-        "all_failed": all_failed,
+        "all_downloaded": (
+            test_results["ids_downloaded"] + scale_results["ids_downloaded"]
+        ),
+        "all_failed": (
+            test_results["ids_failed"] + scale_results["ids_failed"]
+        ),
     }
 
 
@@ -593,15 +498,13 @@ def pick_eval_songs(
 ) -> List[int]:
     """Pick n songs from downloaded set for permanent eval.
 
-    Prefers variety in BPM range and artist diversity.
-    Falls back to simple random selection if metadata is sparse.
-
+    Prefers artist diversity: one per artist, then random fill.
     Results are recorded in metadata/eval_song_ids.json per D-16.
 
     Args:
         downloaded_ids: List of downloaded beatmapset IDs.
         song_metadata: Dict mapping beatmapset_id -> metadata dict
-            with at least 'artist' and 'bpm' keys.
+            with at least 'artist' key.
         n: Number of songs to pick.
 
     Returns:
@@ -610,38 +513,17 @@ def pick_eval_songs(
     if len(downloaded_ids) <= n:
         return sorted(downloaded_ids)
 
-    # Group by artist for diversity
+    # Group by artist for diversity.
     artist_groups: Dict[str, List[int]] = {}
     for bid in downloaded_ids:
-        meta = song_metadata.get(bid, {})
-        artist = meta.get("artist", "unknown")
-        if artist not in artist_groups:
-            artist_groups[artist] = []
-        artist_groups[artist].append(bid)
+        artist = song_metadata.get(bid, {}).get("artist", "unknown")
+        artist_groups.setdefault(artist, []).append(bid)
 
-    selected: List[int] = []
-    remaining: List[int] = []
-
-    # Pick one from each artist group first
-    for artist, ids in artist_groups.items():
-        if len(selected) < n:
-            # Pick the one with most moderate BPM from this artist
-            if len(ids) > 1:
-                ids_with_bpm = [
-                    (bid, abs(song_metadata.get(bid, {}).get("bpm", 0) - 150))
-                    for bid in ids
-                ]
-                ids_with_bpm.sort(key=lambda x: x[1])
-                selected.append(ids_with_bpm[0][0])
-                remaining.extend(bid for bid, _ in ids_with_bpm[1:])
-            else:
-                selected.append(ids[0])
-        else:
-            remaining.extend(ids)
-
-    # If still need more, pick from remaining
+    # One per artist first, then random fill.
+    selected = [ids[0] for ids in artist_groups.values()][:n]
     if len(selected) < n:
-        random.shuffle(remaining)
-        selected.extend(remaining[: n - len(selected)])
+        rest = [bid for ids in artist_groups.values() for bid in ids[1:]]
+        random.shuffle(rest)
+        selected.extend(rest[: n - len(selected)])
 
     return sorted(selected[:n])

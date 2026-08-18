@@ -345,8 +345,8 @@ class TestScraper:
         assert result is False
         assert s.skipped == 1
 
-    def test_scraper_scrape_batch(self):
-        """scrape_batch should process multiple IDs and return summary."""
+    def test_scraper_scrape_all(self):
+        """scrape_all should process multiple IDs and return summary."""
         osz_bytes = _make_osz_bytes()
         from airhythm.osu_parser import BeatmapMetadata, HitObject
         meta = BeatmapMetadata(
@@ -367,7 +367,7 @@ class TestScraper:
                     ]
                     with patch("airhythm.scraper.time.sleep"):
                         s = Scraper(source="nerinyan", output_dir="/tmp")
-                        result = s.scrape_batch([1, 2, 3, 4])
+                        result = s.scrape_all([1, 2, 3, 4])
 
         assert result["downloaded"] == 3  # ids 1, 3, 4 succeed (osz bytes returned)
         assert result["total"] == 4
@@ -392,28 +392,29 @@ class TestBatchScrape:
                 {"beatmapset_id": id_, "title": f"S{id_}", "artist": "A"}
                 for id_ in candidate_ids
             ]
-            with patch.object(Scraper, "scrape_batch") as mock_scrape_batch:
-                mock_scrape_batch.return_value = {
-                    "downloaded": 3, "failed": 2, "skipped": 0, "total": 5,
-                    "ids_downloaded": candidate_ids[:3],
-                    "ids_failed": candidate_ids[3:5],
-                }
-                with patch.object(Scraper, "scrape_all") as mock_scrape_all:
-                    mock_scrape_all.return_value = {
+            with patch.object(Scraper, "scrape_all") as mock_scrape_all:
+                # First call = test batch, second call = scale batch.
+                mock_scrape_all.side_effect = [
+                    {
+                        "downloaded": 3, "failed": 2, "skipped": 0, "total": 5,
+                        "ids_downloaded": candidate_ids[:3],
+                        "ids_failed": candidate_ids[3:5],
+                    },
+                    {
                         "downloaded": 10, "failed": 2, "skipped": 0, "total": 95,
                         "ids_downloaded": candidate_ids[5:15],
                         "ids_failed": candidate_ids[15:17],
-                    }
-                    result = batch_scrape(
-                        source="nerinyan",
-                        output_dir="/tmp",
-                        target_count=300,
-                    )
+                    },
+                ]
+                result = batch_scrape(
+                    source="nerinyan",
+                    output_dir="/tmp",
+                    target_count=300,
+                )
 
         assert result["phase"] == "complete"
         assert result["total_candidates"] == 100
-        assert mock_scrape_batch.call_count == 1
-        assert mock_scrape_all.call_count == 1
+        assert mock_scrape_all.call_count == 2
 
     def test_batch_scrape_test_all_fail(self):
         """If all test batch items fail, should stop early."""
@@ -422,8 +423,8 @@ class TestBatchScrape:
                 {"beatmapset_id": i, "title": f"S{i}", "artist": "A"}
                 for i in range(10)
             ]
-            with patch.object(Scraper, "scrape_batch") as mock_scrape_batch:
-                mock_scrape_batch.return_value = {
+            with patch.object(Scraper, "scrape_all") as mock_scrape_all:
+                mock_scrape_all.return_value = {
                     "downloaded": 0, "failed": 5, "skipped": 0, "total": 5,
                     "ids_downloaded": [], "ids_failed": list(range(5)),
                 }

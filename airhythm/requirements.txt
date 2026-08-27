@@ -10,3 +10,5 @@ sounddevice==0.5.5
 requests==2.34.2
 # kagglehub is optional (guarded import in kaggle_push.py) — install when pushing.
 pytest==9.1.1
+streamlit
+plotly

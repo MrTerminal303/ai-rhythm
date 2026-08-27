@@ -15,6 +15,8 @@ from airhythm.baseline import (
     evaluate_on_song,
     run_baseline,
     run_librosa_onset_detection,
+    normalize_envelope,
+    peak_pick_frames,
 )
 from airhythm.toygen import MetronomeClickGenerator, generate_toy_set
 
@@ -196,6 +198,129 @@ class TestRunBaseline:
         finally:
             if os.path.exists(csv_path):
                 os.unlink(csv_path)
+
+
+class TestNormalizeEnvelope:
+    """Tests for normalize_envelope function."""
+
+    def test_formula_bit_identical_to_librosa(self):
+        """normalize_envelope matches librosa's internal normalize formula exactly."""
+        import librosa
+
+        # Test with known min/max - use float64 for precision
+        x = np.array([0.0, 5.0, 10.0, 3.0, 7.0], dtype=np.float64)
+        expected = (x - np.min(x)) / (np.max(x) + librosa.util.tiny(x))
+        result = normalize_envelope(x)
+        assert np.array_equal(result, expected)
+        # Check [0,1] bounds: max <= 1.0 (strictly < 1.0 in exact math, but float32 may hit 1.0)
+        assert np.min(result) == 0.0
+        assert np.max(result) <= 1.0
+
+    def test_matches_onset_detect_normalize(self):
+        """peak_pick_frames(normalize_envelope(x), **params) == onset_detect(onset_envelope=x, **params)."""
+        import librosa
+        from airhythm import config
+
+        # Create a realistic onset envelope
+        np.random.seed(42)
+        oenv = np.abs(np.random.randn(1000).astype(np.float32)) * 10.0
+        params = config.PEAK_PICK_PARAMS.copy()
+
+        # Our path
+        norm = normalize_envelope(oenv)
+        frames_ours = peak_pick_frames(norm, **params)
+
+        # librosa's path (onset_detect with normalize=True)
+        frames_librosa = librosa.onset.onset_detect(
+            onset_envelope=oenv, sr=config.SAMPLE_RATE, hop_length=config.HOP_LENGTH, **params
+        )
+
+        assert np.array_equal(frames_ours, frames_librosa), (
+            "peak_pick_frames(normalize_envelope(...)) must be bit-identical to "
+            "librosa.onset.onset_detect on the same envelope"
+        )
+
+
+class TestPeakPickFrames:
+    """Tests for peak_pick_frames function."""
+
+    def test_rejects_out_of_range_envelope(self):
+        """Envelope with max > 1.0 or min < 0.0 raises ValueError."""
+        import librosa
+        from airhythm import config
+
+        params = config.PEAK_PICK_PARAMS.copy()
+
+        # max > 1.0
+        bad_high = np.array([0.5, 1.5, 0.3], dtype=np.float32)
+        with pytest.raises(ValueError, match="outside \\[0,1\\]"):
+            peak_pick_frames(bad_high, **params)
+
+        # min < 0.0
+        bad_low = np.array([0.5, -0.1, 0.3], dtype=np.float32)
+        with pytest.raises(ValueError, match="outside \\[0,1\\]"):
+            peak_pick_frames(bad_low, **params)
+
+        # NaN
+        bad_nan = np.array([0.5, np.nan, 0.3], dtype=np.float32)
+        with pytest.raises((ValueError, AssertionError)):
+            peak_pick_frames(bad_nan, **params)
+
+        # Empty envelope
+        bad_empty = np.array([], dtype=np.float32)
+        with pytest.raises(ValueError, match="empty envelope"):
+            peak_pick_frames(bad_empty, **params)
+
+    def test_accepts_normalized_envelope(self):
+        """normalize_envelope output passes [0,1] check and matches util.peak_pick directly."""
+        import librosa
+        from airhythm import config
+
+        np.random.seed(42)
+        oenv = np.abs(np.random.randn(1000).astype(np.float32)) * 10.0
+        params = config.PEAK_PICK_PARAMS.copy()
+
+        norm = normalize_envelope(oenv)
+        frames = peak_pick_frames(norm, **params)
+
+        # Should match direct librosa.util.peak_pick on normalized envelope
+        frames_direct = librosa.util.peak_pick(norm, **params)
+        assert np.array_equal(frames, frames_direct)
+
+    def test_logs_scalar_stat(self, caplog):
+        """peak_pick_frames logs scalar stat (fraction of envelope > delta)."""
+        import logging
+        from airhythm import config
+
+        caplog.set_level(logging.DEBUG)
+        np.random.seed(42)
+        oenv = np.abs(np.random.randn(1000).astype(np.float32)) * 10.0
+        norm = normalize_envelope(oenv)
+        params = config.PEAK_PICK_PARAMS.copy()
+
+        _ = peak_pick_frames(norm, **params)
+
+        # Check debug log was emitted
+        assert any("peak_pick envelope stat" in record.message for record in caplog.records)
+
+    def test_passes_all_six_params(self):
+        """All 6 peak-pick params (pre_max, post_max, pre_avg, post_avg, delta, wait) accepted."""
+        from airhythm import config
+
+        # All 6 params present in PEAK_PICK_PARAMS
+        assert set(config.PEAK_PICK_PARAMS.keys()) == {
+            "pre_max",
+            "post_max",
+            "pre_avg",
+            "post_avg",
+            "delta",
+            "wait",
+        }
+
+        # Call with all params explicitly
+        norm = np.random.rand(100).astype(np.float32)
+        frames = peak_pick_frames(norm, **config.PEAK_PICK_PARAMS)
+        assert isinstance(frames, np.ndarray)
 
 
 class TestGoldenOnsetTimes:

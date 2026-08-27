@@ -29,28 +29,61 @@ __all__ = [
     "evaluate_on_toy",
     "run_baseline",
     "BASELINE_EVAL_CSV_HEADER",
+    "normalize_envelope",
+    "peak_pick_frames",
 ]
 
 logger = logging.getLogger(__name__)
 
 BASELINE_EVAL_CSV_HEADER = "song_id,f_measure,precision,recall,n_ref,n_est,is_toy"
 
-# Peak-pick parameters passed to librosa.onset.onset_detect
-_PEAK_PICK_PARAMS: dict = {
-    "pre_max": 3,
-    "post_max": 3,
-    "pre_avg": 3,
-    "post_avg": 5,
-    "delta": 0.3,
-    "wait": 3,
-}
+
+def normalize_envelope(x: np.ndarray) -> np.ndarray:
+    """Exact librosa onset_detect normalize (VERIFIED equals librosa formula).
+
+    Formula: x = x - min(x); x = x / (max(x) + librosa.util.tiny(x))
+    Result: min=0.0, max strictly < 1.0 (by tiny/scale)
+
+    Args:
+        x: Input envelope array.
+
+    Returns:
+        Normalized envelope in [0, 1) range.
+    """
+    x = x - np.min(x, keepdims=True)
+    x = x / (np.max(x, keepdims=True) + librosa.util.tiny(x))
+    return x
+
+
+def peak_pick_frames(envelope: np.ndarray, **params) -> np.ndarray:
+    """Peak-pick a min-max normalized envelope -> frame indices.
+
+    Contract: envelope must already be in [0,1] (caller runs normalize_envelope,
+    or feeds sigmoid-based [0,1] activation). Raises ValueError otherwise.
+
+    Args:
+        envelope: Normalized onset envelope in [0,1].
+        **params: Peak-pick parameters (pre_max, post_max, pre_avg, post_avg, delta, wait).
+
+    Returns:
+        Array of onset frame indices.
+    """
+    if envelope.size == 0:
+        raise ValueError("empty envelope")
+    if envelope.min() < -1e-6 or envelope.max() > 1.0 + 1e-6:
+        raise ValueError(f"envelope outside [0,1]: [{envelope.min():.4f}, {envelope.max():.4f}]")
+    assert np.all(np.isfinite(envelope))
+    # scalar-statistic self-check
+    stat = float(np.mean(envelope > params.get("delta", 0.3)))
+    logger.debug("peak_pick envelope stat (frac>delta): %.4f", stat)
+    return librosa.util.peak_pick(envelope, **params)
 
 
 def run_librosa_onset_detection(audio: np.ndarray, sr: int) -> np.ndarray:
     """Run librosa onset detection on an audio waveform.
 
-    Computes onset strength envelope, detects onset frames, and converts
-    to onset times in seconds.
+    Computes onset strength envelope, detects onset frames via shared
+    peak_pick_frames(normalize_envelope(...)), and converts to onset times.
 
     Args:
         audio: Audio waveform as float32 np.ndarray shape (N,).
@@ -65,11 +98,9 @@ def run_librosa_onset_detection(audio: np.ndarray, sr: int) -> np.ndarray:
         hop_length=config.HOP_LENGTH,
         fmax=config.FMAX,
     )
-    onset_frames = librosa.onset.onset_detect(
-        onset_envelope=onset_strength,
-        sr=sr,
-        hop_length=config.HOP_LENGTH,
-        **_PEAK_PICK_PARAMS,
+    onset_frames = peak_pick_frames(
+        normalize_envelope(onset_strength),
+        **config.PEAK_PICK_PARAMS,
     )
     onset_times = librosa.frames_to_time(
         onset_frames,

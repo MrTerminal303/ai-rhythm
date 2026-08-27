@@ -11,6 +11,22 @@ N_MELS = 128
 POWER = 2.0       # power spectrogram (not magnitude)
 FMAX = 11025      # librosa onset_strength default (half sample rate)
 
+# Peak-pick (EVL-01 frozen params — search-set calibration in 05-02)
+PEAK_PICK_PRE_MAX = 3
+PEAK_PICK_POST_MAX = 3
+PEAK_PICK_PRE_AVG = 3
+PEAK_PICK_POST_AVG = 5
+PEAK_PICK_DELTA = 0.3
+PEAK_PICK_WAIT = 3
+PEAK_PICK_PARAMS = {
+    "pre_max": PEAK_PICK_PRE_MAX,
+    "post_max": PEAK_PICK_POST_MAX,
+    "pre_avg": PEAK_PICK_PRE_AVG,
+    "post_avg": PEAK_PICK_POST_AVG,
+    "delta": PEAK_PICK_DELTA,
+    "wait": PEAK_PICK_WAIT,
+}
+
 # Chunking
 N_FRAMES = 400          # frames per chunk (~4s of audio)
 HOP_FRAMES = 200        # sliding window hop for inference (50% overlap)
@@ -70,6 +86,14 @@ __all__: List[str] = [
     "N_MELS",
     "POWER",
     "FMAX",
+    # Peak-pick params (EVL-01 freeze)
+    "PEAK_PICK_PRE_MAX",
+    "PEAK_PICK_POST_MAX",
+    "PEAK_PICK_PRE_AVG",
+    "PEAK_PICK_POST_AVG",
+    "PEAK_PICK_DELTA",
+    "PEAK_PICK_WAIT",
+    "PEAK_PICK_PARAMS",
     "N_FRAMES",
     "HOP_FRAMES",
     "CHUNK_DURATION",

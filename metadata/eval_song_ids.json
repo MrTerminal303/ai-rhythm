@@ -1,0 +1,7 @@
+{
+  "song_ids": ["2255671", "2256944", "2516285", "2527391", "2589624"],
+  "search_set_ids": ["2561773"],
+  "rationale": "5 fixed eval songs per D-16 (v1). 2561773 (38.1s, smallest) held out as search/calibration set for peak-pick param re-derivation per RESEARCH.md Section 3.1 option b. Local seed; reconcile with Kaggle metadata/eval_song_ids.json when reachable.",
+  "decision_date": "2026-08-20",
+  "decision_ref": "D-16 (5 fixed) + D-10 (search-set derivation)"
+}

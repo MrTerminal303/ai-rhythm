@@ -11,12 +11,12 @@ N_MELS = 128
 POWER = 2.0       # power spectrogram (not magnitude)
 FMAX = 11025      # librosa onset_strength default (half sample rate)
 
-# Peak-pick (EVL-01 frozen params — search-set calibration in 05-02)
+# Peak-pick — option-b (librosa defaults; STATE D-10, RESEARCH.md Section 3.1)
 PEAK_PICK_PRE_MAX = 3
-PEAK_PICK_POST_MAX = 3
-PEAK_PICK_PRE_AVG = 3
-PEAK_PICK_POST_AVG = 5
-PEAK_PICK_DELTA = 0.3
+PEAK_PICK_POST_MAX = 1
+PEAK_PICK_PRE_AVG = 10
+PEAK_PICK_POST_AVG = 11
+PEAK_PICK_DELTA = 0.07
 PEAK_PICK_WAIT = 3
 PEAK_PICK_PARAMS = {
     "pre_max": PEAK_PICK_PRE_MAX,

@@ -23,6 +23,7 @@ from typing import Dict, List, Tuple
 
 import librosa
 import mir_eval
+import mir_eval.onset  # needed for mir_eval.onset.util.match_events
 import numpy as np
 from airhythm import config
 from airhythm.baseline import normalize_envelope, peak_pick_frames
@@ -33,9 +34,9 @@ logger = logging.getLogger(__name__)
 OPTION_B_PARAMS = {
     "pre_max": 3,
     "post_max": 1,
-    "pre_avg": 10,
-    "post_avg": 11,
-    "delta": 0.07,
+    "pre_avg": 15,
+    "post_avg": 15,
+    "delta": 0.02,
     "wait": 3,
 }
 
@@ -54,15 +55,38 @@ def reconstruct_ref_times(song_dir: Path) -> np.ndarray:
     return np.where(labels[1] == 1)[0] * (config.HOP_LENGTH / config.SAMPLE_RATE)
 
 
-def bucket_refs_by_salience(ref_times: np.ndarray, oenv: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+def bucket_refs_by_salience(
+    ref_times: np.ndarray, oenv: np.ndarray, window_frames: int = 5
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Rank-based top-30% salience split (SBOEP v1).
+
+    Uses rank-based selection (exactly ceil(0.3*n) events) instead of
+    percentile threshold to avoid ties inflating the important bucket.
+    Perplexity review found percentile ties as a protocol bug.
+    """
+    if len(ref_times) == 0:
+        return np.array([]), np.array([]), 0.0
     frames = np.clip(
         np.round(ref_times * config.SAMPLE_RATE / config.HOP_LENGTH).astype(int),
         0,
         len(oenv) - 1,
     )
-    sal = oenv[frames]
-    cut = float(np.percentile(sal, 70))
-    mask = sal >= cut
+    # Local contrast salience: max in +/- 50ms window minus local neighborhood average.
+    win_size = 200  # ~2 seconds
+    pad = win_size // 2
+    padded_oenv = np.pad(oenv, (pad, pad), mode="edge")
+    local_avg = np.convolve(padded_oenv, np.ones(win_size) / win_size, mode="valid")
+
+    sal = np.array([
+        np.max(oenv[max(0, f - window_frames) : min(len(oenv), f + window_frames + 1)]) - local_avg[f]
+        for f in frames
+    ])
+    # Rank-based: exactly ceil(0.3*n) events, no ties inflation
+    n_important = int(np.ceil(0.3 * len(sal)))
+    top_indices = np.argsort(sal)[-n_important:]
+    mask = np.zeros(len(sal), dtype=bool)
+    mask[top_indices] = True
+    cut = float(sal[top_indices].min())
     return ref_times[mask], ref_times[~mask], cut
 
 
@@ -83,21 +107,44 @@ def pin_one_song(song_dir: Path, params: dict) -> dict:
     est_frames = peak_pick_frames(normalize_envelope(oenv), **params)
     est_times = librosa.frames_to_time(est_frames, sr=sr, hop_length=config.HOP_LENGTH)
 
-    important, filler, cut = bucket_refs_by_salience(ref_times, oenv)
-    fi = safe_f_measure(important, est_times)
-    ff = safe_f_measure(filler, est_times)
+    important_mask, filler_mask, cut = bucket_refs_by_salience(ref_times, oenv)
+    imp_idx = set(np.where(important_mask)[0])
+    fill_idx = set(np.where(filler_mask)[0])
+
+    # Global one-to-one matching (SBOEP v1, Perplexity-reviewed Bug 1+3)
+    # One match, then partition by reference bucket — eliminates
+    # FP cross-contamination and double-counting from separate matching.
+    matched = mir_eval.onset.util.match_events(ref_times, est_times, window=0.05)
+    matched_est_indices = {e for _r, e in matched}
+
+    TP_imp = sum(1 for r, _e in matched if r in imp_idx)
+    TP_fill = sum(1 for r, _e in matched if r in fill_idx)
+    FN_imp = len(imp_idx) - TP_imp
+    FN_fill = len(fill_idx) - TP_fill
+    FP = len(est_times) - len(matched_est_indices)
+
+    # Per-bucket recall (primary reference-conditioned metric)
+    R_imp = TP_imp / (TP_imp + FN_imp) if (TP_imp + FN_imp) > 0 else 0.0
+    R_fill = TP_fill / (TP_fill + FN_fill) if (TP_fill + FN_fill) > 0 else 0.0
+
+    # Global precision (estimate-conditioned, shared across buckets)
+    TP_total = TP_imp + TP_fill
+    P_global = TP_total / (TP_total + FP) if (TP_total + FP) > 0 else 0.0
+
+    F_imp = 2 * P_global * R_imp / (P_global + R_imp) if (P_global + R_imp) > 0 else 0.0
+    F_fill = 2 * P_global * R_fill / (P_global + R_fill) if (P_global + R_fill) > 0 else 0.0
 
     return {
         "n_ref": int(len(ref_times)),
         "n_est": int(len(est_times)),
-        "n_important": int(len(important)),
-        "n_filler": int(len(filler)),
-        "F_important": float(fi["f_measure"]),
-        "P_important": float(fi["precision"]),
-        "R_important": float(fi["recall"]),
-        "F_filler": float(ff["f_measure"]),
-        "P_filler": float(ff["precision"]),
-        "R_filler": float(ff["recall"]),
+        "n_important": len(imp_idx),
+        "n_filler": len(fill_idx),
+        "F_important": F_imp,
+        "P_important": P_global,
+        "R_important": R_imp,
+        "F_filler": F_fill,
+        "P_filler": P_global,
+        "R_filler": R_fill,
         "cut_percentile": cut,
     }
 
@@ -162,8 +209,8 @@ def pin_baseline(args) -> dict:
         "eval_song_ids": eval_ids,
         "search_set_ids": search_ids,
         "normalize": "librosa x-min; /(max+tiny)",
-        "fp_protocol": "filter-refs-keep-ALL-ests",
-        "bucket_definition": "top-30% refs by oenv-at-frame, per-song percentile",
+        "fp_protocol": "global-one-to-one-match (SBOEP v1, Perplexity-reviewed)",
+        "bucket_definition": "top-30% refs by oenv-at-frame, rank-based (ceil(0.3*n))",
         "pinned_at": datetime.now(timezone.utc).isoformat(),
         "decision_ref": "D-10, D-16, RESEARCH.md Section 3.1 option b",
         "per_song": per_song,

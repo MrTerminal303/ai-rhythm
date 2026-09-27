@@ -156,13 +156,15 @@ def test_all_sources(beatmapset_id: int | None = None) -> list[ResultDict]:
     """
     results: list[ResultDict] = []
 
-    results.append(test_nerinyan(beatmapset_id))
-    time.sleep(0.5)
-
-    results.append(test_beatconnect(beatmapset_id))
-    time.sleep(0.5)
-
     results.append(test_hinamizawa(beatmapset_id))
+    time.sleep(0.5)
+
+    results.append(_try_ids(
+        lambda bid: f"https://osu.direct/api/d/{bid}", "osu.direct", ids
+    ))
+    time.sleep(0.5)
+
+    results.append(test_nerinyan(beatmapset_id))
 
     return results
 

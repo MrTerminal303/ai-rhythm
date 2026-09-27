@@ -14,9 +14,9 @@ FMAX = 11025      # librosa onset_strength default (half sample rate)
 # Peak-pick — option-b (librosa defaults; STATE D-10, RESEARCH.md Section 3.1)
 PEAK_PICK_PRE_MAX = 3
 PEAK_PICK_POST_MAX = 1
-PEAK_PICK_PRE_AVG = 10
-PEAK_PICK_POST_AVG = 11
-PEAK_PICK_DELTA = 0.07
+PEAK_PICK_PRE_AVG = 15
+PEAK_PICK_POST_AVG = 15
+PEAK_PICK_DELTA = 0.02
 PEAK_PICK_WAIT = 3
 PEAK_PICK_PARAMS = {
     "pre_max": PEAK_PICK_PRE_MAX,

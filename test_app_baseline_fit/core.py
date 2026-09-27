@@ -29,7 +29,10 @@ def is_degenerate(F_important: float, n_est: int) -> bool:
 
 def load_song_tags(eval_ids_path: str = "metadata/eval_song_ids.json") -> Dict[str, str]:
     """Map song_id -> 'eval' | 'search' from the seeded ids file."""
-    data = json.loads(Path(eval_ids_path).read_text())
+    p = Path(eval_ids_path)
+    if not p.exists():
+        return {}
+    data = json.loads(p.read_text())
     tags: Dict[str, str] = {}
     for sid in data.get("song_ids", []):
         tags[str(sid)] = "eval"

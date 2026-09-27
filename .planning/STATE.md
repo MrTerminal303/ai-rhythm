@@ -76,7 +76,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-08-27
-Stopped at: Phase 05 complete, Phase 06 ready to plan
+Last session: 2026-09-07T08:16:15+07:00
+Stopped at: Session resumed, Phase 06 ready to plan
 Resume file: .planning/phases/05-eval-foundation/05-02-SUMMARY.md
-Next: /gsd-plan-phase 6
+Next: /gsd-plan-phase 6 or /gsd-discuss-phase 6

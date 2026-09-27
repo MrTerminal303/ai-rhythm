@@ -1,14 +1,15 @@
-# Direct dependencies — airhythm imports these. Transitives (scipy,
-# scikit-learn, soundfile) resolve automatically via librosa/mir_eval.
+# AIRhythm dependencies
+# Pinned to known-good local versions.
+# numpy: <2.0 on Kaggle (pre-installed torch breaks with numpy 2.4+).
+#         Locally 2.4.6 works; Kaggle needs <2.0.
+# torch/torchaudio: Kaggle pre-installs these — skip if already present.
+numpy>=1.24,<2.5
 librosa==0.11.0
 mir_eval==0.8.2
-numpy==2.4.6
-torch==2.13.0
-torchaudio==2.11.0
-matplotlib==3.11.1
-sounddevice==0.5.5
-requests==2.34.2
-# kagglehub is optional (guarded import in kaggle_push.py) — install when pushing.
-pytest==9.1.1
-streamlit
-plotly
+scipy>=1.10,<2.0
+soundfile>=0.12,<1.0
+numba>=0.59,<1.0
+requests>=2.28,<3.0
+# App-only deps (skip for training notebooks):
+# streamlit>=1.30
+# plotly>=5.0

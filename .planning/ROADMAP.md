@@ -16,7 +16,7 @@ Train a CRNN neural network from scratch (no pretrained models, no transfer lear
 
 ### v1.1 — Stage 1 Onset Head (current milestone)
 
-- [ ] **Phase 5: Eval Foundation** -- Shared normalized-envelope peak-pick + pinned baseline important-bucket F; gates everything downstream (eval AND JSON)
+- [x] **Phase 5: Eval Foundation** -- Shared normalized-envelope peak-pick + pinned baseline important-bucket F; gates everything downstream (eval AND JSON)
 - [ ] **Phase 6: Model Build + Verification** -- CRNN backbone + onset head; shape assert `(2,400,1)` + alignment `abs(argmax−200)≤2` pass BEFORE any training
 - [ ] **Phase 7: pos_weight Probes + Toy Overfit Gate** -- imbalanced-BCE probes (stability + degeneracy) + hand-written loop overfits 10 metronome toys, ~100% frame P/R ≤200 epochs
 - [ ] **Phase 8: Full Training + Salience Eval** -- beat pinned baseline F on important salience bucket using identical eval code; time-based checkpointing + resume across 9h sessions
@@ -326,7 +326,7 @@ Note on coverage: M1-M4/O1-O4/E2-E3/I2-I3 are the v1.0-level statements of the w
 | 2. Hold Head | 0/0 | Not started | - |
 | 3. Chord Head | 0/0 | Not started | - |
 | 4. Special Class | 0/0 | Not started | - |
-| 5. Eval Foundation | 0/2 | Not started | - |
+| 5. Eval Foundation | 2/2 | Complete | 05-01 through 05-02 |
 | 6. Model Build + Verification | 0/0 | Not started | - |
 | 7. pos_weight Probes + Toy Overfit | 0/0 | Not started | - |
 | 8. Full Training + Salience Eval | 0/0 | Not started | - |

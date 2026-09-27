@@ -36,6 +36,7 @@ __all__ = [
     "push_dataset",
     "estimate_storage_size",
     "prune_old_checkpoints",
+    "check_storage",
 ]
 
 logger = logging.getLogger(__name__)
@@ -351,3 +352,46 @@ def prune_old_checkpoints(
         min(len(best_files), keep_best),
     )
     return deleted_count
+
+
+def check_storage(dataset_dir: str | None = None) -> Dict:
+    """Check storage usage and report against the 20 GB Kaggle limit.
+
+    Call from a notebook cell to see where data lives and how much room
+    is left::
+
+        from airhythm.kaggle_push import check_storage
+        check_storage()
+    """
+    if dataset_dir is None:
+        # On Kaggle: /kaggle/input/{slug}   Local: cwd
+        for candidate in [
+            config.EPHEMERAL_DIR,
+            os.getcwd(),
+        ]:
+            if os.path.isdir(candidate):
+                dataset_dir = candidate
+                break
+    if dataset_dir is None:
+        return {"error": "no dataset directory found", "total_mb": 0}
+
+    info = estimate_storage_size(dataset_dir)
+    total_gb = info["total_mb"] / 1024.0
+    limit_gb = config.MAX_DATASET_GB
+    pct = (total_gb / limit_gb) * 100 if limit_gb > 0 else 0
+
+    status = "OK"
+    if pct >= 100:
+        status = "OVER LIMIT"
+    elif pct >= 80:
+        status = "WARNING"
+
+    return {
+        "dataset_dir": dataset_dir,
+        "total_mb": info["total_mb"],
+        "total_gb": round(total_gb, 3),
+        "limit_gb": limit_gb,
+        "pct_used": round(pct, 1),
+        "status": status,
+        "by_extension": info["by_extension"],
+    }

@@ -202,55 +202,39 @@ print(f"\nPeak-pick params: {config.PEAK_PICK_PARAMS}")
 # CELL 10: Build CRNN model (Phase 6 - shape + alignment check)
 # =============================================================
 import torch
-import torch.nn as nn
 
-class AIRhythmCRNN(nn.Module):
-    """CRNN backbone + onset detection head.
-    Input:  (batch, 1, 128, 400)  - mel spectrogram chunk
-    Output: (batch, 400, 1)       - per-frame onset logits
-    """
-    def __init__(self):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=(3, 3), padding=(1, 1)),
-            nn.BatchNorm2d(32), nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),   # 128->64, time=400
-            nn.Conv2d(32, 64, kernel_size=(3, 3), padding=(1, 1)),
-            nn.BatchNorm2d(64), nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),   # 64->32, time=400
-            nn.Conv2d(64, 128, kernel_size=(3, 3), padding=(1, 1)),
-            nn.BatchNorm2d(128), nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),   # 32->16, time=400
-        )
-        self.gru = nn.GRU(input_size=128*16, hidden_size=128,
-                          num_layers=2, batch_first=True, bidirectional=True)
-        self.head = nn.Linear(128*2, 1)
+from airhythm import config
+from airhythm.model import AIRhythmCRNN, alignment_delta   # package = single source of truth (D-08/D-09)
 
-    def forward(self, x):
-        x = self.conv(x)
-        x = x.permute(0, 3, 1, 2).reshape(x.size(0), x.size(1), -1)
-        x, _ = self.gru(x)
-        return self.head(x)
-
-
+torch.manual_seed(0)   # seed BEFORE construction — this is what pins the weights (review fix)
 model = AIRhythmCRNN()
-dummy = torch.randn(2, 1, 128, 400)
-out = model(dummy)
-assert out.shape == (2, 400, 1), f"Wrong shape: {out.shape}"
-print(f"Shape assert passed: {out.shape}")
 
-impulse = torch.zeros(1, 1, 128, 400)
-impulse[0, 0, :, 200] = 10.0
-with torch.no_grad():
-    probs = torch.sigmoid(model(impulse).squeeze())
-    argmax_frame = int(probs.argmax())
-    assert abs(argmax_frame - 200) <= 2, f"Alignment fail: argmax={argmax_frame}"
-    print(f"Alignment assert passed: argmax={argmax_frame} (target=200)")
+# MOD-02: gradient alignment FIRST on the fresh model — review fix: running the
+# shape check first would let a train-mode forward push a randn batch through BN,
+# corrupting running stats before alignment_delta switches to eval (breaks the
+# identical-code claim vs pytest, where every test gets a fresh fixture model)
+delta = alignment_delta(model, 200)
+align_ok = abs(delta) <= 2
+print(f"Alignment: {'PASS' if align_ok else 'FAIL'} delta={delta} (target=200, tol=2)")
+
+# MOD-01: shape assert — literal bool
+out = model(torch.randn(2, 1, 128, 400))
+shape_ok = out.shape == (2, 400, 1)
+print(f"Shape assert: {'PASS' if shape_ok else 'FAIL'} {tuple(out.shape)}")
+
+# MOD-01: param ceiling — D-03 corrected to 400,000 (M1 measures 353,121)
+n_params = sum(p.numel() for p in model.parameters())
+ceil_ok = n_params <= config.PARAM_CEILING
+print(f"Param ceiling: {'PASS' if ceil_ok else 'FAIL'} {n_params} <= {config.PARAM_CEILING}")
+
+assert shape_ok and ceil_ok and align_ok, "Phase 6 gate FAILED — do not proceed to Phase 7"
+print("Phase 6 gate: PASS (shape + params + alignment)")
 
 
 # %% ============================================================
 # CELL 11: Toy overfit gate (Phase 7)
 # =============================================================
+from airhythm.model import AIRhythmCRNN  # standalone-safe: CELL 11 works even if CELL 10 not pasted (A1)
 import torch.nn.functional as F
 from torch.optim import AdamW
 import torchaudio

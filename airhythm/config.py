@@ -6,9 +6,22 @@ from typing import List
 # Audio processing — mel-spectrogram (torchaudio HTK formula, per RESEARCH.md Section 3)
 SAMPLE_RATE = 22050
 N_FFT = 2048
-HOP_LENGTH = 220  # 10ms stride = 100Hz frame rate
+HOP_LENGTH = 220  # ~10ms stride; exact rate is FPS = SAMPLE_RATE/HOP_LENGTH ≈ 100.227 Hz
 N_MELS = 128
 POWER = 2.0       # power spectrogram (not magnitude)
+
+FPS = SAMPLE_RATE / HOP_LENGTH   # 100.227..., NOT 100 — the real MelSpectrogram frame rate
+
+
+def ms_to_frame(ms: float) -> int:
+    """osu time (ms) -> mel frame index on the REAL grid."""
+    return int(round(ms / 1000 * FPS))
+
+
+def frame_to_ms(frame: float) -> float:
+    """mel frame index -> ms (for the future chart-JSON writer — use THIS, never ms/10)."""
+    return frame / FPS * 1000
+
 FMAX = 11025      # librosa onset_strength default (half sample rate)
 
 # Peak-pick — option-b (librosa defaults; STATE D-10, RESEARCH.md Section 3.1)
@@ -35,6 +48,7 @@ CHUNK_DURATION = 4.0    # seconds, for documentation
 # Tensor shapes
 INPUT_SHAPE = (1, 128, 400)    # (channels, n_mels, time) per Conv2d expectation
 LABEL_SHAPE = (3, 400)         # (active, onset, count) per chunk
+PARAM_CEILING = 400_000   # D-03 corrected: M1 spec measures 353,121 (06-RESEARCH Open Q1); rejects old CELL 10 (2,062,529)
 
 # .osu parsing
 MANIA_MODE = 3           # mode_int=3 for mania
@@ -85,6 +99,9 @@ __all__: List[str] = [
     "HOP_LENGTH",
     "N_MELS",
     "POWER",
+    "FPS",
+    "ms_to_frame",
+    "frame_to_ms",
     "FMAX",
     # Peak-pick params (EVL-01 freeze)
     "PEAK_PICK_PRE_MAX",
@@ -99,6 +116,7 @@ __all__: List[str] = [
     "CHUNK_DURATION",
     "INPUT_SHAPE",
     "LABEL_SHAPE",
+    "PARAM_CEILING",
     "MANIA_MODE",
     "CS_DEFAULT",
     "LANE_CLAMP_MIN",

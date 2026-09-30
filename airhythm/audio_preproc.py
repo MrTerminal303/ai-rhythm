@@ -226,8 +226,8 @@ def extract_chunk_labels(
         onset:  1 at frame where a note starts.
         count:  number of notes whose start frame is this frame (0-4+).
 
-    Converts hit object times (milliseconds) to frame indices at 100Hz
-    (10ms per frame, matching hop_length=220 at 22050Hz).
+    Converts hit object times (milliseconds) to frame indices on the REAL mel
+    grid via config.ms_to_frame (config.FPS = SAMPLE_RATE/HOP_LENGTH ≈ 100.227 Hz).
 
     Args:
         hit_objects: List of HitObject from osu_parser.
@@ -241,8 +241,8 @@ def extract_chunk_labels(
     chunk_end_frame = chunk_start_frame + n_frames
 
     for ho in hit_objects:
-        start = int(round(ho.time / 1000 * 100))
-        end = int(round(ho.end_time / 1000 * 100))
+        start = config.ms_to_frame(ho.time)
+        end = config.ms_to_frame(ho.end_time)
         if not (chunk_start_frame <= start < chunk_end_frame):
             continue
         local = start - chunk_start_frame

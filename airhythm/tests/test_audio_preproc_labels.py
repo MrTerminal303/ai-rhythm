@@ -8,8 +8,9 @@ from airhythm.osu_parser import HitObject
 
 
 def _frame(ms):
-    """Convert ms to 100Hz frame index, matching preprocess."""
-    return int(round(ms / 1000 * 100))
+    """Convert ms to frame index on the REAL grid, matching preprocess."""
+    from airhythm import config
+    return config.ms_to_frame(ms)
 
 
 def test_tap_single():

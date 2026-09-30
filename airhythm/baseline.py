@@ -166,7 +166,7 @@ def evaluate_on_toy(
     """Evaluate baseline onset detection on a list of toy samples.
 
     For each ToySample, reference onset times are derived from the binary
-    onset_labels vector at 100Hz frame rate (10ms per frame). Estimated
+    onset_labels vector at config.FPS frame rate. Estimated
     onsets come from running librosa onset detection on reconstructed audio
     generated from the sample's noise/metadata parameters.
 
@@ -180,9 +180,9 @@ def evaluate_on_toy(
     per_sample: List[Dict[str, Any]] = []
 
     for idx, sample in enumerate(toy_samples):
-        # Reference times from onset_labels: frame indices at 100Hz
+        # Reference times from onset_labels: frame indices on the REAL grid
         ref_frames = np.where(sample.onset_labels == 1)[0].astype(np.float64)
-        ref_times = ref_frames / 100.0
+        ref_times = ref_frames / config.FPS
 
         # Reconstruct audio from metadata parameters
         bpm = sample.metadata.get("bpm", 120.0)

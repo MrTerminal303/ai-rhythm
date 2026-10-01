@@ -232,85 +232,66 @@ print("Phase 6 gate: PASS (shape + params + alignment)")
 
 
 # %% ============================================================
-# CELL 11: Toy overfit gate (Phase 7)
+# CELL 11: Toy overfit gate (Phase 7) — probes -> loop -> gate -> PASS (D-07 single session)
 # =============================================================
-from airhythm.model import AIRhythmCRNN  # standalone-safe: CELL 11 works even if CELL 10 not pasted (A1)
-import torch.nn.functional as F
-from torch.optim import AdamW
-import torchaudio
+# standalone-safe: works even if CELL 10 not pasted (A1 pattern)
+from airhythm import config
+from airhythm.model import AIRhythmCRNN
+from airhythm.train import (
+    build_metronome_data, compute_pos_weight_candidate, stability_probe,
+    run_training_slice, rate_breach, run_toy_overfit_gate,
+)
+import torch
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.manual_seed(0)
+
+# D-04: 10 metronome_click songs ONLY (build_metronome_data never touches generate_toy_set)
+data, true_rate = build_metronome_data(config.N_TOY, device=DEVICE)
+print(f"toy songs={len(data)} true_pos_rate={true_rate:.4f}")
+
+# TRN-01 stability probe (D-01: large slice = FULL pass over data, halve on NaN)
+labels_all = torch.cat([y for _, y in data]).float()
+raw_w = compute_pos_weight_candidate(labels_all)
+
+def _slice_ok(w: float) -> bool:
+    return run_training_slice(AIRhythmCRNN().to(DEVICE), data, w, device=DEVICE)
+
+final_w, halvings = stability_probe(_slice_ok, raw_w)
+print(f"pos_weight raw={raw_w:.1f} final={final_w:.1f} halvings={halvings}")  # BOTH logged (TRN-01)
+
+# TRN-02 loop + TRN-03 gate (D-05: package owns the loop; cell only chains it)
 model = AIRhythmCRNN().to(DEVICE)
+result = run_toy_overfit_gate(model, data, device=DEVICE, pos_weight=final_w,
+                              max_epochs=config.MAX_EPOCHS)
 
-# Build 10 metronome toy samples as tensors
-from airhythm.toygen import MetronomeClickGenerator
-
-metronome_data = []
-for i in range(10):
-    gen = MetronomeClickGenerator(sample_rate=config.SAMPLE_RATE)
-    audio, labels = gen.generate(bpm=120.0 + i * 10)
-    exp_samples = int(config.SAMPLE_RATE * 4.0)
-    if len(audio) < exp_samples:
-        audio = np.pad(audio, (0, exp_samples - len(audio)))
-    else:
-        audio = audio[:exp_samples]
-    if len(labels) < config.N_FRAMES:
-        labels = np.pad(labels, (0, config.N_FRAMES - len(labels)))
-    else:
-        labels = labels[:config.N_FRAMES]
-    audio_t = torch.tensor(audio).unsqueeze(0).float()
-    mel = torchaudio.transforms.MelSpectrogram(
-        sample_rate=config.SAMPLE_RATE, n_fft=config.N_FFT,
-        hop_length=config.HOP_LENGTH, n_mels=config.N_MELS, power=config.POWER,
-    )(audio_t).unsqueeze(0)
-    T = mel.size(-1)
-    if T < 400:
-        mel = F.pad(mel, (0, 400 - T))
-    else:
-        mel = mel[:, :, :, :400]
-    metronome_data.append((mel.to(DEVICE), torch.tensor(labels[:400]).float().to(DEVICE)))
-
-optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-model.train()
-for epoch in range(200):
-    total_loss = 0
-    for mel, label in metronome_data:
-        out = model(mel).squeeze(-1)
-        loss = F.binary_cross_entropy_with_logits(out, label)
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        total_loss += loss.item()
-    if (epoch + 1) % 50 == 0:
-        model.eval()
-        with torch.no_grad():
-            pred_rate = np.mean([
-                (torch.sigmoid(model(m.to(DEVICE)).squeeze(-1)) > 0.5).float().mean().item()
-                for m, _ in metronome_data
-            ])
-        model.train()
-        print(f"Epoch {epoch+1:3d}  loss={total_loss/len(metronome_data):.4f}  pred_rate={pred_rate:.3f}")
-
-model.eval()
-correct = total = 0
-with torch.no_grad():
-    for mel, label in metronome_data:
-        pred = (torch.sigmoid(model(mel).squeeze(-1)) > 0.5).long()
-        correct += (pred == label.long()).sum().item()
-        total += len(label)
-print(f"\nToy overfit gate: accuracy={correct/total:.4f} (target ~1.0)")
+# D-03 diagnostics + degeneracy verdict + D-02 literal bool
+print(f"P={result['precision']:.4f} R={result['recall']:.4f} "
+      f"pred_rate={result['pred_rate']:.4f} final_loss={result['final_loss']:.4f} "
+      f"epoch={result['epoch']} halted={result['halted']} reason={result['halt_reason']}")
+print(f"degeneracy healthy={rate_breach(result['pred_rate'], result['true_rate']) is None}")
+gate_pass = bool(result["passed"] and not result["halted"])
+print(f"TOY OVERFIT GATE: {'PASS' if gate_pass else 'FAIL'} (need P>={config.GATE_P} AND R>={config.GATE_R}, epoch<={config.MAX_EPOCHS})")
+assert gate_pass, "Phase 7 toy gate FAILED — PLAN.md debug order: (1) alignment test (2) pos_weight logs (3) capacity"
+print("Phase 7 TRN-01/TRN-02/TRN-03: PASS")
 
 
 # %% ============================================================
-# CELL 12: Save checkpoint
+# CELL 12: Save checkpoint (Phase 8 resume contract seed — EXP-02 keys)
 # =============================================================
 ckpt_dir = str(WORKING / "checkpoints")
 os.makedirs(ckpt_dir, exist_ok=True)
-torch.save({"model_state_dict": model.state_dict(), "epoch": 0},
-           f"{ckpt_dir}/latest_epoch_0.pt")
+ckpt_path = f"{ckpt_dir}/phase7_toy_gate.pt"
+torch.save({
+    "model": model.state_dict(),
+    "optimizer": result["optimizer"].state_dict(),
+    "scheduler": result["scheduler"].state_dict(),
+    "epoch": result["epoch"],
+    "pos_weight": final_w,
+    "stage": "phase7_toy_gate",
+}, ckpt_path)
+print(f"Checkpoint saved: {ckpt_path} (pos_weight={final_w:.1f}, epoch={result['epoch']})")
 show_storage("Working disk after checkpoint", str(WORKING))
-print("Checkpoint saved")
 
 
 # %% ============================================================

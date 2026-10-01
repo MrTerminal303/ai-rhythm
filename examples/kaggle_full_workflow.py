@@ -9,13 +9,16 @@ GPU: Enable in notebook settings for Phase 6+ (Model Build / Training).
 # CELL 0: Install missing deps (run once per session)
 # =============================================================
 # On Kaggle, datasets are read-only — pip doesn't auto-install from requirements.txt.
-# numpy 2.4+ breaks mir_eval/librosa on Kaggle, so pin < 2.0 first.
+# numpy: do NOT pin <2.0 — downgrading over the image's numpy corrupts dist-packages
+# (ModuleNotFoundError: numpy.char, observed 2026-10-01). Only repair if already broken.
 
-import sys
+import sys, subprocess
 from pathlib import Path
 
-# Pin numpy first to avoid _center import error
-!pip install "numpy<2.0" -q
+# Sanity-check numpy in a clean interpreter; force-reinstall only if broken
+# (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
+if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps", "numpy"])
 
 # Find and install from bundled requirements.txt (skip numpy line)
 for _d in Path("/kaggle/input").rglob("requirements.txt"):

@@ -291,7 +291,8 @@ torch.save({
     "stage": "phase7_toy_gate",
 }, ckpt_path)
 print(f"Checkpoint saved: {ckpt_path} (pos_weight={final_w:.1f}, epoch={result['epoch']})")
-show_storage("Working disk after checkpoint", str(WORKING))
+if "show_storage" in globals():  # CELL 2 optional — Phase 7 paste-set is CELL 0+11+12
+    show_storage("Working disk after checkpoint", str(WORKING))
 
 
 # %% ============================================================

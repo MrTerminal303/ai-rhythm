@@ -92,11 +92,17 @@ show_storage("Working disk", str(WORKING))
 # %% ============================================================
 # CELL 3: Download songs
 # =============================================================
-from download_minimal import main as download_main
+import logging
+# Show search page progress (default logger output is invisible in notebooks —
+# the old silent search looked frozen for minutes)
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+from airhythm.download_batch import main as download_main
 
 DATA_DIR = str(WORKING / "data" / "minimal_dataset")
-saved = download_main(output=DATA_DIR, n_songs=3)
-print(f"\nDownloaded {saved} songs to {DATA_DIR}")
+# n_songs = TOTAL target: resumes to 100 across reruns, prunes partial dirs
+saved = download_main(output=DATA_DIR, n_songs=100)
+print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
 
 
 # %% ============================================================

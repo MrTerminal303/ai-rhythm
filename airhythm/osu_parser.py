@@ -55,7 +55,8 @@ class BeatmapMetadata:
         beatmapset_id: Beatmapset identifier.
         difficulty_name: Difficulty name (e.g. "4K HD").
         bpm: Always 0.0 — no timing point parsing per D-08.
-        cs: Column count (OverallDifficulty for mania, int).
+        cs: Column count (CircleSize, int). OverallDifficulty → od.
+        od: Overall Difficulty (OD setting 0–10, per-difficulty hit-window strictness).
         mode: Game mode (3 = mania).
     """
 
@@ -65,6 +66,7 @@ class BeatmapMetadata:
     difficulty_name: str
     bpm: float = 0.0
     cs: int = config.CS_DEFAULT
+    od: float = 0.0
     mode: int = config.MANIA_MODE
 
 
@@ -209,7 +211,7 @@ def parse_osu(content: str) -> Optional[Tuple[BeatmapMetadata, List[HitObject]]]
     difficulty_name = _parse_section_value(content, "Metadata", "Version") or ""
 
     # Parse difficulty / column count
-    cs_str = _parse_section_value(content, "Difficulty", "OverallDifficulty")
+    cs_str = _parse_section_value(content, "Difficulty", "CircleSize")
     cs = config.CS_DEFAULT
     if cs_str is not None:
         try:
@@ -219,6 +221,15 @@ def parse_osu(content: str) -> Optional[Tuple[BeatmapMetadata, List[HitObject]]]
     # Clamp cs to minimum 1
     cs = max(1, cs)
 
+    # Parse overall difficulty (per-difficulty hit-window strictness 0–10)
+    od_str = _parse_section_value(content, "Difficulty", "OverallDifficulty")
+    od = 0.0
+    if od_str is not None:
+        try:
+            od = float(od_str)
+        except ValueError:
+            od = 0.0
+
     metadata = BeatmapMetadata(
         title=title,
         artist=artist,
@@ -226,6 +237,7 @@ def parse_osu(content: str) -> Optional[Tuple[BeatmapMetadata, List[HitObject]]]
         difficulty_name=difficulty_name,
         bpm=0.0,  # D-08: no timing point parsing
         cs=cs,
+        od=od,
         mode=config.MANIA_MODE,
     )
 

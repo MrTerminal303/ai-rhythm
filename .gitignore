@@ -1,5 +1,7 @@
 __pycache__/
 .claude/
+.agents/
+skills-lock.json
 .planning/
 .superpowers/
 .venv/
@@ -7,6 +9,7 @@ data/
 docs/
 *.zip
 CLAUDE.md
+GAME_PLAN.md
 PLAN.md
 download_minimal.py
 .playwright-mcp

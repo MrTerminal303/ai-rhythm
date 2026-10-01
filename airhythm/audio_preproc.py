@@ -80,7 +80,8 @@ def load_audio_from_osz(
 
     Raises:
         FileNotFoundError: If audio_filename cannot be found in the archive.
-        ValueError: If the .osz archive is invalid.
+        ValueError: If the .osz archive is invalid, or the audio is corrupt
+            and cannot be decoded.
     """
     # Normalize: strip leading ./, .\ for cross-platform paths
     normalized = audio_filename.lstrip("./\\")
@@ -104,9 +105,17 @@ def load_audio_from_osz(
         raise ValueError(f"Invalid .osz archive: {e}") from e
 
     # Decode with librosa as universal decoder
-    waveform, sr = librosa.load(
-        io.BytesIO(audio_bytes), sr=config.SAMPLE_RATE, mono=True
-    )
+    try:
+        waveform, sr = librosa.load(
+            io.BytesIO(audio_bytes), sr=config.SAMPLE_RATE, mono=True
+        )
+    except Exception as e:
+        # Corrupt/truncated audio: soundfile raises LibsndfileError (a
+        # RuntimeError), which callers catching ValueError would miss and a
+        # batch run would die on. Normalize to the documented ValueError.
+        raise ValueError(f"Audio decode failed for '{audio_filename}': {e}") from e
+    if waveform.size == 0:
+        raise ValueError(f"Audio '{audio_filename}' decoded to zero samples")
     return (waveform.astype(np.float32), sr)
 
 

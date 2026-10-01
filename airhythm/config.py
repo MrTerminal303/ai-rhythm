@@ -82,6 +82,22 @@ EVAL_SONGS_FILENAME = "eval_song_ids.json"
 MAX_DATASET_GB = 20.0
 EPHEMERAL_DIR = "/kaggle/working"  # local disk on Kaggle
 
+# Training (Phase 7: TRN-01/02/03)
+TRAIN_LR = 1e-3              # AdamW lr (TRN-02)
+TRAIN_WD = 1e-4              # AdamW weight_decay (TRN-02)
+SCHED_PATIENCE = 3           # ReduceLROnPlateau patience (TRN-02)
+SCHED_FACTOR = 0.5           # ReduceLROnPlateau factor (TRN-02)
+GRAD_CLIP = 1.0              # clip_grad_norm_ recovery guard (TRN-01)
+TRIPWIRE_GRACE_EPOCHS = 10   # D-06 cold-start grace — epochs 1..10 never counted
+TRIPWIRE_BREACH_N = 3        # D-06 halt after this many CONSECUTIVE breaches
+RATE_LOW_MULT = 0.3          # degeneracy low tail: pred < 0.3*true = predict-nothing
+RATE_HIGH_MULT = 3.0         # degeneracy high tail: pred > 3.0*true = all-ones
+GATE_P = 0.99                # D-02 frame precision bar
+GATE_R = 0.99                # D-02 frame recall bar
+SIGMOID_THRESHOLD = 0.5      # gate AND tripwire use this ONE threshold (no drift)
+MAX_EPOCHS = 200             # D-04 gate cap, no early stop
+N_TOY = 10                   # D-04 metronome_click count
+
 
 def print_config() -> None:
     """Log all config constants — used as first notebook cell per I1."""
@@ -139,5 +155,19 @@ __all__: List[str] = [
     "EVAL_SONGS_FILENAME",
     "MAX_DATASET_GB",
     "EPHEMERAL_DIR",
+    "TRAIN_LR",
+    "TRAIN_WD",
+    "SCHED_PATIENCE",
+    "SCHED_FACTOR",
+    "GRAD_CLIP",
+    "TRIPWIRE_GRACE_EPOCHS",
+    "TRIPWIRE_BREACH_N",
+    "RATE_LOW_MULT",
+    "RATE_HIGH_MULT",
+    "GATE_P",
+    "GATE_R",
+    "SIGMOID_THRESHOLD",
+    "MAX_EPOCHS",
+    "N_TOY",
     "print_config",
 ]

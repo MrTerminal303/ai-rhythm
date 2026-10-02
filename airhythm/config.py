@@ -24,7 +24,7 @@ def frame_to_ms(frame: float) -> float:
 
 FMAX = 11025      # librosa onset_strength default (half sample rate)
 
-# Peak-pick — option-b (librosa defaults; STATE D-10, RESEARCH.md Section 3.1)
+# Peak-pick — option-b as amended in STATE D-10 (2026-10-02): 0.02/15/15
 PEAK_PICK_PRE_MAX = 3
 PEAK_PICK_POST_MAX = 1
 PEAK_PICK_PRE_AVG = 15

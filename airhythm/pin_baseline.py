@@ -7,7 +7,7 @@ Reconstructs refs from stitched labels, computes onset_strength, routes
 through shared peak_pick_frames(normalize_envelope(...)), buckets refs by
 top-30% oenv-at-frame salience (filter-refs-keep-ALL-ests), then mir_eval.
 
-Option-b params (D-10, STATE locked) are used for the pin AND written to
+Option-b params as amended in STATE D-10 (2026-10-02): 0.02/15/15 are used for the pin AND written to
 config.py afterward — the pin must not read config.PEAK_PICK_PARAMS (which
 still holds pre-derivation delta=0.3 at pin time).
 """
@@ -30,7 +30,7 @@ from airhythm.baseline import normalize_envelope, peak_pick_frames
 
 logger = logging.getLogger(__name__)
 
-# Option b — librosa defaults (STATE D-10 locked; RESEARCH.md Section 3.1)
+# Option b as amended in STATE D-10 (2026-10-02) — 0.02/15/15
 OPTION_B_PARAMS = {
     "pre_max": 3,
     "post_max": 1,
@@ -212,7 +212,7 @@ def pin_baseline(args) -> dict:
         "fp_protocol": "global-one-to-one-match (SBOEP v1, Perplexity-reviewed)",
         "bucket_definition": "top-30% refs by oenv-at-frame, rank-based (ceil(0.3*n))",
         "pinned_at": datetime.now(timezone.utc).isoformat(),
-        "decision_ref": "D-10, D-16, RESEARCH.md Section 3.1 option b",
+        "decision_ref": "D-10 (amended 2026-10-02), D-16, RESEARCH.md Section 3.1 option b",
         "per_song": per_song,
         "aggregate": aggregate,
     }

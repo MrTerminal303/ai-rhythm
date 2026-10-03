@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 import torch
 import torch.nn as nn
@@ -9,10 +11,12 @@ from airhythm.train import (
     build_metronome_data,
     compute_pos_weight_candidate,
     evaluate_gate,
+    load_checkpoint,
     predicted_positive_rate,
     rate_breach,
     run_toy_overfit_gate,
     run_training_slice,
+    save_checkpoint,
     stability_probe,
     train_epoch,
     tripwire_breached,
@@ -189,3 +193,97 @@ class TestTripwire:
                     "true_rate", "final_loss", "halted", "halt_reason",
                     "optimizer", "scheduler"):
             assert key in out
+
+
+class TestCheckpointRoundtrip:
+    @staticmethod
+    def _opt_sched(model):
+        opt = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR)
+        sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min",
+            patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
+        )
+        return opt, sch
+
+    def test_key_set(self, tmp_path):
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt, sch = self._opt_sched(model)
+        p = tmp_path / "latest_test.pt"
+        state = save_checkpoint(
+            str(p), model=model, optimizer=opt, scheduler=sch,
+            epoch=7, global_step=123, val_metric=0.42,
+            stage="phase8_real", pos_weight=36.4,
+        )
+        keys = set(state.keys())
+        expected = {
+            "model", "optimizer", "scheduler", "epoch", "global_step",
+            "val_metric", "stage", "torch_rng", "random_rng", "pos_weight",
+        }
+        if torch.cuda.is_available():
+            assert keys == expected | {"cuda_rng"}
+        else:
+            assert keys == expected
+
+    def test_scheduler_countdown(self, tmp_path):
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt, sch = self._opt_sched(model)
+        for v in (0.5, 0.6, 0.7):
+            sch.step(v)
+        assert sch.state_dict()["num_bad_epochs"] == 2
+        best = sch.state_dict()["best"]
+        p = tmp_path / "latest_sched.pt"
+        save_checkpoint(
+            str(p), model=model, optimizer=opt, scheduler=sch,
+            epoch=7, global_step=123, val_metric=0.5,
+            stage="phase8_real", pos_weight=36.4,
+        )
+        model2 = AIRhythmCRNN()
+        opt2, sch2 = self._opt_sched(model2)
+        load_checkpoint(str(p), model=model2, optimizer=opt2,
+                        scheduler=sch2)
+        assert sch2.state_dict()["num_bad_epochs"] == 2
+        assert sch2.state_dict()["best"] == best
+
+    def test_rng_restore(self, tmp_path):
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt, sch = self._opt_sched(model)
+        p = tmp_path / "latest_rng.pt"
+        save_checkpoint(
+            str(p), model=model, optimizer=opt, scheduler=sch,
+            epoch=7, global_step=123, val_metric=0.42,
+            stage="phase8_real", pos_weight=36.4,
+        )
+        recorded = (random.random(), torch.rand(1).tolist())
+        random.seed(1)
+        torch.manual_seed(1)
+        load_checkpoint(str(p), model=model, optimizer=opt, scheduler=sch)
+        assert (random.random(), torch.rand(1).tolist()) == recorded
+
+    def test_value_restore_and_stdout(self, tmp_path, capsys):
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt, sch = self._opt_sched(model)
+        src = dict(model.state_dict())
+        p = tmp_path / "latest_val.pt"
+        save_checkpoint(
+            str(p), model=model, optimizer=opt, scheduler=sch,
+            epoch=7, global_step=123, val_metric=0.42,
+            stage="phase8_real", pos_weight=36.4,
+        )
+        model2 = AIRhythmCRNN()
+        opt2, sch2 = self._opt_sched(model2)
+        ckpt = load_checkpoint(str(p), model=model2, optimizer=opt2,
+                               scheduler=sch2)
+        assert ckpt["epoch"] == 7
+        assert ckpt["global_step"] == 123
+        assert ckpt["pos_weight"] == 36.4
+        name = next(iter(src))
+        assert torch.equal(model2.state_dict()[name], src[name])
+        assert "resume: epoch=7" in capsys.readouterr().out

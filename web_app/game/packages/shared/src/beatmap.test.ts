@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseBeatmap } from "./beatmap.js";
 import type { Beatmap } from "./beatmap.js";
+import { PULSE_DURATION_MS } from "./constants.js";
 
 const base = (): Beatmap => ({
   version: 1,
@@ -25,6 +26,13 @@ describe("beatmap schema", () => {
     expect(b.pulses[0]?.durationMs).toBe(80);
     // tier defaults to primary when omitted
     expect(b.notes[0]?.tier).toBeUndefined(); // schema leaves absent; canonicalization (W2) applies default
+  });
+
+  it("fills pulse durationMs from PULSE_DURATION_MS when omitted (D4)", () => {
+    // input must lack durationMs — the fill can only fire when the field is absent
+    const input: unknown = { ...base(), pulses: [{ t: 0, s: 1 }] };
+    const b = parseBeatmap(input);
+    expect(b.pulses[0]?.durationMs).toBe(PULSE_DURATION_MS);
   });
 
   it("rejects out-of-range lane", () => {

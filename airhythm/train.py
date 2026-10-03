@@ -429,18 +429,20 @@ def _smoke_impl(pre_epoch4_hook=None, *, device="cpu", tolerance: float = 1e-6,
 def resume_smoke_test(*, device="cpu", tolerance: float = 1e-6) -> dict:
     """EXP-02 success criterion 4, CPU-runnable in seconds.
     Protocol (research §Resume smoke test):
-      (1) build tiny fixture: 4 chunks of random mel (2,1,128,400) + sparse binary labels
+      (1) build tiny fixture: 4 chunks of random mel (1,1,128,400) + sparse binary labels
           (seeded torch.Generator), AIRhythmCRNN(), AdamW(1e-3), ReduceLROnPlateau(patience=3),
           BCEWithLogitsLoss(pos_weight=tensor([36.4]));
       (2) FRESH RUN: seed all RNGs (torch.manual_seed(0), random.seed(0)); train 4 epochs via
-          train_epoch on the SAME fixture; record loss_4_fresh = epoch-4 loss;
+          train_epoch (+ one dropout/RNG probe draw per epoch) on the SAME fixture;
+          record loss_4_fresh = epoch-4 loss;
       (3) RESUMED RUN: re-seed identically; train epochs 1-3; save_checkpoint(tmp) after epoch 3;
-          then MUTATE state (torch.manual_seed(999), random.seed(999), and take extra optimizer
-          steps on a throwaway copy is NOT needed — mutating RNGs suffices); load_checkpoint into
-          FRESH model/optimizer/scheduler instances (constructor-fresh, same seeds 0 as (2) start);
+          then MUTATE state (torch.manual_seed(999), random.seed(999)); load_checkpoint into
+          FRESH model/optimizer/scheduler instances (constructor-fresh, same seed 0 as (2) start);
           train epoch 4; record loss_4_resumed;
       (4) PASS iff abs(loss_4_resumed - loss_4_fresh) < tolerance AND scheduler state dict
-          (num_bad_epochs, best) equal AND next LR equal.
+          (num_bad_epochs, best) equal AND next LR equal AND post-load RNG sequence
+          replays the saved sequence (dropout probe makes skipped restores detectable).
+    Delegates to _smoke_impl (which calls save_checkpoint + load_checkpoint).
     Returns {"pass": bool, "loss_4_fresh": ..., "loss_4_resumed": ..., "lr_next": ...}.
     Raises nothing — caller prints PASS/FAIL (notebook greps 'resume smoke')."""
     return _smoke_impl(device=device, tolerance=tolerance)

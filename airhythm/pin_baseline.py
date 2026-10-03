@@ -87,7 +87,7 @@ def bucket_refs_by_salience(
     mask = np.zeros(len(sal), dtype=bool)
     mask[top_indices] = True
     cut = float(sal[top_indices].min())
-    return ref_times[mask], ref_times[~mask], cut
+    return mask, ~mask, cut
 
 
 def safe_f_measure(ref: np.ndarray, est: np.ndarray, window: float = 0.05) -> Dict[str, float]:

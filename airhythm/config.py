@@ -99,6 +99,12 @@ MAX_EPOCHS = 200             # D-04 gate cap, no early stop
 N_TOY = 10                   # D-04 metronome_click count
 
 
+# Datasets (Phase 8: D-05/D-06/D-07)
+VAL_SPLIT_EVERY = 10    # D-07: every 10th sorted song ID -> val (~10%), song-level only
+BOUNDARY_K = 5          # D-05: onsets within this many frames of a chunk edge count as boundary
+BOUNDARY_FRACTION_MAX = 0.05  # success criterion 5: >5% -> mitigation decided
+
+
 def print_config() -> None:
     """Log all config constants — used as first notebook cell per I1."""
     import sys
@@ -169,5 +175,8 @@ __all__: List[str] = [
     "SIGMOID_THRESHOLD",
     "MAX_EPOCHS",
     "N_TOY",
+    "VAL_SPLIT_EVERY",
+    "BOUNDARY_K",
+    "BOUNDARY_FRACTION_MAX",
     "print_config",
 ]

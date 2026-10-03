@@ -14,6 +14,7 @@ from airhythm.train import (
     load_checkpoint,
     predicted_positive_rate,
     rate_breach,
+    resume_smoke_test,
     run_toy_overfit_gate,
     run_training_slice,
     save_checkpoint,
@@ -287,3 +288,27 @@ class TestCheckpointRoundtrip:
         name = next(iter(src))
         assert torch.equal(model2.state_dict()[name], src[name])
         assert "resume: epoch=7" in capsys.readouterr().out
+
+
+class TestResumeSmoke:
+    def test_pass_matches_within_tolerance(self):
+        out = resume_smoke_test()
+        assert out["pass"] is True
+        assert abs(out["loss_4_resumed"] - out["loss_4_fresh"]) < 1e-6
+
+    def test_mutant_skipped_rng_restore_fails(self):
+        """Teeth: skipping the RNG restore (the bug this plan guards) must
+        flip pass to False or push loss diff >= tolerance."""
+        from airhythm.train import _smoke_impl
+
+        out = _smoke_impl(_skip_rng_restore=True)
+        assert out["pass"] is False or abs(
+            out["loss_4_resumed"] - out["loss_4_fresh"]
+        ) >= 1e-6
+
+    def test_fast(self):
+        import time
+
+        t0 = time.monotonic()
+        resume_smoke_test()
+        assert time.monotonic() - t0 < 30.0

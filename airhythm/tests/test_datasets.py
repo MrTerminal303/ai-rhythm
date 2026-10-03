@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import shutil
 from pathlib import Path
 
@@ -7,7 +8,13 @@ import numpy as np
 import pytest
 
 from airhythm import config
-from airhythm.datasets import boundary_fraction, split_song_ids
+from airhythm.datasets import (
+    boundary_fraction,
+    FixedChunkDataset,
+    RandomCropDataset,
+    build_full_song_cache,
+    split_song_ids,
+)
 
 
 class TestSplit:
@@ -81,3 +88,99 @@ class TestBoundary:
         frac = boundary_fraction(song)
         assert 0.0 <= frac <= 1.0
         print(f"\nboundary_fraction(2255671)={frac:.4f}")
+
+
+class TestFullSongCache:
+    def _copy_song(self, src: str, dst: Path) -> Path:
+        song = dst / "song"
+        shutil.copytree(Path("data/minimal_dataset") / src, song)
+        return song
+
+    def test_build_and_idempotent_and_bitwise(self, tmp_path):
+        song = self._copy_song("2255671", tmp_path)
+        spec_path, label_path = build_full_song_cache(song)
+        assert spec_path.exists() and label_path.exists()
+        expected = np.concatenate(
+            [np.load(p) for p in sorted(song.glob("*_labels.npy")) if "_full_" not in p.name],
+            axis=1,
+        )
+        assert np.array_equal(np.load(label_path), expected)
+        spec = np.load(spec_path)
+        labels = np.load(label_path)
+        assert spec.shape[0] == 1 and spec.shape[1] == config.N_MELS
+        assert spec.shape[2] == labels.shape[1]
+        mtime = (spec_path.stat().st_mtime, label_path.stat().st_mtime)
+        spec_path2, label_path2 = build_full_song_cache(song)
+        assert (spec_path2, label_path2) == (spec_path, label_path)
+        assert (spec_path.stat().st_mtime, label_path.stat().st_mtime) == mtime
+
+    def test_spec_shape_matches_labels(self, tmp_path):
+        song = self._copy_song("2256944", tmp_path)
+        spec_path, label_path = build_full_song_cache(song)
+        spec = np.load(spec_path)
+        labels = np.load(label_path)
+        assert spec.shape == (1, config.N_MELS, labels.shape[1])
+
+    def test_missing_audio_raises(self, tmp_path):
+        song = tmp_path / "song"
+        song.mkdir()
+        np.save(song / "0000_labels.npy", np.zeros((3, config.N_FRAMES), dtype=np.int8))
+        with pytest.raises(FileNotFoundError):
+            build_full_song_cache(song)
+
+
+class TestRandomCrop:
+    def _songs(self, tmp_path) -> list[Path]:
+        out = []
+        for sid in ("2255671", "2256944"):
+            dest = tmp_path / sid
+            shutil.copytree(Path("data/minimal_dataset") / sid, dest)
+            out.append(dest)
+        return out
+
+    def test_len_and_shapes(self, tmp_path):
+        songs = self._songs(tmp_path)
+        ds = RandomCropDataset(songs, rng=random.Random(0))
+        assert len(ds) == 2
+        spec, labels = ds[0]
+        assert tuple(spec.shape) == (1, 128, 400)
+        assert tuple(labels.shape) == (3, 400)
+        assert spec.dtype == labels.dtype
+
+    def test_label_consistency_with_seeded_offset(self, tmp_path):
+        import torch
+
+        songs = self._songs(tmp_path)
+        seed = 0
+        ds = RandomCropDataset(songs, rng=random.Random(seed))
+        # Re-derive the offset the dataset used for idx 0: first rng draw
+        probe = random.Random(seed)
+        song_idx = 0  # idx 0 maps to songs[0] with crops_per_song=1
+        full_labels = np.load(
+            next(iter(sorted(songs[song_idx].glob("*_full_labels.npy"))))
+            if list(songs[song_idx].glob("*_full_labels.npy"))
+            else build_full_song_cache(songs[song_idx])[1]
+        )
+        T = full_labels.shape[1]
+        off = int(probe.randint(0, T - config.N_FRAMES + 1)) if T >= config.N_FRAMES else 0
+        _, labels = ds[0]
+        assert torch.equal(labels, torch.tensor(full_labels[:, off : off + 400]).float())
+
+    def test_fixed_chunk_matches_stored(self):
+        ds = FixedChunkDataset([Path("data/minimal_dataset/2255671")])
+        spec, labels = ds[0]
+        assert tuple(spec.shape) == (1, 128, 400)
+        assert tuple(labels.shape) == (3, 400)
+        assert np.array_equal(
+            spec.numpy(), np.load("data/minimal_dataset/2255671/0000.npy")
+        )
+
+    def test_same_seed_same_first_crop(self, tmp_path):
+        songs = self._songs(tmp_path)
+        a = RandomCropDataset(songs, rng=random.Random(0))
+        b = RandomCropDataset(songs, rng=random.Random(0))
+        sa, la = a[0]
+        sb, lb = b[0]
+        import torch
+
+        assert torch.equal(sa, sb) and torch.equal(la, lb)

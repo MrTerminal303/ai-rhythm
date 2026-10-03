@@ -5,6 +5,8 @@ Notebook cells import these; hand-written optimizer steps only (TRN-02).
 
 from __future__ import annotations
 
+import os
+import random
 from typing import Callable
 
 import torch
@@ -23,6 +25,9 @@ __all__ = [
     "evaluate_gate",
     "tripwire_breached",
     "run_toy_overfit_gate",
+    "save_checkpoint",
+    "load_checkpoint",
+    "resume_smoke_test",
 ]
 
 
@@ -260,3 +265,51 @@ def run_toy_overfit_gate(model, data, *, device, pos_weight,
         "optimizer": optimizer,
         "scheduler": scheduler,
     }
+
+
+def save_checkpoint(path, *, model, optimizer, scheduler, epoch: int, global_step: int,
+                    val_metric: float, stage: str, pos_weight: float) -> dict:
+    """EXP-02 D-09: full-state dict, saved EVERY epoch locally. Keys EXACTLY:
+    model, optimizer, scheduler, epoch, global_step, val_metric, stage, torch_rng, random_rng, pos_weight
+    plus "cuda_rng": torch.cuda.get_rng_state_all() ONLY when torch.cuda.is_available().
+    torch.save(state, path); return state."""
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "epoch": epoch,
+        "global_step": global_step,
+        "val_metric": val_metric,
+        "stage": stage,
+        "torch_rng": torch.get_rng_state(),
+        "random_rng": random.getstate(),
+        "pos_weight": pos_weight,
+    }
+    if torch.cuda.is_available():
+        state["cuda_rng"] = torch.cuda.get_rng_state_all()
+    parent = os.path.dirname(os.path.abspath(str(path)))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    torch.save(state, path)
+    return state
+
+
+def load_checkpoint(path, *, model, optimizer, scheduler, device="cpu") -> dict:
+    """EXP-02 D-11: ordered restore — model -> optimizer -> scheduler (AFTER optimizer:
+    restores best/num_bad_epochs/cooldown_counter) -> torch.set_rng_state(torch_rng)
+    -> random.setstate(random_rng) -> cuda rng if present and cuda available.
+    Prints `resume: epoch={epoch} global_step={global_step}` and ASSERTS
+    ckpt["epoch"] >= 0 and ckpt["global_step"] >= 0.
+    Returns the full ckpt dict. torch.load(path, map_location=device, weights_only=False) —
+    only own-run files from CHECKPOINTS_DIR/working dir, never an untrusted path (T-8-03)."""
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    scheduler.load_state_dict(ckpt["scheduler"])
+    torch.set_rng_state(ckpt["torch_rng"])
+    random.setstate(ckpt["random_rng"])
+    if "cuda_rng" in ckpt and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(ckpt["cuda_rng"])
+    print(f"resume: epoch={ckpt['epoch']} global_step={ckpt['global_step']}")
+    assert ckpt["epoch"] >= 0 and ckpt["global_step"] >= 0
+    return ckpt

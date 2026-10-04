@@ -4,6 +4,8 @@ import random
 from pathlib import Path
 
 import librosa
+import mir_eval
+import mir_eval.onset  # needed for mir_eval.onset.util.match_events
 import numpy as np
 import torch
 
@@ -13,6 +15,7 @@ from airhythm.audio_preproc import audio_to_mel_spec, normalize_chunk
 __all__ = [
     "split_song_ids",
     "boundary_fraction",
+    "proximity_binned_recall",
     "build_full_song_cache",
     "RandomCropDataset",
     "FixedChunkDataset",
@@ -53,6 +56,53 @@ def boundary_fraction(song_dir, *, k: int = config.BOUNDARY_K, n_frames: int = c
     mod = onset_frames % n_frames
     boundary = (mod < k) | (mod > n_frames - k)
     return float(boundary.mean())
+
+
+def proximity_binned_recall(ref_frames, est_frames, *, n_frames: int = config.N_FRAMES,
+                            n_bins: int = 4) -> dict:
+    """D-05 mitigation-sizer: recall of matched refs as a function of distance-to-chunk-edge.
+
+    edge_dist(f) = min(f % n_frames, n_frames - (f % n_frames))  # 0 = on the edge
+    Refs binned into n_bins equal-width bins over [0, n_frames//2). Match ONCE globally
+    (mir_eval.onset.util.match_events on frame->seconds conversion, window=0.05s —
+    IDENTICAL to the eval path), then partitioned by ref bin. Per-bin recall =
+    matched_in_bin / refs_in_bin (0.0 if empty). Returns {"bin_edges", "n_refs",
+    "recall", "worst_bin", "edge_recall", "degradation"}.
+    degradation=True (edge_recall < overall recall * 0.9) means the chunk edge REALLY
+    hurts — the only condition under which D-05 allows context-margin mitigation.
+    """
+    ref = np.asarray(ref_frames, dtype=float)
+    est = np.asarray(est_frames, dtype=float)
+    bin_max = n_frames // 2
+    width = max(1, bin_max // n_bins)
+    bin_edges = [min(i * width, bin_max) for i in range(n_bins)] + [bin_max]
+
+    # single global match, seconds conversion identical to eval path
+    ref_times = librosa.frames_to_time(ref, sr=config.SAMPLE_RATE, hop_length=config.HOP_LENGTH)
+    est_times = librosa.frames_to_time(est, sr=config.SAMPLE_RATE, hop_length=config.HOP_LENGTH)
+    matched = mir_eval.onset.util.match_events(ref_times, est_times, window=0.05)
+    matched_ref_idx = {r for r, _e in matched}
+
+    if ref.size:
+        dist = np.minimum(ref % n_frames, n_frames - (ref % n_frames))
+        bin_idx = np.minimum(dist // width, n_bins - 1).astype(int)
+    else:
+        bin_idx = np.zeros(0, dtype=int)
+
+    n_refs = [int((bin_idx == b).sum()) for b in range(n_bins)]
+    matched_in_bin = [sum(1 for i in matched_ref_idx if bin_idx[i] == b)
+                      for b in range(n_bins)]
+    recall = [(m / n if n else 0.0) for m, n in zip(matched_in_bin, n_refs)]
+    overall = (len(matched) / len(ref)) if ref.size else 0.0
+    edge_recall = recall[0]
+    return {
+        "bin_edges": bin_edges,
+        "n_refs": n_refs,
+        "recall": recall,
+        "worst_bin": int(np.argmin(recall)),
+        "edge_recall": edge_recall,
+        "degradation": bool(edge_recall < overall * 0.9),
+    }
 
 
 def _song_stem(song_dir: Path) -> str:

@@ -111,6 +111,16 @@ BOUNDARY_K = 5          # D-05: onsets within this many frames of a chunk edge c
 BOUNDARY_FRACTION_MAX = 0.05  # success criterion 5: >5% -> mitigation decided
 
 
+# Salience gate (Phase 8: EVL-03/EVL-04)
+GATE_MARGIN = 0.01           # D-01: bar = pin mean_F_important + 0.01 (dust filter)
+GATE_MIN_WINS = 3            # D-02: model must beat baseline on >= 3 of 5 eval songs
+GATE_TOTAL_SONGS = 5
+REPORT_CUTS = (0.2, 0.3, 0.5)  # EVL-03: 0.3 gates (D-01); 0.2/0.5 report-only sensitivity
+BOOTSTRAP_N = 10000          # D-02: percentile CI over per-song deltas (discretion: resample count)
+BOOTSTRAP_SEED = 0           # reproducible CI
+MERGE_TOL_S = 0.05           # eval tolerance: cluster-merge est times within this (same as match window)
+
+
 def print_config() -> None:
     """Log all config constants — used as first notebook cell per I1."""
     import sys
@@ -188,5 +198,13 @@ __all__: List[str] = [
     "EPOCH_CAP_HOURS",
     "EPOCH_CAP_FLOOR",
     "VAL_PRINT_EVERY",
+    # Salience gate (Phase 8: EVL-03/EVL-04)
+    "GATE_MARGIN",
+    "GATE_MIN_WINS",
+    "GATE_TOTAL_SONGS",
+    "REPORT_CUTS",
+    "BOOTSTRAP_N",
+    "BOOTSTRAP_SEED",
+    "MERGE_TOL_S",
     "print_config",
 ]

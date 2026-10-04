@@ -56,11 +56,11 @@ def reconstruct_ref_times(song_dir: Path) -> np.ndarray:
 
 
 def bucket_refs_by_salience(
-    ref_times: np.ndarray, oenv: np.ndarray, window_frames: int = 5
+    ref_times: np.ndarray, oenv: np.ndarray, window_frames: int = 5, cut_frac: float = 0.3
 ) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Rank-based top-30% salience split (SBOEP v1).
+    """Rank-based top-cut_frac salience split (SBOEP v1; default 0.3 gates, D-01).
 
-    Uses rank-based selection (exactly ceil(0.3*n) events) instead of
+    Uses rank-based selection (exactly ceil(cut_frac*n) events) instead of
     percentile threshold to avoid ties inflating the important bucket.
     Perplexity review found percentile ties as a protocol bug.
     """
@@ -81,8 +81,8 @@ def bucket_refs_by_salience(
         np.max(oenv[max(0, f - window_frames) : min(len(oenv), f + window_frames + 1)]) - local_avg[f]
         for f in frames
     ])
-    # Rank-based: exactly ceil(0.3*n) events, no ties inflation
-    n_important = int(np.ceil(0.3 * len(sal)))
+    # Rank-based: exactly ceil(cut_frac*n) events, no ties inflation
+    n_important = int(np.ceil(cut_frac * len(sal)))
     top_indices = np.argsort(sal)[-n_important:]
     mask = np.zeros(len(sal), dtype=bool)
     mask[top_indices] = True

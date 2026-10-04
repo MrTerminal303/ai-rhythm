@@ -411,6 +411,118 @@ push_now()  # always push at clean session end (D-10)
 print("\n=== Workflow complete ===")
 print("Phase 6 (shape+alignment) - Cell 10")
 print("Phase 7 (toy overfit gate) - Cell 11")
-print("Phase 8 (full training)    - Cell 11 → Cell 13")
+print("Phase 8 (full training+gate) - Cell 13 -> Cell 15")
 print("Phase 9 (ONNX export)      - after Phase 8")
 print("Phase 10 (JSON charts)     - after Phase 9")
+
+# %% ============================================================
+# CELL 15: Salience gate (Phase 8) — EVL-03 report + EVL-04 pass/fail (D-03 halt on fail)
+# =============================================================
+import json
+import os
+import librosa
+import numpy as np
+import torch
+from pathlib import Path
+
+from airhythm import config
+from airhythm.datasets import boundary_fraction, proximity_binned_recall
+from airhythm.model import AIRhythmCRNN
+from airhythm.pin_baseline import load_song_audio_sr, reconstruct_ref_times
+from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
+                                    stitch_envelope)
+
+# standalone (A1): re-derive context when CELL 13 was not pasted
+if "WORKING" not in globals():
+    WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
+if "DATA_ROOT" not in globals():
+    DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "spectrograms")))
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# D-16 frozen eval ids (metadata/eval_song_ids.json: song_ids/search_set_ids)
+_eval_meta = Path("metadata/eval_song_ids.json")
+if _eval_meta.exists():
+    _meta = json.load(open(_eval_meta))
+    EVAL_IDS = [int(x) for x in _meta["song_ids"]]
+    SEARCH_IDS = {int(x) for x in _meta.get("search_set_ids", [])}
+else:
+    EVAL_IDS = [2255671, 2256944, 2516285, 2527391, 2589624]
+    SEARCH_IDS = {2561773}
+
+# 1) best-val checkpoint ONLY (D-04: gate-time only + final best-val)
+best = sorted((WORKING / config.CHECKPOINTS_DIR).glob("best_*.pt"))
+assert best, "no best_*.pt — train first (CELL 13)"
+ckpt = torch.load(best[-1], map_location=DEVICE, weights_only=False)
+model = AIRhythmCRNN().to(DEVICE)
+model.load_state_dict(ckpt["model"])
+model.eval()
+print(f"gate checkpoint: {best[-1].name} epoch={ckpt['epoch']} stage={ckpt['stage']}")
+
+# 2) per-eval-song sliding-window envelope (hop = config.HOP_FRAMES = 200), sigmoid, stitch
+def _sliding_envelope(sdir):
+    spec_files = sorted(sdir.glob("[0-9][0-9][0-9][0-9].npy"))
+    spec = np.concatenate([np.load(p) for p in spec_files], axis=2)  # (1,128,T)
+    n_total = spec.shape[2]
+    windows = []
+    for start in range(0, max(1, n_total - config.N_FRAMES + 1), config.HOP_FRAMES):
+        chunk = (torch.tensor(spec[:, :, start:start + config.N_FRAMES])
+                 .float().unsqueeze(0).to(DEVICE))
+        with torch.no_grad():
+            sig = torch.sigmoid(model(chunk)).squeeze().cpu().numpy()  # (400,)
+        windows.append((start, sig))
+    return stitch_envelope(windows, n_total)
+
+song_evals = []
+for sid in EVAL_IDS:
+    sdir = DATA_ROOT / str(sid)
+    env = _sliding_envelope(sdir)
+    est_times, dedup = est_times_from_envelope(env)
+    audio, sr = load_song_audio_sr(sdir)
+    oenv = librosa.onset.onset_strength(y=audio, sr=sr, hop_length=config.HOP_LENGTH,
+                                        fmax=config.FMAX)
+    print(f"song {sid}: n_est={len(est_times)} dedup_ratio={dedup:.3f}")  # P6: dedup-ratio ~= 1.0
+    song_evals.append({
+        "song_id": sid,
+        "ref_times": reconstruct_ref_times(sdir),
+        "oenv": oenv,
+        "est_times": est_times,
+        "pred_positive_rate": float((env > 0.5).mean()),
+    })
+
+# 3) GATE (reads data/eval_pins.json via package default — never recomputes baseline, D-04)
+gate = run_salience_gate(song_evals)
+print("GATE:", "PASS" if gate["pass"] else "FAIL",
+      f"mean_F={gate['mean_F_important']:.4f} bar={gate['bar']:.4f} wins={gate['wins']}/5",
+      f"ci95={gate['ci_95']} fragile={gate['fragile']}")
+print("per-song deltas:", [round(v, 4) for v in gate["deltas"]])
+# D-03: ALL diagnostics printed above (per-song deltas, P/R per bucket, pred rates)
+assert gate["pass"], (
+    "GATE FAILED (D-03 kill condition) — debug order: "
+    "(1) label order alignment (2) pos_weight re-derivation (3) data. "
+    "See diagnostics above: per-song F deltas, P/R per bucket, pred rates.")
+print("Phase 8 EVL-04: PASS")
+
+# 4) boundary-fraction report (success criterion 5) + conditional D-05 tool
+excluded = set(EVAL_IDS) | SEARCH_IDS
+train_dirs = [d for d in sorted(DATA_ROOT.iterdir())
+              if d.is_dir() and d.name.isdigit() and int(d.name) not in excluded]
+fracs = {d.name: boundary_fraction(d) for d in train_dirs}
+mean_frac = float(np.mean(list(fracs.values())))
+print(f"boundary-fraction: mean={mean_frac:.4f} max={max(fracs.values()):.4f} songs={len(fracs)}")
+if mean_frac > config.BOUNDARY_FRACTION_MAX:
+    print("boundary mitigation required — running proximity-binned recall on best checkpoint")
+    # D-05 sizing: refs = stored onset labels, est = best-checkpoint inference (one train song)
+    d = train_dirs[0]
+    env = _sliding_envelope(d)
+    est_times, _ = est_times_from_envelope(env)
+    est_frames = np.round(np.asarray(est_times) * config.FPS).astype(int)
+    labels = np.concatenate([np.load(p) for p in sorted(d.glob("*_labels.npy"))], axis=1)
+    ref_frames = np.where(labels[1] == 1)[0]
+    pbr = proximity_binned_recall(ref_frames, est_frames)
+    print("proximity-binned recall:", pbr)
+    if pbr["degradation"]:
+        print("D-05 degradation: chunk edge REALLY hurts — context-margin mitigation justified")
+    else:
+        print("D-05: no edge degradation — mitigation not justified")
+else:
+    print("boundary-fraction OK — no mitigation needed")

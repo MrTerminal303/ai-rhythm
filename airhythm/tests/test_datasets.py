@@ -11,6 +11,7 @@ from airhythm import config
 from airhythm.datasets import (
     boundary_fraction,
     FixedChunkDataset,
+    proximity_binned_recall,
     RandomCropDataset,
     build_full_song_cache,
     split_song_ids,
@@ -184,3 +185,40 @@ class TestRandomCrop:
         import torch
 
         assert torch.equal(sa, sb) and torch.equal(la, lb)
+
+
+class TestProximityBins:
+    """D-05 mitigation-sizer: recall binned by distance-to-chunk-edge."""
+
+    @staticmethod
+    def _edge_dist(f, n_frames=400):
+        return min(f % n_frames, n_frames - (f % n_frames))
+
+    def test_identical_est_full_recall(self):
+        # refs at chunk edge (f=1..3), bin interiors, and center (f=190..210)
+        refs = [1, 2, 3, 60, 110] + list(range(190, 211))
+        out = proximity_binned_recall(refs, list(refs))
+        assert out["n_refs"] == [3, 1, 1, 21]  # 4 bins over [0, 200)
+        assert all(r == 1.0 for r in out["recall"])
+        assert out["degradation"] is False
+        assert out["edge_recall"] == 1.0
+
+    def test_edge_blind_model_degrades(self):
+        refs = [1, 2, 3] + list(range(190, 211))
+        est = [f for f in refs if self._edge_dist(f) >= 20]  # drop edge refs
+        out = proximity_binned_recall(refs, est)
+        assert out["recall"][0] == 0.0  # bin 0 saw all its refs dropped
+        assert out["worst_bin"] == 0
+        assert out["degradation"] is True
+
+    def test_empty_refs(self):
+        out = proximity_binned_recall([], [10, 20])
+        assert out["recall"] == [0.0, 0.0, 0.0, 0.0]
+        assert out["n_refs"] == [0, 0, 0, 0]
+        assert out["degradation"] is False
+
+    def test_n_refs_partition(self):
+        refs = list(range(1, 400, 7))  # spread across all bins
+        out = proximity_binned_recall(refs, refs)
+        assert sum(out["n_refs"]) == len(refs)
+        assert len(out["bin_edges"]) == 5

@@ -105,3 +105,15 @@ describe("renderer position rule (§2.8)", () => {
     expect(noteY(1000, 2000, 800, 0.5)).toBe(1300); // 1 s past → 800 − (−1000)·0.5 = 1300, below the hit line
   });
 });
+
+it("Review Focus #4: judging again never mutates an earlier snapshot", () => {
+  const { engine } = makeEngine(); // notes at 1000 (lane 0) and 2000 (lane 2)
+  engine.judge(0, 1000);           // snapshot A: note0 hit
+  const snapA = engine.snapshot();
+  const savedA = structuredClone(snapA);
+  engine.judge(2, 2000);           // snapshot B: note1 hit
+  const snapB = engine.snapshot();
+  expect(snapB).not.toBe(snapA);
+  expect(snapA).toEqual(savedA);       // old snapshot contents untouched
+  expect(engine.previousSnapshot()).toBe(snapA); // rotation order
+});

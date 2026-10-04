@@ -98,6 +98,12 @@ SIGMOID_THRESHOLD = 0.5      # gate AND tripwire use this ONE threshold (no drif
 MAX_EPOCHS = 200             # D-04 gate cap, no early stop
 N_TOY = 10                   # D-04 metronome_click count
 
+# Training (Phase 8: EVL-04 loop + EXP-02 stop rule)
+EARLY_STOP_PATIENCE = 10     # D-08: halt after 10 consecutive epochs of non-improving val loss
+EPOCH_CAP_HOURS = 45.0       # D-08: hard cap sized from 30-50h GPU budget (midpoint; discretion)
+EPOCH_CAP_FLOOR = 10         # never cap below 10 epochs even if epoch time is huge
+VAL_PRINT_EVERY = 1          # D-04: val frame-F printed every epoch — visibility only, never gates
+
 
 # Datasets (Phase 8: D-05/D-06/D-07)
 VAL_SPLIT_EVERY = 10    # D-07: every 10th sorted song ID -> val (~10%), song-level only
@@ -178,5 +184,9 @@ __all__: List[str] = [
     "VAL_SPLIT_EVERY",
     "BOUNDARY_K",
     "BOUNDARY_FRACTION_MAX",
+    "EARLY_STOP_PATIENCE",
+    "EPOCH_CAP_HOURS",
+    "EPOCH_CAP_FLOOR",
+    "VAL_PRINT_EVERY",
     "print_config",
 ]

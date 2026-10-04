@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import random
+import time
 from typing import Callable
 
 import torch
@@ -29,6 +30,10 @@ __all__ = [
     "load_checkpoint",
     "resume_smoke_test",
     "_smoke_impl",  # test hook for mutant (pre_epoch4_hook injection)
+    "median_epoch_time",
+    "epoch_cap",
+    "build_real_loaders",
+    "run_real_training",
 ]
 
 
@@ -446,3 +451,226 @@ def resume_smoke_test(*, device="cpu", tolerance: float = 1e-6) -> dict:
     Returns {"pass": bool, "loss_4_fresh": ..., "loss_4_resumed": ..., "lr_next": ...}.
     Raises nothing — caller prints PASS/FAIL (notebook greps 'resume smoke')."""
     return _smoke_impl(device=device, tolerance=tolerance)
+
+
+def median_epoch_time(epoch_times: list[float]) -> float:
+    """D-10: median wall-clock of epochs 2..4 (discard epoch 1 warm-up).
+    If len<2, return last element or raise ValueError on empty.
+    Used to size the epoch cap and the ~30min push interval."""
+    if len(epoch_times) == 0:
+        raise ValueError("empty epoch_times list")
+    if len(epoch_times) == 1:
+        return epoch_times[0]
+    # Discard epoch 1 (warm-up), take median of remaining
+    return sorted(epoch_times[1:])[len(epoch_times[1:]) // 2]
+
+
+def epoch_cap(measured_epoch_h: float, budget_h: float = config.EPOCH_CAP_HOURS) -> int:
+    """D-08/RESEARCH Open Q1: cap = max(EPOCH_CAP_FLOOR, floor(budget_h / measured_epoch_h))."""
+    return max(config.EPOCH_CAP_FLOOR, int(budget_h / measured_epoch_h))
+
+
+def build_real_loaders(all_song_dirs, *, eval_ids, search_id, device=None,
+                       batch_size: int = 8, crops_per_song: int = 1, seed: int = 0) -> tuple:
+    """D-05/D-06/D-07 wiring: ids = [int(dir.name) for dir in all_song_dirs]
+    train_ids, val_ids, excluded = split_song_ids(ids, eval_ids, search_id)
+    train_ds = RandomCropDataset([dirs[s] for s in train_ids], rng=random.Random(seed))
+    val_ds   = FixedChunkDataset([dirs[s] for s in val_ids])
+    Returns (train DataLoader (shuffle=True, drop_last=True), val DataLoader
+    (no shuffle), info dict with train_ids/val_ids/excluded).
+    MUST print `corpus: train={n} val={n} excluded={excluded}` — excluded line is
+    the audit trail that the 5 eval + 1 search IDs are OUT (Pitfall 6)."""
+    from torch.utils.data import DataLoader
+
+    from airhythm.datasets import RandomCropDataset, FixedChunkDataset, split_song_ids
+
+    ids = [int(d.name) for d in all_song_dirs]
+    dir_by_id = {int(d.name): d for d in all_song_dirs}
+    train_ids, val_ids, excluded = split_song_ids(ids, eval_ids, search_id)
+    train_ds = RandomCropDataset([dir_by_id[s] for s in train_ids],
+                                 crops_per_song=crops_per_song, rng=random.Random(seed))
+    val_ds = FixedChunkDataset([dir_by_id[s] for s in val_ids])
+    train_loader = DataLoader(train_ds, batch_size, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size, shuffle=False)
+    print(f"corpus: train={len(train_ids)} val={len(val_ids)} excluded={excluded}")
+    return train_loader, val_loader, {"train_ids": train_ids, "val_ids": val_ids, "excluded": excluded}
+
+
+def run_real_training(train_data, val_data, *, pos_weight: float, device,
+                      ckpt_dir, stage: str = "phase8_real", max_epochs: int | None = None,
+                      patience: int = config.EARLY_STOP_PATIENCE,
+                      save_every_epoch: bool = True,
+                      _val_fn=None) -> dict:
+    """Phase 8 loop (package owns loop - notebook only chains it).
+
+    Per epoch:
+      1. train_loss = train_epoch(model, train_data, criterion, optimizer, device)
+         # BCEWithLogitsLoss(pos_weight tensor on device)
+      2. val_loss, val_frame_f = eval loop on val_data
+         # no_grad; sigmoid > SIGMOID_THRESHOLD -> evaluate_gate
+      3. history append (pred_rate, true_rate) from predicted_positive_rate on val_data;
+         halted, run = tripwire_breached(history) — if halted: stop, reason="tripwire"
+      4. scheduler.step(val_loss)
+      5. save_checkpoint(f"{ckpt_dir}/latest_{stage}.pt", ...,
+         epoch, global_step, val_metric=val_loss, stage, pos_weight)
+         AND if val_loss < best_val: save_checkpoint(f"{ckpt_dir}/best_{stage}.pt", ...)
+            (prune patterns!)
+      6. early stop: if val_loss failed to improve for `patience` epochs: stop, reason="early_stop"
+      7. if max_epochs reached: stop, reason="max_epochs"
+
+    val frame-F is COMPUTED and included in the returned history (D-04 print-only)
+    but NEVER selects best, NEVER stops training, NEVER gates (Pitfall 5).
+
+    The optional `_val_fn` parameter allows test injection of val_loss sequence.
+    When provided, it should return a float val_loss for each call.
+    When None (default), computes val_loss from the val_data.
+
+    Returns {"history": [{"epoch", "train_loss", "val_loss", "val_frame_f", "pred_rate"}...],
+             "best_epoch", "best_val_loss", "stopped_reason", "epoch_times", "global_step"}.
+    max_epochs=None means run until early stop/tripwire (caller passes epoch_cap(...) on Kaggle)."""
+    import os
+
+    from airhythm.train import train_epoch, save_checkpoint
+
+    criterion = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([pos_weight], dtype=torch.float32, device=device)
+    )
+
+    from airhythm.model import AIRhythmCRNN
+    model = AIRhythmCRNN()
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min",
+        patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
+    )
+
+    best_val = float("inf")
+    best_epoch = 0
+    history = []
+    epoch_times = []
+    global_step = 0
+    halted = False
+    halt_reason = None
+    no_improve_count = 0
+
+    for epoch in range(1, max_epochs + 1):
+        epoch_start = time.time()
+
+        # 1. train
+        train_loss = train_epoch(model, train_data, criterion, optimizer, device=device)
+
+        # 2. val eval
+        # Use injected val_fn if provided, otherwise compute from data
+        if _val_fn is not None:
+            val_loss = float(_val_fn())
+            # Still need val_frame_f for history
+            model.eval()
+            with torch.no_grad():
+                all_preds, all_targets = [], []
+                for mel, label in val_data[:1] if val_data else []:
+                    out = model(mel.to(device))
+                    pred = (torch.sigmoid(out) > config.SIGMOID_THRESHOLD).float()
+                    all_preds.append(pred.reshape(-1))
+                    all_targets.append(label.to(device).reshape(-1))
+                model.train()
+            if all_preds and all_targets:
+                cat_preds = torch.cat(all_preds)
+                cat_targets = torch.cat(all_targets)
+                _, val_frame_f, _ = evaluate_gate(cat_preds, cat_targets)
+            else:
+                val_frame_f = 0.0
+        else:
+            # Compute val from actual data
+            model.eval()
+            with torch.no_grad():
+                all_preds, all_targets = [], []
+                val_loss_accum = 0.0
+                for mel, label in val_data:
+                    out = model(mel.to(device))
+                    loss = criterion(out, label.to(device).float().unsqueeze(-1))
+                    val_loss_accum += loss.item()
+                    pred = (torch.sigmoid(out) > config.SIGMOID_THRESHOLD).float()
+                    all_preds.append(pred.reshape(-1))
+                    all_targets.append(label.to(device).reshape(-1))
+                model.train()
+
+            n_val = len(val_data)
+            val_loss = val_loss_accum / n_val if n_val > 0 else 0.0
+
+            if all_preds and all_targets:
+                cat_preds = torch.cat(all_preds)
+                cat_targets = torch.cat(all_targets)
+                _, val_frame_f, _ = evaluate_gate(cat_preds, cat_targets)
+            else:
+                val_frame_f = 0.0
+
+        # 3. pred_rate and tripwire
+        pred_rate = predicted_positive_rate(model, val_data, device=device)
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_frame_f": val_frame_f,
+            "pred_rate": pred_rate,
+            "true_rate": float(torch.stack([y for y in all_targets]).mean()) if all_targets else 0.0,
+        })
+
+        # tripwire check
+        if len(history) >= config.TRIPWIRE_GRACE_EPOCHS + 1:
+            tripwire_history = [
+                (h["pred_rate"], h["true_rate"]) for h in history
+            ]
+            halted, run = tripwire_breached(
+                tripwire_history,
+                grace=config.TRIPWIRE_GRACE_EPOCHS,
+                consecutive=config.TRIPWIRE_BREACH_N,
+            )
+            if halted:
+                halted = True
+                halt_reason = f"tripwire: {run} consecutive breaches"
+                break
+
+        # 4. scheduler step
+        scheduler.step(val_loss)
+
+        # 5. save checkpoints
+        latest_path = os.path.join(ckpt_dir, f"latest_{stage}.pt")
+        state = save_checkpoint(
+            latest_path, model=model, optimizer=optimizer, scheduler=scheduler,
+            epoch=epoch, global_step=global_step, val_metric=val_loss, stage=stage, pos_weight=pos_weight,
+        )
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_epoch = epoch
+            best_path = os.path.join(ckpt_dir, f"best_{stage}.pt")
+            save_checkpoint(
+                best_path, model=model, optimizer=optimizer, scheduler=scheduler,
+                epoch=epoch, global_step=global_step, val_metric=val_loss, stage=stage, pos_weight=pos_weight,
+            )
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
+
+        # 6. early stop check
+        if no_improve_count >= patience:
+            halted = True
+            halt_reason = "early_stop"
+            break
+
+        epoch_end = time.time()
+        epoch_dur = epoch_end - epoch_start
+        epoch_times.append(epoch_dur)
+        global_step += len(train_data)
+
+    return {
+        "history": history,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val,
+        "stopped_reason": halt_reason or ("max_epochs" if epoch >= max_epochs else "early_stop"),
+        "epoch_times": epoch_times,
+        "global_step": global_step,
+    }

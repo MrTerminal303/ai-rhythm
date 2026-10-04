@@ -9,4 +9,33 @@ One line per decision: `D# — date — decision — why`.
 - D5 — 2026-10-03 — Node 22+ required repo-wide (`engines` in workspace root; CI already pins 22). Smoke script uses the native global `WebSocket` client (stable since Node 21/22) — **no `ws` dependency**.
 - D6 — 2026-10-03 — `/health` 60 s cache = in-module TTL state (a single `{ expires }` object, not a `Map` — one entry needs no key space), lightweight per spec §2.10, not the Cache API. — simplest thing that satisfies "lightweight cached health"; isolate-local is acceptable for a health probe.
 - D7 — 2026-10-03 — W1 does not create/wire Supabase (spec §2.13); the Supabase project is an environment prerequisite only.
-- D8 — 2026-10-03 — `packageManager` pinned to `pnpm@12.8.1+sha512.f64ba907507f5ceafe06c8d38e6052d0179444580ec1279ddd5bfc11cb48aa8a2644b66598e07e761da84872a9fc57d5f902b87fa49d024198d558612aabbe45` (resolved by `corepack use pnpm@latest` on 2026-10-03); grouped justification for the PLAN §5.1 stack-sanctioned deps added to `@airhythm/shared` — `zod`, `typescript`, `vitest` (caret ranges for now). — later machines install that exact pnpm via corepack, not "latest", and the three deps are the sanctioned shared-package stack (schema validation, strict typecheck, unit tests); A5.5's exactness sweep later strips manifests to exact versions and expands this entry into the full version record, merging (never deleting) the justification.
+- D8 — 2026-10-03 (full version table resolved 2026-10-04) — **Dependency freeze**: every registry dependency in the workspace is pinned to an exact version (no `^`, `~`, `@latest`); `packageManager` pinned to `pnpm@12.8.1+sha512.f64ba907507f5ceafe06c8d38e6052d0179444580ec1279ddd5bfc11cb48aa8a2644b66598e07e761da84872a9fc57d5f902b87fa49d024198d558612aabbe45` (resolved by `corepack use pnpm@latest` on 2026-10-03); grouped justification for the PLAN §5.1 stack-sanctioned deps: `@airhythm/shared` — `zod`, `typescript`, `vitest` — is the sanctioned shared-package stack (schema validation, strict typecheck, unit tests); dependency build scripts approved via `allowBuilds` in `pnpm-workspace.yaml` (`esbuild`, `workerd` — only what the workspace needs, no blanket allow). — later machines install that exact pnpm via corepack, not "latest"; this entry is the version record for the freeze — after A5.5 no task may add, remove, or change any dependency version (B6 runs `playwright install chromium` only, never `pnpm add`).
+
+  | Scope | Package | Exact version |
+  | --- | --- | --- |
+  | pnpm | `packageManager` (pnpm) | 12.8.1 (sha512 pin in root `package.json`) |
+  | shared | zod | 4.6.5 |
+  | shared | typescript | 7.0.2 |
+  | shared | vitest | 5.0.3 |
+  | web | next | 15.5.27 |
+  | web | react (peer pair) | 19.3.0 |
+  | web | react-dom (peer pair) | 19.3.0 |
+  | web | tailwindcss | 4.3.3 |
+  | web | @tailwindcss/postcss | 4.3.3 |
+  | web | postcss | 8.5.28 |
+  | web | @types/node | 26.6.4 |
+  | web | @types/react | 19.3.0 |
+  | web | @types/react-dom | 19.3.0 |
+  | web | vitest | 5.0.3 |
+  | web | jsdom | 30.1.1 |
+  | web | @testing-library/react | 16.3.3 |
+  | web | @testing-library/dom | 10.4.2 |
+  | web | typescript | 6.0.3 |
+  | worker | wrangler | 4.147.0 |
+  | worker | @cloudflare/workers-types | 5.20261003.1 |
+  | worker | vitest | 5.0.3 |
+  | worker | typescript | 7.0.2 |
+  | tooling | @playwright/test | 1.63.0 (in-plan pin, exact from the start) |
+  | tooling | vercel | 62.2.0 |
+
+  **EOL caveat:** Next 15 reaches EOL **2026-10-21** — accepted risk for W1 only. **W2+ must upgrade to Next 16** (required; do not drop this line when planning W2).

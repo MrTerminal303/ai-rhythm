@@ -1,0 +1,27 @@
+name: web-game-ci
+
+on:
+  push:
+    paths: ["web_app/game/**", ".github/workflows/web-game-ci.yml"]
+  pull_request:
+    paths: ["web_app/game/**", ".github/workflows/web-game-ci.yml"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web_app/game
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web_app/game/package.json # packageManager pin lives in the nested workspace root, NOT the repo root (A1 Step 2)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web_app/game/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test

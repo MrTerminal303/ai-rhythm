@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0c10;
+  --surface: #12151c;
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #e8ecf2;
+  --text-dim: rgba(232, 236, 242, 0.55);
+  --you: #5ce1e6;
+  --opp: #ff5c93;
+  --warn: #ffc857;
+  --energy: #9b8cff;
+  --judge-perfect: #ffffff;
+  --judge-great: #5ce1e6;
+  --judge-good: #8aa0ff;
+  --judge-miss: #ff5c5c;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}

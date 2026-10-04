@@ -155,7 +155,12 @@ def train_epoch(model, data, criterion, optimizer, *, device) -> float:
     """TRN-02 hand-written step (D-05), BATCHED. Order: forward -> loss ->
     finite check -> zero_grad -> backward -> clip -> step."""
     mels = torch.cat([m for m, _ in data], 0).to(device)
-    targets = torch.stack([y for _, y in data], 0).unsqueeze(-1).to(device)
+    ys = [y for _, y in data]
+    # list items are label (400,) -> stack; DataLoader batches (B,400) -> cat.
+    # stack on batches makes (n,B,400,1) vs out (ΣB,400,1); cat on items
+    # flattens to (N*400,). Both paths must yield (B_total,400,1).
+    targets = (torch.stack(ys, 0) if ys[0].dim() == 1 else torch.cat(ys, 0)
+               ).unsqueeze(-1).to(device)
     assert targets.dtype == torch.float32
     model.train()
     out = model(mels)
@@ -490,8 +495,17 @@ def build_real_loaders(all_song_dirs, *, eval_ids, search_id, device=None,
     train_ds = RandomCropDataset([dir_by_id[s] for s in train_ids],
                                  crops_per_song=crops_per_song, rng=random.Random(seed))
     val_ds = FixedChunkDataset([dir_by_id[s] for s in val_ids])
-    train_loader = DataLoader(train_ds, batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size, shuffle=False)
+
+    def _onset_collate(batch):
+        # D-05 items carry labels (3,400) = active/onset/count; the onset head
+        # consumes row 1 only — same rule as boundary_fraction/reconstruct_ref_times.
+        return (torch.stack([m for m, _ in batch]),
+                torch.stack([y[1] for _, y in batch]))
+
+    train_loader = DataLoader(train_ds, batch_size, shuffle=True, drop_last=True,
+                              collate_fn=_onset_collate)
+    val_loader = DataLoader(val_ds, batch_size, shuffle=False,
+                            collate_fn=_onset_collate)
     print(f"corpus: train={len(train_ids)} val={len(val_ids)} excluded={excluded}")
     return train_loader, val_loader, {"train_ids": train_ids, "val_ids": val_ids, "excluded": excluded}
 
@@ -615,7 +629,7 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
             "val_loss": val_loss,
             "val_frame_f": val_frame_f,
             "pred_rate": pred_rate,
-            "true_rate": float(torch.stack([y for y in all_targets]).mean()) if all_targets else 0.0,
+            "true_rate": float(torch.cat(all_targets).mean()) if all_targets else 0.0,
         })
 
         # tripwire check

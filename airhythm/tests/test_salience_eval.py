@@ -190,11 +190,11 @@ class TestStitch:
         from airhythm.salience_eval import stitch_envelope
 
         w = [(0, np.full(400, 0.5)), (200, np.full(400, 0.9))]
-        out = stitch_envelope(w, n_total=500)
-        assert out.shape == (500,)
+        out = stitch_envelope(w, n_total=700)
+        assert out.shape == (700,)
         assert np.all(out[:200] == 0.5)
-        assert np.all(out[200:400] == 0.9)  # overlap = element-wise max
-        assert np.all(out[400:] == 0.0)      # uncovered tail
+        assert np.all(out[200:600] == 0.9)  # overlap = element-wise max
+        assert np.all(out[600:] == 0.0)      # uncovered tail
 
 
 class TestGateMath:
@@ -244,7 +244,7 @@ class TestGateMath:
 
     def test_boundary_mean_equals_bar_fails(self, tmp_path):
         """mean == bar -> strict > fails."""
-        kinds = ["f10", "f5", "f5", "f5", "f25"]  # mean = (1+.5+.5+.5+.25)/5 = 0.51
+        kinds = ["f10", "f5", "f5", "f5", "f05"]  # mean = (1+.5+.5+.5+.05)/5 = 0.51
         songs = [_song(i, k) for i, k in enumerate(kinds)]
         pin = _write_pin(tmp_path, 0.50, [0.4, 0.4, 0.4, 0.4, 0.9])
         from airhythm.salience_eval import run_salience_gate

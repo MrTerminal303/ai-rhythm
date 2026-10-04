@@ -1,5 +1,5 @@
 import type { Beatmap } from "@airhythm/shared";
-import { accuracyFraction, scoreFromWeights, JUDGE_WINDOWS } from "@airhythm/shared";
+import { accuracyFraction, scoreFromWeights, grade, SCORE_WEIGHTS, JUDGE_WINDOWS } from "@airhythm/shared";
 import type { GameClock } from "./clock.js";
 import type { GameSnapshot, JudgementEvent, NoteState, Renderer } from "./types.js";
 
@@ -38,7 +38,38 @@ export class GameEngine {
     this.prev = this.current;
   }
 
-  // B3 adds judge(lane, chartTimeMs) here — spec §2.3 pipeline
+  judge(lane: number, chartTimeMs: number): void {
+    if (this.frozen) throw new Error("engine frozen"); // contract defined here; unreachable until B5 activates freeze (tested in B5)
+    const events = this.markExpiredPendingNotes(chartTimeMs);
+
+    let bestIdx = -1;
+    let bestAbs = Infinity;
+    for (const [i, note] of this.chart.notes.entries()) {
+      if (note.lane !== lane || this.states[i] !== "pending") continue;
+      const abs = Math.abs(chartTimeMs - note.t);
+      if (abs > JUDGE_WINDOWS.good) continue; // same bound as AUTO_MISS_MS — both derive from JUDGE_WINDOWS.good
+      const tie = bestIdx !== -1 && note.id < this.chart.notes[bestIdx]!.id;
+      if (abs < bestAbs || (abs === bestAbs && tie)) {
+        bestAbs = abs;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx !== -1) {
+      const note = this.chart.notes[bestIdx]!;
+      const dt = chartTimeMs - note.t;
+      const g = grade(dt);
+      this.states[bestIdx] = "hit";
+      this.combo += 1;
+      this.sumWeights += SCORE_WEIGHTS[g];
+      events.push({ type: "hit", grade: g, lane, dt, noteId: note.id });
+    }
+
+    // emit immediately at keydown: rotation prev ← current ← new
+    const next = this.emit(chartTimeMs, events);
+    this.prev = this.current;
+    this.current = next;
+  }
 
   update(): GameSnapshot {
     const chartTime = this.clock.chartTimeMs();

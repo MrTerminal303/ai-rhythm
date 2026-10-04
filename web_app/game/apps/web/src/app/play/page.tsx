@@ -6,6 +6,7 @@ import benchChart from "../../../fixtures/w1-benchmark-chart.json";
 import { parseBeatmap } from "@airhythm/shared";
 import { GameEngine } from "../../engine/engine.js";
 import { PerformanceClock } from "../../engine/clock.js";
+import { createKeyHandler } from "../../engine/controller.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 
 export default function PlayPage() {
@@ -24,6 +25,8 @@ export default function PlayPage() {
     canvas.dataset.webglReady = "true";
     const engine = new GameEngine({ chart, clock, renderer });
     clock.start(0);
+    const onKey = createKeyHandler({ clock, engine });
+    window.addEventListener("keydown", onKey);
 
     let raf = 0;
     const frame = () => {
@@ -37,6 +40,7 @@ export default function PlayPage() {
     window.addEventListener("resize", onResize);
     return () => {
       cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", onResize);
       renderer.dispose(); // release GL program/buffer (Strict Mode double-mount would leak them)
     };

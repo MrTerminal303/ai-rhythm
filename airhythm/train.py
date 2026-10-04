@@ -514,6 +514,10 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
                       ckpt_dir, stage: str = "phase8_real", max_epochs: int | None = None,
                       patience: int = config.EARLY_STOP_PATIENCE,
                       save_every_epoch: bool = True,
+                      start_epoch: int = 0, global_step: int = 0,
+                      model=None, optimizer=None, scheduler=None,
+                      best_val: float | None = None,
+                      on_epoch_end=None,
                       _val_fn=None) -> dict:
     """Phase 8 loop (package owns loop - notebook only chains it).
 
@@ -541,7 +545,13 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
 
     Returns {"history": [{"epoch", "train_loss", "val_loss", "val_frame_f", "pred_rate"}...],
              "best_epoch", "best_val_loss", "stopped_reason", "epoch_times", "global_step"}.
-    max_epochs=None means run until early stop/tripwire (caller passes epoch_cap(...) on Kaggle)."""
+    max_epochs=None means run until early stop/tripwire (caller passes epoch_cap(...) on Kaggle).
+
+    Resume extension (08-06, D-11): start_epoch/global_step seed numbering from a loaded
+    ckpt (history starts empty); model/optimizer/scheduler accept the caller's loaded
+    objects (None = build fresh, zero behavior change); best_val seeds from the ckpt's
+    val_metric; on_epoch_end(epoch, epoch_times) fires after each epoch (push cadence,
+    D-10) when provided."""
     import os
 
     from airhythm.train import train_epoch, save_checkpoint
@@ -551,26 +561,32 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
     )
 
     from airhythm.model import AIRhythmCRNN
-    model = AIRhythmCRNN()
+    if model is None:
+        model = AIRhythmCRNN()
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min",
-        patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
-    )
+    if optimizer is None:
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD
+        )
+    if scheduler is None:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min",
+            patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
+        )
 
-    best_val = float("inf")
-    best_epoch = 0
+    best_val = float("inf") if best_val is None else float(best_val)
+    best_epoch = start_epoch if best_val != float("inf") else 0
     history = []
     epoch_times = []
-    global_step = 0
     halted = False
     halt_reason = None
     no_improve_count = 0
 
-    for epoch in range(1, max_epochs + 1):
+    # while (not for): max_epochs=None means run until early stop/tripwire (D-08);
+    # epoch numbering continues from start_epoch on resume (08-06).
+    epoch = start_epoch
+    while max_epochs is None or epoch < max_epochs:
+        epoch += 1
         epoch_start = time.time()
 
         # 1. train
@@ -679,12 +695,17 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         epoch_dur = epoch_end - epoch_start
         epoch_times.append(epoch_dur)
         global_step += len(train_data)
+        if on_epoch_end is not None:
+            on_epoch_end(epoch, epoch_times)
 
     return {
         "history": history,
         "best_epoch": best_epoch,
         "best_val_loss": best_val,
-        "stopped_reason": halt_reason or ("max_epochs" if epoch >= max_epochs else "early_stop"),
+        "stopped_reason": halt_reason or (
+            "max_epochs" if (max_epochs is not None and epoch >= max_epochs)
+            else "early_stop"
+        ),
         "epoch_times": epoch_times,
         "global_step": global_step,
     }

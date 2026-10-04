@@ -521,3 +521,43 @@ class TestRealLoaderLoop:
         assert torch.isfinite(torch.tensor(out["history"][0]["train_loss"]))
         assert torch.isfinite(torch.tensor(out["history"][0]["val_loss"]))
         assert (tmp_path / "latest_phase8_real.pt").exists()
+
+class TestResumeContinuation:
+    """08-06 (D-11): run_real_training resume extension — start_epoch/global_step seed,
+    caller-supplied model/optimizer/scheduler, best_val from ckpt, on_epoch_end hook."""
+
+    def test_continued_run_advances_global_step(self, tmp_path):
+        from airhythm.model import AIRhythmCRNN
+
+        device = torch.device("cpu")
+        dirs = sorted(p for p in Path("data/minimal_dataset").iterdir() if p.is_dir())
+        train_loader, val_loader, _ = build_real_loaders(
+            dirs, eval_ids=[2255671, 2256944, 2516285, 2527391, 2589624],
+            search_id=2561773, batch_size=4)
+        out1 = run_real_training(
+            train_loader, val_loader, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=1, patience=5)
+        assert out1["stopped_reason"] == "max_epochs"
+
+        # resume: load local ckpt (D-11) into fresh objects, continue numbering
+        model = AIRhythmCRNN()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR,
+                                      weight_decay=config.TRAIN_WD)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", patience=config.SCHED_PATIENCE,
+            factor=config.SCHED_FACTOR)
+        ckpt = load_checkpoint(str(tmp_path / "latest_phase8_real.pt"),
+                               model=model, optimizer=optimizer,
+                               scheduler=scheduler, device=device)
+        seen_epochs = []
+        out2 = run_real_training(
+            train_loader, val_loader, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=2, patience=5,
+            start_epoch=ckpt["epoch"], global_step=ckpt["global_step"],
+            model=model, optimizer=optimizer, scheduler=scheduler,
+            best_val=ckpt["val_metric"],
+            on_epoch_end=lambda e, times: seen_epochs.append(e))
+        assert out2["history"][0]["epoch"] == ckpt["epoch"] + 1
+        assert out2["global_step"] > ckpt["global_step"]
+        assert out2["stopped_reason"] == "max_epochs"
+        assert seen_epochs == [ckpt["epoch"] + 1]

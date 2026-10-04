@@ -305,53 +305,108 @@ if "show_storage" in globals():  # CELL 2 optional — Phase 7 paste-set is CELL
 
 
 # %% ============================================================
-# CELL 13: Full training loop skeleton (Phase 8 - real songs)
+# CELL 13: Full training (Phase 8) — resume (D-11) -> train (D-08) -> time push (D-10)
 # =============================================================
-# This is the skeleton for full training. Fill in with real data
-# after toy gate passes.
-#
-# from torch.utils.data import DataLoader, Dataset
-#
-# class SongChunks(Dataset):
-#     """Load preprocessed .npy spectrogram chunks + labels."""
-#     def __init__(self, data_dir):
-#         self.chunks = []  # list of (spec_path, label_path)
-#         # Scan data_dir for *.npy files...
-#
-#     def __len__(self):
-#         return len(self.chunks)
-#
-#     def __getitem__(self, idx):
-#         spec = np.load(self.chunks[idx][0])
-#         label = np.load(self.chunks[idx][1])
-#         return torch.tensor(spec).float(), torch.tensor(label).float()
-#
-# train_loader = DataLoader(SongChunks(DATA_DIR), batch_size=16, shuffle=True)
-#
-# # Compute pos_weight from dataset (onset rate ~2-5%)
-# # pos_weight = n_neg / n_pos  (expect ~20-50x)
-#
-# # Training loop with:
-# #   - BCEWithLogitsLoss(pos_weight=...)
-# #   - AdamW(lr=1e-3, wd=1e-4)
-# #   - ReduceLROnPlateau(patience=3, factor=0.5)
-# #   - Grad clip 1.0
-# #   - Time-based checkpoint every 30min
-#
-print("Phase 8 training skeleton - implement after toy gate passes")
+import json
+import os
+import subprocess
+import time
+import torch
+from pathlib import Path
+
+from airhythm import config
+from airhythm.kaggle_push import prune_old_checkpoints
+from airhythm.model import AIRhythmCRNN
+from airhythm.train import (build_real_loaders, epoch_cap, load_checkpoint,
+                            median_epoch_time, resume_smoke_test, run_real_training)
+
+WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
+CKPT_DIR = WORKING / config.CHECKPOINTS_DIR
+CKPT_DIR.mkdir(exist_ok=True)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+POS_WEIGHT = 36.4  # Phase 7 logged seed (CELL 11 output: pos_weight raw=36.4 final=36.4)
+
+# D-16 frozen eval ids — read metadata/eval_song_ids.json when present (song_ids/search_set_ids)
+_eval_meta = Path("metadata/eval_song_ids.json")
+if _eval_meta.exists():
+    _meta = json.load(open(_eval_meta))
+    EVAL_IDS = [int(x) for x in _meta["song_ids"]]
+    SEARCH_ID = int(_meta["search_set_ids"][0])
+else:
+    EVAL_IDS = [2255671, 2256944, 2516285, 2527391, 2589624]
+    SEARCH_ID = 2561773
+
+# --- preflight: local resume smoke (CPU, ~seconds) before any GPU minute
+smoke = resume_smoke_test(device="cpu")
+print("resume smoke:", "PASS" if smoke["pass"] else "FAIL", smoke)
+assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02 criterion 4)"
+
+# --- corpus (prints 'corpus: train=... excluded=...' audit line)
+DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "spectrograms")))
+song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
+train_loader, val_loader, info = build_real_loaders(
+    song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID)
+assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
+
+# --- resume (D-11): user manually web-downloads latest_*.pt into CKPT_DIR (CLI pull NOT used)
+model = AIRhythmCRNN().to(DEVICE)
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR)
+start_epoch, global_step, resume_val = 0, 0, None
+resume_candidates = sorted(CKPT_DIR.glob("latest_*.pt"))
+if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 assert)
+    ckpt = load_checkpoint(str(resume_candidates[-1]), model=model, optimizer=optimizer,
+                           scheduler=scheduler, device=DEVICE)
+    start_epoch, global_step = ckpt["epoch"], ckpt["global_step"]
+    resume_val = ckpt.get("val_metric")
+    assert ckpt["stage"].startswith("phase8"), f"wrong-stage checkpoint: {ckpt['stage']}"
+    print(f"RESUMED at epoch={start_epoch} global_step={global_step}")
+else:
+    print("no local checkpoint — fresh start")
+
+# --- time-based checkpoint push (D-09: 1 latest + 1 best; D-10: ~30min cadence)
+PUSH_INTERVAL_S = 1800  # PLAN.md default ~30min
+_last_push = {"t": time.time()}
+
+def push_now():
+    prune_old_checkpoints(str(CKPT_DIR), keep_latest=1, keep_best=1)  # D-09: 1 latest + 1 best
+    # CLI push: kaggle datasets version -m "<msg>" (overwrites — can't go stale, D-10)
+    subprocess.run(["kaggle", "datasets", "version", "-m",
+                    f"phase8 checkpoint {time.strftime('%Y-%m-%d %H:%M')}"],
+                   check=False)
+
+def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
+    if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
+        _last_push["t"] = time.time()
+        push_now()
+        print(f"pushed at epoch={epoch} (D-10 {PUSH_INTERVAL_S // 60}min cadence)")
+
+# --- train (D-08): fresh session epoch cap from measured time; resume runs until stop
+result = run_real_training(
+    train_loader, val_loader, pos_weight=POS_WEIGHT, device=DEVICE,
+    ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
+    start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
+    max_epochs=epoch_cap(median_epoch_time([600.0])) if start_epoch == 0 else None,
+    on_epoch_end=maybe_push)
+print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
+
+# D-10: recompute display after run (median epoch times, epoch-1 warm-up discarded)
+if len(result["epoch_times"]) >= 2:
+    print(f"push cadence checked at epoch {start_epoch + len(result['epoch_times'])}: "
+          f"median_epoch_h={median_epoch_time(result['epoch_times']):.3f}")
+push_now()  # always push at clean session end (D-10)
 
 
 # %% ============================================================
 # CELL 14: Push to Kaggle Dataset (end of session)
 # =============================================================
-# Only run at END of training session to persist data.
-# Requires kagglehub: pip install kagglehub
+# D-10 session-end push — CLI only (D-11: resume pull is a manual Kaggle web download).
+# CELL 13's push_now() already does both; standalone fallback:
 #
-# from airhythm.kaggle_push import push_dataset, build_manifest
-# build_manifest(f"{DATA_DIR}/../metadata", base_dir=str(WORKING / "data"))
-# ok = push_dataset(local_dir=str(WORKING / "data"),
-#                    version_notes="Phase 7 - toy overfit gate passed")
-# print(f"Push {'succeeded' if ok else 'failed'}")
+# from airhythm.kaggle_push import prune_old_checkpoints
+# prune_old_checkpoints(str(WORKING / config.CHECKPOINTS_DIR), keep_latest=1, keep_best=1)
+# subprocess.run(["kaggle", "datasets", "version", "-m", "phase8 session end"])
 
 print("\n=== Workflow complete ===")
 print("Phase 6 (shape+alignment) - Cell 10")

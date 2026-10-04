@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from pathlib import Path
 
 import pytest
 import torch
@@ -9,12 +10,16 @@ import torch.nn as nn
 from airhythm import config
 from airhythm.train import (
     build_metronome_data,
+    build_real_loaders,
     compute_pos_weight_candidate,
+    epoch_cap,
     evaluate_gate,
     load_checkpoint,
+    median_epoch_time,
     predicted_positive_rate,
     rate_breach,
     resume_smoke_test,
+    run_real_training,
     run_toy_overfit_gate,
     run_training_slice,
     save_checkpoint,
@@ -312,3 +317,187 @@ class TestResumeSmoke:
         t0 = time.monotonic()
         resume_smoke_test()
         assert time.monotonic() - t0 < 30.0
+
+
+class TestEarlyStop:
+    """D-08: early stop after `patience` consecutive non-improving val losses."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, losses, *, max_epochs, patience):
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
+        seq = iter(losses)
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(2, device=device)
+        return run_real_training(
+            data, data[:1], pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=max_epochs, patience=patience,
+            _val_fn=lambda: next(seq),
+        )
+
+    def test_halts_after_patience_non_improving(self, tmp_path, monkeypatch):
+        out = self._run(tmp_path, monkeypatch,
+                        [1.0, 0.9, 0.9, 0.9, 0.9],
+                        max_epochs=10, patience=3)
+        assert out["stopped_reason"] == "early_stop"
+        assert len(out["history"]) == 5
+        assert out["best_epoch"] == 2
+
+    def test_improving_never_early_stops(self, tmp_path, monkeypatch):
+        out = self._run(tmp_path, monkeypatch,
+                        [1.0, 0.9, 0.8, 0.7, 0.6],
+                        max_epochs=5, patience=3)
+        assert out["stopped_reason"] == "max_epochs"
+        assert len(out["history"]) == 5
+        assert out["best_epoch"] == 5
+
+
+class TestBestValLoss:
+    """D-08 teeth: lowest val loss selects best; improving frame-F ignored (D-04)."""
+
+    def test_loss_selects_frame_f_ignored(self, tmp_path, monkeypatch):
+        from airhythm.model import AIRhythmCRNN
+
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
+        fseq = iter([0.30, 0.90])
+        monkeypatch.setattr(
+            "airhythm.train.evaluate_gate",
+            lambda *a, **k: (0.5, next(fseq), True),
+        )
+        seq = iter([0.50, 0.55])
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(1, device=device)
+        out = run_real_training(
+            data, data, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=2, patience=100,
+            _val_fn=lambda: next(seq),
+        )
+        # frame-F improves 0.30 -> 0.90 while val loss worsens 0.50 -> 0.55;
+        # loss rules: best stays at epoch 1.
+        assert out["history"][0]["val_frame_f"] == pytest.approx(0.30)
+        assert out["history"][1]["val_frame_f"] == pytest.approx(0.90)
+        assert out["best_epoch"] == 1
+        assert out["best_val_loss"] == pytest.approx(0.50)
+        model = AIRhythmCRNN()
+        opt = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR)
+        sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min", patience=config.SCHED_PATIENCE,
+            factor=config.SCHED_FACTOR,
+        )
+        ckpt = load_checkpoint(str(tmp_path / "best_phase8_real.pt"),
+                               model=model, optimizer=opt, scheduler=sch)
+        assert ckpt["epoch"] == 1
+
+
+class TestEpochCap:
+    def test_floor_budget_and_median(self):
+        assert config.EARLY_STOP_PATIENCE == 10
+        assert config.EPOCH_CAP_HOURS == 45.0
+        assert config.EPOCH_CAP_FLOOR == 10
+        assert epoch_cap(1.0, 45.0) == 45
+        assert epoch_cap(6.0, 90.0) == 15  # floor does not bind
+        assert epoch_cap(6.0) == config.EPOCH_CAP_FLOOR  # 45/6=7 < floor 10
+        assert epoch_cap(100.0) == config.EPOCH_CAP_FLOOR
+
+    def test_median_discards_warmup(self):
+        assert median_epoch_time([99.0, 10.0, 12.0, 11.0]) == 11.0
+        assert median_epoch_time([5.0]) == 5.0
+        with pytest.raises(ValueError):
+            median_epoch_time([])
+
+
+class TestRealTrainingSmoke:
+    def test_two_epochs_writes_checkpoints(self, tmp_path):
+        from torch.utils.data import DataLoader
+
+        from airhythm.model import AIRhythmCRNN
+
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(2, device=device)
+        # real (non-injected) val branch expects DataLoader batches shaped like
+        # build_real_loaders output: mel (B,1,128,400), label (B,400).
+        # Metronome items carry an extra leading dim — squeeze to dataset shape.
+        val_items = [(m.squeeze(0), y) for m, y in data]
+        val_loader = DataLoader(val_items, batch_size=1, shuffle=False)
+        out = run_real_training(
+            data, val_loader, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=2, patience=5,
+        )
+        assert out["stopped_reason"] == "max_epochs"
+        assert len(out["history"]) == 2
+        assert all("val_frame_f" in h for h in out["history"])
+        assert all(torch.isfinite(torch.tensor(h["val_loss"]))
+                   for h in out["history"])
+        latest = tmp_path / "latest_phase8_real.pt"
+        best = tmp_path / "best_phase8_real.pt"
+        assert latest.exists()
+        assert best.exists()
+        model = AIRhythmCRNN()
+        opt = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR)
+        sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min", patience=config.SCHED_PATIENCE,
+            factor=config.SCHED_FACTOR,
+        )
+        ckpt = load_checkpoint(str(latest), model=model, optimizer=opt,
+                               scheduler=sch)
+        assert ckpt["epoch"] == 2
+
+
+class TestCorpusExclusion:
+    """D-06: all 5 eval + 1 search IDs excluded from train/val; audit line printed."""
+
+    EVAL_IDS = [2255671, 2256944, 2516285, 2527391, 2589624]
+    SEARCH_ID = 2561773
+
+    def test_real_dirs_split_and_print(self, capsys):
+        dirs = sorted(p for p in Path("data/minimal_dataset").iterdir()
+                      if p.is_dir())
+        assert len(dirs) == 12
+        _train_loader, _val_loader, info = build_real_loaders(
+            dirs, eval_ids=self.EVAL_IDS, search_id=self.SEARCH_ID,
+            batch_size=4,
+        )
+        frozen = set(self.EVAL_IDS) | {self.SEARCH_ID}
+        assert set(info["excluded"]) == frozen
+        used = set(info["train_ids"]) | set(info["val_ids"])
+        assert not (used & frozen)
+        assert not (set(info["train_ids"]) & set(info["val_ids"]))
+        assert len(info["train_ids"]) >= 4
+        assert len(info["val_ids"]) >= 1
+        assert "corpus: train=" in capsys.readouterr().out
+
+
+class TestTripwireWiring:
+    """D-06: tripwire halts first — before early-stop could ever fire."""
+
+    def test_tripwire_halts_before_early_stop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
+        monkeypatch.setattr("airhythm.train.predicted_positive_rate",
+                            lambda *a, **k: 0.9)
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(1, device=device)
+        out = run_real_training(
+            data, data, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=20, patience=100,
+            _val_fn=lambda: 1.0,
+        )
+        # grace 10 + 3 consecutive post-grace breaches -> halt at epoch 13
+        assert out["stopped_reason"] == "tripwire: 3 consecutive breaches"
+        assert len(out["history"]) == 13
+        assert out["best_epoch"] == 1
+
+
+class TestDeterminism:
+    def test_same_seed_same_first_batch(self):
+        dirs = sorted(p for p in Path("data/minimal_dataset").iterdir()
+                      if p.is_dir())
+        eval_ids = [2255671, 2256944, 2516285, 2527391, 2589624]
+        la, _, _ = build_real_loaders(dirs, eval_ids=eval_ids,
+                                      search_id=2561773, batch_size=4, seed=0)
+        lb, _, _ = build_real_loaders(dirs, eval_ids=eval_ids,
+                                      search_id=2561773, batch_size=4, seed=0)
+        torch.manual_seed(0)
+        m1, y1 = next(iter(la))
+        torch.manual_seed(0)
+        m2, y2 = next(iter(lb))
+        assert torch.equal(m1, m2)
+        assert torch.equal(y1, y2)

@@ -501,3 +501,23 @@ class TestDeterminism:
         m2, y2 = next(iter(lb))
         assert torch.equal(m1, m2)
         assert torch.equal(y1, y2)
+
+
+class TestRealLoaderLoop:
+    """Production wiring: build_real_loaders output feeds run_real_training
+    end-to-end (onset-row collate + cat-label contract, one real epoch)."""
+
+    def test_one_real_epoch(self, tmp_path):
+        device = torch.device("cpu")
+        dirs = sorted(p for p in Path("data/minimal_dataset").iterdir()
+                      if p.is_dir())
+        train_loader, val_loader, _info = build_real_loaders(
+            dirs, eval_ids=[2255671, 2256944, 2516285, 2527391, 2589624],
+            search_id=2561773, batch_size=4)
+        out = run_real_training(
+            train_loader, val_loader, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=1, patience=5)
+        assert out["stopped_reason"] == "max_epochs"
+        assert torch.isfinite(torch.tensor(out["history"][0]["train_loss"]))
+        assert torch.isfinite(torch.tensor(out["history"][0]["val_loss"]))
+        assert (tmp_path / "latest_phase8_real.pt").exists()

@@ -37,8 +37,9 @@ else:
 import numpy as np
 print(f"numpy={np.__version__}")
 
-# Verify critical imports
-import torch, torchaudio, mir_eval, librosa
+# Verify critical imports (incl. scipy/soundfile/numba/requests — review #5:
+# fail fast on Kaggle image drift, not at first librosa/scrape call)
+import torch, torchaudio, mir_eval, librosa, scipy, soundfile, numba, requests
 print(f"torch={torch.__version__} torchaudio={torchaudio.__version__} "
       f"librosa={librosa.__version__} mir_eval={mir_eval.__version__}")
 # torch/torchaudio must be Kaggle's matched pair — never pip-mix them (review P1)

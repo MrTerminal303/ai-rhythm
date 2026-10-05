@@ -36,8 +36,9 @@ else:
 import numpy as np
 print(f"numpy={np.__version__}")
 
-# Verify critical imports
-import torch, torchaudio, mir_eval, librosa
+# Verify critical imports (incl. scipy/soundfile/numba/requests — review #5:
+# fail fast on Kaggle image drift, not at first librosa/scrape call)
+import torch, torchaudio, mir_eval, librosa, scipy, soundfile, numba, requests
 print(f"torch={torch.__version__} torchaudio={torchaudio.__version__} "
       f"librosa={librosa.__version__} mir_eval={mir_eval.__version__}")
 # torch/torchaudio must be Kaggle's matched pair — never pip-mix them (review P1)
@@ -311,12 +312,17 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 
 def _ckpt_globs(pat):
     """Local working copy first, then the attached checkpoint dataset — a fresh
-    session resumes from Notebook B's published push without a web pull."""
+    session resumes from Notebook B's published push without a web pull.
+    Attached hits are COPIED into CKPT_DIR: push_now() publishes CKPT_DIR only,
+    so without the copy an attached best_*.pt vanishes from the published
+    dataset when this session never improves past it (review #5)."""
     hits = sorted(CKPT_DIR.glob(pat))
     if hits:
         return hits
     _att = Path("/kaggle/input") / config.DATASET_HANDLE
-    return sorted(_att.glob(pat)) if _att.is_dir() else []
+    for src in sorted(_att.glob(pat)) if _att.is_dir() else []:
+        shutil.copy2(src, CKPT_DIR / src.name)
+    return sorted(CKPT_DIR.glob(pat))
 
 start_epoch, global_step, resume_val = 0, 0, None
 resume_candidates = _ckpt_globs("latest_*.pt")

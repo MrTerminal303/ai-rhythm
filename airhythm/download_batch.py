@@ -28,7 +28,7 @@ import time
 
 from airhythm import config
 
-__all__ = ["main"]
+__all__ = ["main", "is_complete_song_dir"]
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +36,29 @@ logger = logging.getLogger(__name__)
 MIN_FREE_BYTES = 500 * 2**20
 
 
+def is_complete_song_dir(path) -> bool:
+    """True only when the dir holds every artifact preprocess_osz writes:
+    metadata json (written last), original.audio, first chunk + labels.
+    One shared definition for _prune_incomplete and Notebook A's pinned-skip
+    check — any-json alone can accept a half-processed dir (review #5)."""
+    try:
+        names = {f.name for f in os.scandir(path)}
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return (
+        any(n.endswith(".json") for n in names)
+        and "original.audio" in names
+        and "0000.npy" in names
+        and "0000_labels.npy" in names
+    )
+
+
 def _prune_incomplete(output_dir: str) -> set[int]:
     """Return beatmapset IDs whose preprocessing finished, pruning the rest.
 
-    A song dir counts as complete only if it contains a metadata ``.json``
-    (``preprocess_osz`` writes it last). Partial dirs — crashed or failed
-    runs — are deleted so the song gets re-downloaded on this run.
+    Completeness = is_complete_song_dir (metadata json + audio + first chunk
+    + labels). Partial dirs — crashed or failed runs — are deleted so the
+    song gets re-downloaded on this run.
     """
     complete: set[int] = set()
     try:
@@ -51,11 +68,7 @@ def _prune_incomplete(output_dir: str) -> set[int]:
     for entry in entries:
         if not (entry.is_dir() and entry.name.isdigit()):
             continue
-        try:
-            done = any(f.name.endswith(".json") for f in os.scandir(entry.path))
-        except FileNotFoundError:
-            continue
-        if done:
+        if is_complete_song_dir(entry.path):
             complete.add(int(entry.name))
         else:
             shutil.rmtree(entry.path, ignore_errors=True)

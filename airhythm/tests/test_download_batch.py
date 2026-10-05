@@ -14,7 +14,11 @@ from unittest.mock import patch
 import pytest
 
 from airhythm.audio_preproc import load_audio_from_osz, preprocess_osz
-from airhythm.download_batch import _prune_incomplete, main
+from airhythm.download_batch import (
+    _prune_incomplete,
+    is_complete_song_dir,
+    main,
+)
 
 
 def _make_osz(audio_bytes: bytes) -> bytes:
@@ -43,6 +47,15 @@ def _make_osz(audio_bytes: bytes) -> bytes:
 GARBAGE = b"this is not audio" * 200
 
 
+def _make_complete(song_dir) -> None:
+    """Full artifact set is_complete_song_dir requires (review #5)."""
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "0000.json").write_text("{}")
+    (song_dir / "original.audio").write_bytes(b"x")
+    (song_dir / "0000.npy").write_bytes(b"")
+    (song_dir / "0000_labels.npy").write_bytes(b"")
+
+
 class TestCorruptAudio:
     """Corrupt audio must surface as ValueError, never escape as a crash."""
 
@@ -64,8 +77,7 @@ class TestPruneIncomplete:
 
     def test_prune_keeps_complete_deletes_partial(self, tmp_path):
         (tmp_path / "111").mkdir()  # partial: crashed before json write
-        (tmp_path / "222").mkdir()
-        (tmp_path / "222" / "0000.json").write_text("{}")  # complete
+        _make_complete(tmp_path / "222")
         (tmp_path / "notadigit").mkdir()  # unrelated — untouched
 
         ids = _prune_incomplete(str(tmp_path))
@@ -85,8 +97,7 @@ class TestMainBatch:
     def test_skips_complete_survives_failure_cleans_partial(self, tmp_path):
         output = tmp_path / "ds"
         output.mkdir()
-        (output / "10").mkdir()
-        (output / "10" / "0000.json").write_text("{}")  # already complete
+        _make_complete(output / "10")  # already complete
 
         candidates = [
             {"beatmapset_id": 10, "title": "done", "artist": "a", "bpm": 1.0, "cs": 4},
@@ -123,8 +134,7 @@ class TestMainBatch:
     def test_total_target_reached_skips_download(self, tmp_path):
         """n_songs = TOTAL target: already-complete counts, no new downloads."""
         output = tmp_path / "ds"
-        (output / "11").mkdir(parents=True)
-        (output / "11" / "0000.json").write_text("{}")
+        _make_complete(output / "11")
         candidates = [
             {"beatmapset_id": 99, "title": "t", "artist": "a", "bpm": 1.0, "cs": 4}
         ]
@@ -253,3 +263,21 @@ class TestTailLabels:
         labels = np.load(song_dir / "0001_labels.npy")
         assert labels[1, f_keep - 400] == 1  # real audio frames keep targets
         assert labels[1, f_drop - 400] == 0  # synthetic pad never a target
+
+
+class TestCompleteSongDir:
+    """review #5: one shared completeness definition — any-json alone is not
+    enough to accept a dir as fully processed."""
+
+    def test_missing_any_artifact_incomplete_full_set_complete(self, tmp_path):
+        d = tmp_path / "7"
+        d.mkdir()
+        assert not is_complete_song_dir(d)  # empty
+        (d / "0000.json").write_text("{}")
+        assert not is_complete_song_dir(d)  # json only = half-processed
+        (d / "original.audio").write_bytes(b"x")
+        (d / "0000.npy").write_bytes(b"")
+        assert not is_complete_song_dir(d)
+        (d / "0000_labels.npy").write_bytes(b"")
+        assert is_complete_song_dir(d)
+        assert not is_complete_song_dir(tmp_path / "missing")

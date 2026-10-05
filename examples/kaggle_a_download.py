@@ -35,8 +35,9 @@ else:
 import numpy as np
 print(f"numpy={np.__version__}")
 
-# Verify critical imports
-import torch, torchaudio, mir_eval, librosa
+# Verify critical imports (incl. scipy/soundfile/numba/requests — review #5:
+# fail fast on Kaggle image drift, not at first librosa/scrape call)
+import torch, torchaudio, mir_eval, librosa, scipy, soundfile, numba, requests
 print(f"torch={torch.__version__} torchaudio={torchaudio.__version__} "
       f"librosa={librosa.__version__} mir_eval={mir_eval.__version__}")
 # torch/torchaudio must be Kaggle's matched pair — never pip-mix them (review P1)
@@ -105,7 +106,7 @@ import logging
 # the old silent search looked frozen for minutes)
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-from airhythm.download_batch import main as download_main
+from airhythm.download_batch import is_complete_song_dir, main as download_main
 from airhythm.audio_preproc import preprocess_osz
 from airhythm.scraper import SOURCES, download_osz
 
@@ -125,7 +126,7 @@ _dl_srcs = [s for s in SOURCES if SOURCES[s].get("download")]
 import time
 for bid in PINNED:
     song_dir = Path(DATA_DIR) / str(bid)
-    if song_dir.is_dir() and any(song_dir.glob("*.json")):
+    if song_dir.is_dir() and is_complete_song_dir(song_dir):  # review #5: full artifact set, not any-json
         print(f"pinned {bid}: already complete")
         continue
     osz = None
@@ -146,7 +147,7 @@ saved = download_main(output=DATA_DIR, n_songs=100)
 print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
 
 # P0: all frozen eval/search songs must exist after CELL 3
-_missing = [b for b in PINNED if not any((Path(DATA_DIR) / str(b)).glob("*.json"))]
+_missing = [b for b in PINNED if not is_complete_song_dir(Path(DATA_DIR) / str(b))]
 assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 

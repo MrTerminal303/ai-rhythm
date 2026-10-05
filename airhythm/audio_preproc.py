@@ -206,6 +206,18 @@ def chunk_spectrogram(
         chunk = spec[:, :, start : start + n_frames]
         chunks.append(chunk.astype(np.float32))
 
+    # Option B (review #3): never silently drop the tail — if the last window
+    # doesn't reach the song end, append one edge-padded partial chunk so
+    # labels + training + eval all include the final frames.
+    if chunks and (len(chunks) - 1) * hop_frames + n_frames < time_frames:
+        start = (len(chunks) - 1) * hop_frames + n_frames
+        tail = np.pad(
+            spec[:, :, start:],
+            ((0, 0), (0, 0), (0, n_frames - (time_frames - start))),
+            mode="edge",
+        )
+        chunks.append(tail.astype(np.float32))
+
     return chunks
 
 

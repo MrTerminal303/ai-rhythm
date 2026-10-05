@@ -458,7 +458,8 @@ import torch
 from pathlib import Path
 
 from airhythm import config
-from airhythm.datasets import boundary_fraction, proximity_binned_recall
+from airhythm.audio_preproc import normalize_chunk
+from airhythm.datasets import boundary_fraction, build_full_song_cache, proximity_binned_recall
 from airhythm.model import AIRhythmCRNN
 from airhythm.pin_baseline import load_song_audio_sr, reconstruct_ref_times
 from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
@@ -497,8 +498,13 @@ print(f"gate checkpoint: {best[-1].name} epoch={ckpt['epoch']} stage={ckpt['stag
 
 # 2) per-eval-song sliding-window envelope (hop = config.HOP_FRAMES = 200), sigmoid, stitch
 def _sliding_envelope(sdir):
-    spec_files = sorted(sdir.glob("[0-9][0-9][0-9][0-9].npy"))
-    spec = np.concatenate([np.load(p) for p in spec_files], axis=2)  # (1,128,T)
+    # raw full-song spec (build_full_song_cache stores RAW, not chunk-normalized):
+    # every window is sliced from raw then normalize_chunk(window) — identical
+    # to RandomCropDataset training crops. Concatenating stored (independently
+    # normalized) chunks would mix normalized halves across chunk boundaries
+    # (review #3 P1 train/inference distribution mismatch).
+    spec_path, _ = build_full_song_cache(sdir)
+    spec = np.load(spec_path)  # (1,128,T) RAW
     n_total = spec.shape[2]
     # cover the tail stitch_envelope would zero out (review P1): align last
     # window to the song end, edge-padding a short final chunk to N_FRAMES.
@@ -512,6 +518,7 @@ def _sliding_envelope(sdir):
         if chunk.shape[2] < config.N_FRAMES:
             chunk = np.pad(chunk, ((0, 0), (0, 0), (0, config.N_FRAMES - chunk.shape[2])),
                            mode="edge")
+        chunk = normalize_chunk(chunk)  # whole 4s window — matches training crops
         chunk_t = torch.tensor(chunk).float().unsqueeze(0).to(DEVICE)
         with torch.no_grad():
             sig = torch.sigmoid(model(chunk_t)).squeeze().cpu().numpy()  # (400,)

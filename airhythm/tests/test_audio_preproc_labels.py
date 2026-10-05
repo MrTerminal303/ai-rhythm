@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from airhythm.audio_preproc import extract_chunk_labels
+from airhythm.audio_preproc import chunk_spectrogram, extract_chunk_labels
 from airhythm.osu_parser import HitObject
 
 
@@ -63,3 +63,17 @@ def test_out_of_chunk_ignored():
     hos = [HitObject(time=100000, end_time=100000, lane=0, type_bitmask=1)]
     labels = extract_chunk_labels(hos, chunk_start_frame=0, n_frames=400)
     assert not labels.any()
+
+
+def test_chunk_spectrogram_keeps_tail():
+    # review #3 Option B: 901-frame song -> 3 chunks, tail edge-padded (no silent loss)
+    spec = np.zeros((1, 128, 901), dtype=np.float32)
+    chunks = chunk_spectrogram(spec, n_frames=400)
+    assert len(chunks) == 3
+    assert all(c.shape == (1, 128, 400) for c in chunks)
+    # exact-divisible song: no extra chunk
+    exact = chunk_spectrogram(np.zeros((1, 128, 800), dtype=np.float32), n_frames=400)
+    assert len(exact) == 2
+    # short song: single padded chunk (pre-existing behavior)
+    short = chunk_spectrogram(np.zeros((1, 128, 300), dtype=np.float32), n_frames=400)
+    assert len(short) == 1

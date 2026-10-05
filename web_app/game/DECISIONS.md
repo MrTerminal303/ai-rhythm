@@ -35,7 +35,7 @@ One line per decision: `D# — date — decision — why`.
   | worker | @cloudflare/workers-types | 5.20261003.1 |
   | worker | vitest | 5.0.3 |
   | worker | typescript | 7.0.2 |
-  | tooling | @playwright/test | 1.63.0 (in-plan pin, exact from the start) |
+  | tooling | @playwright/test | 1.63.0 (in-plan pin; re-confirmed as registry `latest` 2026-10-05 — user ruling: latest playwright for automated tests; supersedes A5.5 pin) |
   | tooling | vercel | 62.2.0 |
 
   **EOL caveat:** Next 15 reaches EOL **2026-10-21** — accepted risk for W1 only. **W2+ must upgrade to Next 16** (required; do not drop this line when planning W2).

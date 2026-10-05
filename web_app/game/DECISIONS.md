@@ -39,3 +39,4 @@ One line per decision: `D# — date — decision — why`.
   | tooling | vercel | 62.2.0 |
 
   **EOL caveat:** Next 15 reaches EOL **2026-10-21** — accepted risk for W1 only. **W2+ must upgrade to Next 16** (required; do not drop this line when planning W2).
+- D9 — 2026-10-05 — Playwright browser pair for B6 e2e: `@playwright/test` **1.63.0** (registry `latest` on 2026-10-05, same as the A5.5 pin) installs Chromium **v1243** — Chrome for Testing 153.0.8010.12 (+ headless shell v1243, ffmpeg v1011, winldd v1007), from `playwright install --dry-run chromium`. — exact package↔browser revision record so CI and local installs match; B6's `playwright install chromium` runs against the package's own revision (no 1234/1243 mismatch).

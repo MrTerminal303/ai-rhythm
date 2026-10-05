@@ -25,3 +25,26 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       - run: pnpm -r test
+  e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web_app/game
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web_app/game/package.json # nested workspace root, not repo root (same as check job)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web_app/game/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @airhythm/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @airhythm/web e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w1-highway-screenshot
+          path: web_app/game/e2e/screenshots/w1-highway.png

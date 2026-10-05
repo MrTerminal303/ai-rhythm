@@ -10,3 +10,5 @@ CLAUDE.md
 PLAN.md
 download_minimal.py
 .playwright-mcp
+.env
+skills-lock.json

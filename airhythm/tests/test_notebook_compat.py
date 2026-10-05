@@ -158,3 +158,39 @@ class TestKagglePathModule:
             nested_root / "minimal_dataset")
         with pytest.raises(FileNotFoundError):
             attach_corpus(tmp_path / "does_not_exist", tmp_path / "dest")
+
+    def test_attach_corpus_readonly_source_cache_write_and_broken_repair(self, tmp_path):
+        """review #8 verify: read-through == original, cache write elsewhere,
+        source unchanged, read-only source, broken symlink re-pointed."""
+        from airhythm.kaggle_path import attach_corpus
+
+        src7 = tmp_path / "src" / "7"
+        src7.mkdir(parents=True)
+        orig = src7 / "0000.npy"
+        orig.write_bytes(b"spec-bytes")
+        (src7 / "original.audio").write_bytes(b"audio-bytes")
+        # flat staging like Notebook A (hardlinks), then lock source read-only
+        flat = tmp_path / "flat"
+        flat.mkdir()
+        os.link(orig, flat / "song_7__0000.npy")
+        os.link(src7 / "original.audio", flat / "song_7__original.audio")
+        os.chmod(src7, 0o555)
+        try:
+            dest = tmp_path / "rebuild"
+            attach_corpus(flat, dest)
+            # read-through: bytes equal, cache write elsewhere, source untouched
+            got = (dest / "7" / "0000.npy").read_bytes()
+            assert got == b"spec-bytes"
+            cache = tmp_path / "cache"
+            cache.mkdir()
+            (cache / "7_full_spec.npy").write_bytes(got)
+            assert orig.read_bytes() == b"spec-bytes"
+            # broken symlink (stale mount path) re-pointed on re-attach
+            link = dest / "7" / "0000.npy"
+            link.unlink()
+            link.symlink_to(tmp_path / "gone" / "file.npy")
+            attach_corpus(flat, dest)
+            assert link.is_symlink() and link.exists()
+            assert link.read_bytes() == b"spec-bytes"
+        finally:
+            os.chmod(src7, 0o755)

@@ -275,3 +275,59 @@ class TestPruneOldCheckpoints:
             deleted = prune_old_checkpoints(tmpdir, keep_latest=2, keep_best=1)
             # 3 latest - 2 keep = 1 deleted (the oldest)
             assert deleted == 1
+
+
+class TestWaitDatasetReady:
+    """review #8 #1: poll status until READY; errors/timeouts fail loudly."""
+
+    @staticmethod
+    def _patch_run(monkeypatch, results):
+        """results: list of (returncode, stdout) consumed one per call."""
+        import subprocess
+        import time
+
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True):
+            rc, out = results.pop(0)
+            calls.append(cmd)
+
+            class R:
+                pass
+            r = R()
+            r.returncode, r.stdout, r.stderr, r.args = rc, out, "", cmd
+            return r
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        return calls
+
+    def test_polls_until_ready(self, monkeypatch):
+        from airhythm.kaggle_push import wait_dataset_ready
+
+        calls = self._patch_run(monkeypatch, [
+            (0, "the dataset is processing"),
+            (0, "the dataset airhythm-corpus is ready"),
+        ])
+        wait_dataset_ready("user/airhythm-corpus", delay_s=0)
+        assert len(calls) == 2
+
+    def test_cli_error_fails_loudly(self, monkeypatch):
+        import subprocess
+
+        from airhythm.kaggle_push import wait_dataset_ready
+
+        self._patch_run(monkeypatch, [(1, "500 - Internal Server Error")])
+        with pytest.raises(subprocess.CalledProcessError) as exc:
+            wait_dataset_ready("user/airhythm-corpus", delay_s=0)
+        assert "Internal Server Error" in (exc.value.output or "")
+
+    def test_timeout_fails_loudly(self, monkeypatch):
+        import subprocess
+
+        from airhythm.kaggle_push import wait_dataset_ready
+
+        self._patch_run(monkeypatch, [(0, "still processing")] * 3)
+        with pytest.raises(subprocess.CalledProcessError) as exc:
+            wait_dataset_ready("user/airhythm-corpus", attempts=3, delay_s=0)
+        assert "not READY after 3 attempts" in (exc.value.output or "")

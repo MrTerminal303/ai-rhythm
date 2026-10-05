@@ -232,6 +232,24 @@ class TestCheckpointRoundtrip:
         else:
             assert keys == expected
 
+    def test_meta_recorded_when_given(self, tmp_path):
+        """review #8 #4: optional run identity lands in ckpt["meta"] and on disk."""
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt, sch = self._opt_sched(model)
+        p = tmp_path / "latest_meta.pt"
+        state = save_checkpoint(
+            str(p), model=model, optimizer=opt, scheduler=sch,
+            epoch=1, global_step=1, val_metric=0.5,
+            stage="phase8_real", pos_weight=1.0,
+            meta={"git_commit": "abc123", "python": "3.11.9"},
+        )
+        assert state["meta"]["git_commit"] == "abc123"
+        reloaded = torch.load(p, map_location="cpu", weights_only=False)
+        assert reloaded["meta"]["python"] == "3.11.9"
+        # meta=None (default) keeps the exact key set — see test_key_set above
+
     def test_scheduler_countdown(self, tmp_path):
         from airhythm.model import AIRhythmCRNN
 

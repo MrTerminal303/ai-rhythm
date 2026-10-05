@@ -37,6 +37,7 @@ __all__ = [
     "estimate_storage_size",
     "prune_old_checkpoints",
     "check_storage",
+    "wait_dataset_ready",
 ]
 
 logger = logging.getLogger(__name__)
@@ -397,3 +398,39 @@ def check_storage(dataset_dir: str | None = None) -> Dict:
         "status": status,
         "by_extension": info["by_extension"],
     }
+
+
+def wait_dataset_ready(slug: str, *, attempts: int = 12, delay_s: float = 15.0) -> None:
+    """Poll `kaggle datasets status` until READY (review #8 #1).
+
+    Uploads keep processing after version/create returns, so the first status
+    response is not final: status -> READY? no -> sleep -> status; yes -> return;
+    CLI error or timeout -> raise subprocess.CalledProcessError with the last
+    output (fail loudly). B's maybe_push catches CalledProcessError, so a
+    mid-run blip never kills a 12h session while a session-end push fails the
+    cell visibly.
+
+    slug: full handle, e.g. "username/airhythm-corpus".
+    ponytail: READY detected by keyword ("ready", not "not ready") — adjust the
+    match here if the CLI wording changes.
+    """
+    import subprocess
+    import time
+
+    last = ""
+    for i in range(attempts):
+        r = subprocess.run(["kaggle", "datasets", "status", slug],
+                           capture_output=True, text=True)
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        if r.returncode != 0:
+            raise subprocess.CalledProcessError(r.returncode, r.args, output=out)
+        low = out.lower()
+        if "ready" in low and "not ready" not in low:
+            print(f"dataset ready: {slug}")
+            return
+        last = out or "(no output)"
+        print(f"not ready yet ({i + 1}/{attempts}): {last}")
+        time.sleep(delay_s)
+    raise subprocess.CalledProcessError(
+        1, ["kaggle", "datasets", "status", slug],
+        output=f"not READY after {attempts} attempts; last status: {last}")

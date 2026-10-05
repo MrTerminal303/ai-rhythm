@@ -222,6 +222,7 @@ if songs:
 # =============================================================
 import json, os, shutil, subprocess, time
 from airhythm import config
+from airhythm.kaggle_push import wait_dataset_ready
 
 # review #7 P0: Kaggle CLI default --dir-mode skip uploads NO folders, so the
 # corpus goes out FLAT as song_<sid>__<file>; B/C rebuild <sid>/<file> dirs
@@ -258,5 +259,5 @@ if r.returncode != 0:  # first push: no dataset yet — slug comes from
                    check=True)
 print(f"corpus published: {os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}"
       " — attach in Notebook B/C (Data → Add data)")
-subprocess.run(["kaggle", "datasets", "status",
-                f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}"])
+# review #8 #1: upload may still process after version/create — poll until READY
+wait_dataset_ready(f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}")

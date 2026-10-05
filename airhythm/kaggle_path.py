@@ -56,7 +56,9 @@ def attach_corpus(flat_root, dest_root) -> Path:
         song_dir = dest_root / sid
         song_dir.mkdir(parents=True, exist_ok=True)
         link = song_dir / name
-        if not (link.is_symlink() or link.exists()):
+        if link.is_symlink() and not link.exists():
+            link.unlink()  # stale target (e.g. prior session's mount path) — re-point
+        if not link.exists():
             link.symlink_to(f.resolve())
         n += 1
     if not n:

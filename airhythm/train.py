@@ -290,10 +290,13 @@ def run_toy_overfit_gate(model, data, *, device, pos_weight,
 
 
 def save_checkpoint(path, *, model, optimizer, scheduler, epoch: int, global_step: int,
-                    val_metric: float, stage: str, pos_weight: float) -> dict:
+                    val_metric: float, stage: str, pos_weight: float,
+                    meta: dict | None = None) -> dict:
     """EXP-02 D-09: full-state dict, saved EVERY epoch locally. Keys EXACTLY:
     model, optimizer, scheduler, epoch, global_step, val_metric, stage, torch_rng, random_rng, pos_weight
-    plus "cuda_rng": torch.cuda.get_rng_state_all() ONLY when torch.cuda.is_available().
+    plus "cuda_rng": torch.cuda.get_rng_state_all() ONLY when torch.cuda.is_available(),
+    plus "meta" (run identity: git_commit/corpus_version/torch/..., review #8 #4)
+    ONLY when meta is given — default key set stays exact.
     torch.save(state, path); return state."""
     state = {
         "model": model.state_dict(),
@@ -309,6 +312,8 @@ def save_checkpoint(path, *, model, optimizer, scheduler, epoch: int, global_ste
     }
     if torch.cuda.is_available():
         state["cuda_rng"] = torch.cuda.get_rng_state_all()
+    if meta is not None:
+        state["meta"] = meta
     parent = os.path.dirname(os.path.abspath(str(path)))
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -539,6 +544,7 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
                       model=None, optimizer=None, scheduler=None,
                       best_val: float | None = None,
                       on_epoch_end=None,
+                      run_meta: dict | None = None,
                       _val_fn=None) -> dict:
     """Phase 8 loop (package owns loop - notebook only chains it).
 
@@ -572,7 +578,8 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
     ckpt (history starts empty); model/optimizer/scheduler accept the caller's loaded
     objects (None = build fresh, zero behavior change); best_val seeds from the ckpt's
     val_metric; on_epoch_end(epoch, epoch_times) fires after each epoch (push cadence,
-    D-10) when provided."""
+    D-10) when provided; run_meta (review #8 #4) is stored as ckpt["meta"] on every
+    save (None = omitted, default key set unchanged)."""
     import os
 
     from airhythm.train import train_epoch, save_checkpoint
@@ -696,6 +703,7 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         state = save_checkpoint(
             latest_path, model=model, optimizer=optimizer, scheduler=scheduler,
             epoch=epoch, global_step=global_step, val_metric=val_loss, stage=stage, pos_weight=pos_weight,
+            meta=run_meta,
         )
 
         if val_loss < best_val:
@@ -705,6 +713,7 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
             save_checkpoint(
                 best_path, model=model, optimizer=optimizer, scheduler=scheduler,
                 epoch=epoch, global_step=global_step, val_metric=val_loss, stage=stage, pos_weight=pos_weight,
+                meta=run_meta,
             )
             no_improve_count = 0
         else:

@@ -251,12 +251,14 @@ import json
 import os
 import shutil  # _ckpt_globs copies attached ckpts into CKPT_DIR
 import subprocess
+import sys
 import time
 import torch
+import torchaudio
 from pathlib import Path
 
 from airhythm import config
-from airhythm.kaggle_push import prune_old_checkpoints
+from airhythm.kaggle_push import prune_old_checkpoints, wait_dataset_ready
 from airhythm.model import AIRhythmCRNN
 from airhythm.train import (build_real_loaders, epoch_cap, load_checkpoint,
                             median_epoch_time, resume_smoke_test, run_real_training)
@@ -303,6 +305,19 @@ song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
 _required = set(EVAL_IDS) | {SEARCH_ID}
 _missing = sorted(_required - {int(d.name) for d in song_dirs})
 assert not _missing, f"Missing frozen eval/search songs: {_missing}"
+
+# review #8 #3: full-cache growth against the 20GB /kaggle/working quota —
+# chunk .npy files tile the full spec+labels exactly, so their bytes ≈ cache
+# size; subtract what full_cache already holds (resume), keep a 5GB margin.
+_npy = sum(f.stat().st_size for d in song_dirs for f in d.glob("*.npy"))
+_fc = WORKING / "full_cache"
+_have = sum(f.stat().st_size for f in _fc.glob("*.npy")) if _fc.is_dir() else 0
+_free_gb = shutil.disk_usage(WORKING).free / 1e9
+_need_gb = max(0, _npy - _have) / 1e9 + 5.0
+print(f"disk guard: free={_free_gb:.1f}GB need={_need_gb:.1f}GB (cache growth + 5GB margin)")
+assert _free_gb > _need_gb, (
+    f"working disk too low: {_free_gb:.1f}GB free < {_need_gb:.1f}GB needed")
+
 train_loader, val_loader, info = build_real_loaders(
     song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID,
     num_workers=2, pin_memory=DEVICE.startswith("cuda"),  # Kaggle = 4 cores
@@ -372,9 +387,10 @@ def push_now():
         # dataset-metadata.json "id"; current CLI create has no -s (review #6)
         subprocess.run(["kaggle", "datasets", "create", "-p", str(CKPT_DIR)],
                        check=True)
-    # review #7: verify the push actually landed
-    subprocess.run(["kaggle", "datasets", "status",
-                    f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}"])
+    # review #8 #1: poll until READY — version/create returns while the upload
+    # is still processing (raises CalledProcessError: maybe_push catches it
+    # mid-run, session-end push fails the cell visibly)
+    wait_dataset_ready(f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}")
 
 def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
     if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
@@ -391,6 +407,18 @@ def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
 # resume next session (repeated-resume makes the old 45h budget moot).
 # review #7: cap EVERY session incl. resumed ones — otherwise resume runs
 # until early-stop and Kaggle kills it at 12h mid-session.
+# review #8 #4: run identity — when a later checkpoint wins, know what made it
+# (provenance helpers, not guarantees: env values as observed at save time).
+_rrev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                       capture_output=True, text=True)
+RUN_META = {
+    "git_commit": (_rrev.stdout or "unknown").strip() or "unknown",
+    # ponytail: no corpus pin manifest yet (deferred review #5) — handle + count
+    "corpus_version": f"{config.CORPUS_HANDLE}:{len(song_dirs)}songs",
+    "torch": torch.__version__, "torchaudio": torchaudio.__version__,
+    "cuda": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+    "python": sys.version.split()[0],
+}
 SESSION_BUDGET_H = 11.0
 session_epochs = epoch_cap(median_epoch_time([600.0]), budget_h=SESSION_BUDGET_H)
 result = run_real_training(
@@ -398,7 +426,7 @@ result = run_real_training(
     ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
     start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
     max_epochs=start_epoch + session_epochs,
-    on_epoch_end=maybe_push)
+    on_epoch_end=maybe_push, run_meta=RUN_META)
 print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
 
 # D-10: recompute display after run (median epoch times, epoch-1 warm-up discarded)

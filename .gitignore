@@ -13,3 +13,6 @@ GAME_PLAN.md
 PLAN.md
 download_minimal.py
 .playwright-mcp
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

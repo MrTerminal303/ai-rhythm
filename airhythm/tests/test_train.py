@@ -561,3 +561,41 @@ class TestResumeContinuation:
         assert out2["global_step"] > ckpt["global_step"]
         assert out2["stopped_reason"] == "max_epochs"
         assert seen_epochs == [ckpt["epoch"] + 1]
+
+
+class TestPerBatchSteps:
+    """Review P0 regression gates: ONE optimizer.step per batch (old code cat'ed
+    the whole loader -> one step/epoch, one pass for mels + second pass for labels
+    misaligned under shuffle=True)."""
+
+    @staticmethod
+    def _items(n=5):
+        torch.manual_seed(0)
+        return [(torch.randn(1, 1, 128, 400), torch.zeros(400)) for _ in range(n)]
+
+    def test_one_step_per_item(self):
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR)
+        steps = {"n": 0}
+        orig_step = opt.step
+
+        def counting_step(*a, **k):
+            steps["n"] += 1
+            return orig_step(*a, **k)
+
+        opt.step = counting_step
+        crit = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([36.4]))
+        loss = train_epoch(model, self._items(5), crit, opt, device="cpu")
+        assert steps["n"] == 5
+        assert torch.isfinite(torch.tensor(loss))
+
+    def test_empty_data_raises(self):
+        from airhythm.model import AIRhythmCRNN
+
+        model = AIRhythmCRNN()
+        opt = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR)
+        crit = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([36.4]))
+        with pytest.raises(ValueError, match="no data"):
+            train_epoch(model, [], crit, opt, device="cpu")

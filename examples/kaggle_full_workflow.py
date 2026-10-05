@@ -35,6 +35,10 @@ print(f"numpy={np.__version__}")
 import torch, torchaudio, mir_eval, librosa
 print(f"torch={torch.__version__} torchaudio={torchaudio.__version__} "
       f"librosa={librosa.__version__} mir_eval={mir_eval.__version__}")
+# torch/torchaudio must be Kaggle's matched pair — never pip-mix them (review P1)
+assert torch.__version__.split("+")[0].rsplit(".", 1)[0] == \
+    torchaudio.__version__.split("+")[0].rsplit(".", 1)[0], \
+    f"torch/torchaudio mismatch: {torch.__version__} vs {torchaudio.__version__}"
 # =============================================================
 import sys, os
 from pathlib import Path
@@ -342,10 +346,12 @@ print("resume smoke:", "PASS" if smoke["pass"] else "FAIL", smoke)
 assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02 criterion 4)"
 
 # --- corpus (prints 'corpus: train=... excluded=...' audit line)
-DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "spectrograms")))
+# Same DATA_ROOT as CELL 3/4 (data/minimal_dataset) — spectrograms path never existed.
+DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "minimal_dataset")))
 song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
 train_loader, val_loader, info = build_real_loaders(
-    song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID)
+    song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID,
+    num_workers=2, pin_memory=DEVICE.startswith("cuda"))  # Kaggle = 4 cores
 assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
 
 # --- resume (D-11): user manually web-downloads latest_*.pt into CKPT_DIR (CLI pull NOT used)
@@ -360,6 +366,14 @@ if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 a
                            scheduler=scheduler, device=DEVICE)
     start_epoch, global_step = ckpt["epoch"], ckpt["global_step"]
     resume_val = ckpt.get("val_metric")
+    # best over ALL sessions lives in best_*.pt — latest val_metric alone would
+    # re-open best_ selection at a worse value after restart (review P1).
+    _best_cands = sorted(CKPT_DIR.glob("best_*.pt"))
+    if _best_cands:
+        _best = torch.load(_best_cands[-1], map_location="cpu", weights_only=False)
+        _bv = _best.get("val_metric")
+        if _bv is not None:
+            resume_val = _bv if resume_val is None else min(resume_val, _bv)
     assert ckpt["stage"].startswith("phase8"), f"wrong-stage checkpoint: {ckpt['stage']}"
     print(f"RESUMED at epoch={start_epoch} global_step={global_step}")
 else:
@@ -371,16 +385,29 @@ _last_push = {"t": time.time()}
 
 def push_now():
     prune_old_checkpoints(str(CKPT_DIR), keep_latest=1, keep_best=1)  # D-09: 1 latest + 1 best
-    # CLI push: kaggle datasets version -m "<msg>" (overwrites — can't go stale, D-10)
-    subprocess.run(["kaggle", "datasets", "version", "-m",
-                    f"phase8 checkpoint {time.strftime('%Y-%m-%d %H:%M')}"],
-                   check=False)
+    # CLI needs -p <dir with dataset-metadata.json> + visible failures (review P0).
+    meta = CKPT_DIR / "dataset-metadata.json"
+    if not meta.exists():
+        meta.write_text(json.dumps({
+            "id": f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}",
+            "title": config.DATASET_HANDLE,
+            "licenses": [{"name": "CC0-100"}],
+        }, indent=2))
+    msg = f"phase8 checkpoint {time.strftime('%Y-%m-%d %H:%M')}"
+    r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CKPT_DIR), "-m", msg])
+    if r.returncode != 0:  # first push: dataset doesn't exist yet -> create it
+        subprocess.run(["kaggle", "datasets", "create", "-p", str(CKPT_DIR),
+                        "-s", config.DATASET_HANDLE], check=True)
 
 def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
     if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
         _last_push["t"] = time.time()
-        push_now()
-        print(f"pushed at epoch={epoch} (D-10 {PUSH_INTERVAL_S // 60}min cadence)")
+        try:
+            push_now()
+            print(f"pushed at epoch={epoch} (D-10 {PUSH_INTERVAL_S // 60}min cadence)")
+        except subprocess.CalledProcessError as e:
+            # visible, but never kill a 12h run over a push: local ckpts still save
+            print(f"PUSH FAILED at epoch={epoch} ({e}) — will retry next cadence")
 
 # --- train (D-08): fresh session epoch cap from measured time; resume runs until stop
 result = run_real_training(
@@ -436,7 +463,7 @@ from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
 if "WORKING" not in globals():
     WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
 if "DATA_ROOT" not in globals():
-    DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "spectrograms")))
+    DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "minimal_dataset")))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # D-16 frozen eval ids (metadata/eval_song_ids.json: song_ids/search_set_ids)
@@ -463,12 +490,21 @@ def _sliding_envelope(sdir):
     spec_files = sorted(sdir.glob("[0-9][0-9][0-9][0-9].npy"))
     spec = np.concatenate([np.load(p) for p in spec_files], axis=2)  # (1,128,T)
     n_total = spec.shape[2]
+    # cover the tail stitch_envelope would zero out (review P1): align last
+    # window to the song end, edge-padding a short final chunk to N_FRAMES.
+    starts = list(range(0, max(1, n_total - config.N_FRAMES + 1), config.HOP_FRAMES))
+    last_start = max(0, n_total - config.N_FRAMES)
+    if starts[-1] != last_start:
+        starts.append(last_start)
     windows = []
-    for start in range(0, max(1, n_total - config.N_FRAMES + 1), config.HOP_FRAMES):
-        chunk = (torch.tensor(spec[:, :, start:start + config.N_FRAMES])
-                 .float().unsqueeze(0).to(DEVICE))
+    for start in starts:
+        chunk = spec[:, :, start:start + config.N_FRAMES]
+        if chunk.shape[2] < config.N_FRAMES:
+            chunk = np.pad(chunk, ((0, 0), (0, 0), (0, config.N_FRAMES - chunk.shape[2])),
+                           mode="edge")
+        chunk_t = torch.tensor(chunk).float().unsqueeze(0).to(DEVICE)
         with torch.no_grad():
-            sig = torch.sigmoid(model(chunk)).squeeze().cpu().numpy()  # (400,)
+            sig = torch.sigmoid(model(chunk_t)).squeeze().cpu().numpy()  # (400,)
         windows.append((start, sig))
     return stitch_envelope(windows, n_total)
 

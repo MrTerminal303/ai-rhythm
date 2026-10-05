@@ -130,8 +130,8 @@ class TestSaveEvalSongIds:
             with open(filepath) as f:
                 data = json.load(f)
 
-            assert "eval_song_ids" in data
-            assert data["eval_song_ids"] == sorted(song_ids)
+            assert "song_ids" in data
+            assert data["song_ids"] == sorted(song_ids)
             assert "selected_at" in data
             assert "phase" in data
             assert data["phase"] == "00-foundation"
@@ -149,7 +149,7 @@ class TestSaveEvalSongIds:
             filepath = save_eval_song_ids([3, 1, 2], tmpdir)
             with open(filepath) as f:
                 data = json.load(f)
-            assert data["eval_song_ids"] == [1, 2, 3]
+            assert data["song_ids"] == [1, 2, 3]
 
 
 class TestEstimateStorageSize:

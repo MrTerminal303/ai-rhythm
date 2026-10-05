@@ -152,26 +152,37 @@ def build_metronome_data(n_toy: int = config.N_TOY, *, device) -> tuple[list, fl
 
 
 def train_epoch(model, data, criterion, optimizer, *, device) -> float:
-    """TRN-02 hand-written step (D-05), BATCHED. Order: forward -> loss ->
-    finite check -> zero_grad -> backward -> clip -> step."""
-    mels = torch.cat([m for m, _ in data], 0).to(device)
-    ys = [y for _, y in data]
-    # list items are label (400,) -> stack; DataLoader batches (B,400) -> cat.
-    # stack on batches makes (n,B,400,1) vs out (ΣB,400,1); cat on items
-    # flattens to (N*400,). Both paths must yield (B_total,400,1).
-    targets = (torch.stack(ys, 0) if ys[0].dim() == 1 else torch.cat(ys, 0)
-               ).unsqueeze(-1).to(device)
-    assert targets.dtype == torch.float32
+    """TRN-02 hand-written step (D-05), PER-BATCH. Order per step: forward ->
+    loss -> finite check -> zero_grad -> backward -> clip -> step.
+    Returns sample-weighted mean loss over batches.
+
+    Single pass over `data` (one DataLoader iteration only — the old two-pass
+    cat/ys form misaligned mels vs labels under shuffle=True). Items are either
+    single samples mel (1,1,128,400) y (400,) or batches (B,1,128,400) y (B,400);
+    each yields targets (B,400,1) matching out (B,400,1)."""
     model.train()
-    out = model(mels)
-    loss = criterion(out, targets)
-    if not torch.isfinite(loss):
-        raise FloatingPointError(f"nonfinite loss: {loss}")
-    optimizer.zero_grad()
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRAD_CLIP)
-    optimizer.step()
-    return float(loss.detach())
+    total, n = 0.0, 0
+    for mels, ys in data:
+        mels = mels.to(device, non_blocking=True)
+        if ys.dim() == 1:  # single sample -> fake batch of 1
+            ys = ys.unsqueeze(0)
+        targets = ys.float().unsqueeze(-1).to(device, non_blocking=True)
+        assert targets.dtype == torch.float32
+        out = model(mels)
+        loss = criterion(out, targets)
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"nonfinite loss: {loss}")
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRAD_CLIP)
+        optimizer.step()
+        total += float(loss.detach()) * mels.size(0)
+        n += mels.size(0)
+    if n == 0:
+        raise ValueError(
+            "train_epoch saw no data — empty train loader? "
+            "batch_size must be <= floor(n_train_crops) (drop_last=True)")
+    return total / n
 
 
 def predicted_positive_rate(model, data, *, device) -> float:
@@ -351,11 +362,13 @@ def _smoke_impl(pre_epoch4_hook=None, *, device="cpu", tolerance: float = 1e-6,
         model = AIRhythmCRNN()
         model.train()  # train-mode init so BN uses batch stats deterministically
         g = torch.Generator().manual_seed(seed)
-        data = []
+        mels, ys = [], []
         for _ in range(4):
-            mel = torch.randn(1, 1, 128, 400, generator=g)
-            y = (torch.rand(400, generator=g) < 0.03).float()
-            data.append((mel, y))
+            mels.append(torch.randn(1, 1, 128, 400, generator=g))
+            ys.append((torch.rand(400, generator=g) < 0.03).float())
+        # one (4,...) batch item: train_epoch is per-batch now — keeps smoke at
+        # 1 step/epoch (old shape: BN over batch-4, single dropout draw) and <30s.
+        data = [(torch.cat(mels, 0), torch.stack(ys, 0))]
         return model, data
 
     def epoch_with_dropout(model, data, criterion, opt):
@@ -476,7 +489,8 @@ def epoch_cap(measured_epoch_h: float, budget_h: float = config.EPOCH_CAP_HOURS)
 
 
 def build_real_loaders(all_song_dirs, *, eval_ids, search_id, device=None,
-                       batch_size: int = 8, crops_per_song: int = 1, seed: int = 0) -> tuple:
+                       batch_size: int = 8, crops_per_song: int = 1, seed: int = 0,
+                       num_workers: int = 0, pin_memory: bool = False) -> tuple:
     """D-05/D-06/D-07 wiring: ids = [int(dir.name) for dir in all_song_dirs]
     train_ids, val_ids, excluded = split_song_ids(ids, eval_ids, search_id)
     train_ds = RandomCropDataset([dirs[s] for s in train_ids], rng=random.Random(seed))
@@ -502,10 +516,15 @@ def build_real_loaders(all_song_dirs, *, eval_ids, search_id, device=None,
         return (torch.stack([m for m, _ in batch]),
                 torch.stack([y[1] for _, y in batch]))
 
+    # num_workers/pin_memory: GPU throughput (Kaggle = 4 cores, pass num_workers=2);
+    # persistent_workers only valid when workers > 0.
+    _kw = dict(num_workers=num_workers, pin_memory=pin_memory)
+    if num_workers:
+        _kw["persistent_workers"] = True
     train_loader = DataLoader(train_ds, batch_size, shuffle=True, drop_last=True,
-                              collate_fn=_onset_collate)
+                              collate_fn=_onset_collate, **_kw)
     val_loader = DataLoader(val_ds, batch_size, shuffle=False,
-                            collate_fn=_onset_collate)
+                            collate_fn=_onset_collate, **_kw)
     print(f"corpus: train={len(train_ids)} val={len(val_ids)} excluded={excluded}")
     return train_loader, val_loader, {"train_ids": train_ids, "val_ids": val_ids, "excluded": excluded}
 

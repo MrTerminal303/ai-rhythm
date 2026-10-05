@@ -1,0 +1,7 @@
+PASS health ok — [{"ok":true,"cached":false},{"ok":true,"cached":true}]
+PASS health cached field is boolean — {"ok":true,"cached":true}
+PASS health db — {"ok":true,"db":"ok"}
+PASS echo — {"msg":"hi"}
+PASS session1 welcome count≥1 — {"type":"welcome","count":3,"welcomed":true,"pong":true}
+PASS session2 = session1 + 1 (persisted) — [{"type":"welcome","count":3,"welcomed":true,"pong":true},{"type":"welcome","count":4,"welcomed":true,"pong":true}]
+smoke OK

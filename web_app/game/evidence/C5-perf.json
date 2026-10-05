@@ -1,0 +1,11 @@
+{
+  "laptop": "550-160l",
+  "chart": "benchmark",
+  "p95RenderDurationMs": 0.4000000059604645,
+  "p95UpdateDurationMs": 0.699999988079071,
+  "p95FrameIntervalMs": 16.700000000004366,
+  "samples": { "frames": 9444, "renders": 9444, "updates": 9444 },
+  "gate": "p95 render <= 16.7 ms",
+  "pass": true,
+  "date": "2026-10-05"
+}

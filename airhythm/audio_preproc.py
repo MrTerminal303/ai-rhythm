@@ -413,6 +413,11 @@ def preprocess_osz(
                 chunk_start_frame=chunk_start_frame,
                 n_frames=config.N_FRAMES,
             )
+            # review #4 P2: the tail chunk is edge-padded — never put targets
+            # on synthetic frames beyond the real spectrogram.
+            real_tail = spec.shape[2] - chunk_start_frame
+            if real_tail < config.N_FRAMES:
+                labels[:, max(0, real_tail):] = 0
 
             # Save normalized spectrogram chunk
             chunk_filename = f"{chunk_idx:04d}.npy"

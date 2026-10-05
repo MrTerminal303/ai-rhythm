@@ -197,3 +197,59 @@ class TestCs4Contract:
         assert data["difficulty_name"] == "4K"
         assert data["cs"] == 4
         assert data["num_chunks"] >= 1
+
+
+class TestTailLabels:
+    """review #4 P2: tail chunk is edge-padded — a beatmap note beyond the
+    real spectrogram must never become a target on synthetic frames."""
+
+    @staticmethod
+    def _make_osz_notes(*times_ms: int) -> bytes:
+        mania = (
+            "[General]\n"
+            "Mode: 3\n"
+            "AudioFilename: audio.mp3\n"
+            "[Difficulty]\n"
+            "CircleSize: 4\n"
+            "OverallDifficulty:4\n"
+            "[Metadata]\n"
+            "Title: T\n"
+            "Artist: A\n"
+            "BeatmapSetID: 7\n"
+            "Version: 4K\n"
+            "[HitObjects]\n"
+            + "".join(f"256,192,{t},1,0,0:0:0:0:\n" for t in times_ms)
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("song/4K.osu", mania)
+            zf.writestr("audio.mp3", b"x")
+        return buf.getvalue()
+
+    def test_note_in_pad_zeroed_note_in_real_kept(self, tmp_path, monkeypatch):
+        import numpy as np
+
+        from airhythm import config
+
+        song_dir = tmp_path / "7"
+        song_dir.mkdir()
+        # spec T=500 -> chunk 0 = frames [0,400), tail chunk 1 = [400,800)
+        # with only [400,500) real; pad = [500,800)
+        monkeypatch.setattr(
+            "airhythm.audio_preproc.load_audio_from_osz",
+            lambda *a, **k: (np.zeros(16000, dtype=np.float32), 16000),
+        )
+        monkeypatch.setattr(
+            "airhythm.audio_preproc.audio_to_mel_spec",
+            lambda *a, **k: np.zeros((1, 128, 500), dtype=np.float32),
+        )
+
+        f_keep, f_drop = config.ms_to_frame(4500), config.ms_to_frame(5500)
+        assert 400 <= f_keep < 500 <= f_drop  # preconditions of the scenario
+
+        files = preprocess_osz(self._make_osz_notes(4500, 5500), 7, str(song_dir))
+        assert files  # wrote both chunks
+
+        labels = np.load(song_dir / "0001_labels.npy")
+        assert labels[1, f_keep - 400] == 1  # real audio frames keep targets
+        assert labels[1, f_drop - 400] == 0  # synthetic pad never a target

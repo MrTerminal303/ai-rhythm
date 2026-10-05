@@ -102,11 +102,48 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 from airhythm.download_batch import main as download_main
+from airhythm.audio_preproc import preprocess_osz
+from airhythm.scraper import SOURCES, download_osz
 
 DATA_DIR = str(WORKING / "data" / "minimal_dataset")
-# n_songs = TOTAL target: resumes to 100 across reruns, prunes partial dirs
+
+# P0 (review #4): frozen eval/search IDs first — the random fill shuffles
+# candidates and can miss them, aborting CELL 13/15 preflight later.
+import json
+_eval_meta = Path("metadata/eval_song_ids.json")
+if _eval_meta.exists():
+    _m = json.load(open(_eval_meta))
+    PINNED = sorted({int(x) for x in _m["song_ids"]} | {int(x) for x in _m.get("search_set_ids", [])})
+else:
+    PINNED = [2255671, 2256944, 2516285, 2527391, 2589624, 2561773]
+
+_dl_srcs = [s for s in SOURCES if SOURCES[s].get("download")]
+import time
+for bid in PINNED:
+    song_dir = Path(DATA_DIR) / str(bid)
+    if song_dir.is_dir() and any(song_dir.glob("*.json")):
+        print(f"pinned {bid}: already complete")
+        continue
+    osz = None
+    for src in _dl_srcs:
+        osz = download_osz(src, bid)
+        if osz is not None:
+            break
+    assert osz, f"frozen eval/search song {bid} failed to download from all mirrors"
+    time.sleep(1.0)  # D-14 serial delay between mirror requests
+    song_dir.mkdir(parents=True, exist_ok=True)
+    files = preprocess_osz(osz, bid, str(song_dir))
+    assert files, f"frozen eval/search song {bid} preprocess failed"
+    print(f"pinned {bid}: {len(files)} files")
+
+# n_songs = TOTAL target: resumes to 100 across reruns, prunes partial dirs;
+# the 6 pinned songs already complete count toward the target
 saved = download_main(output=DATA_DIR, n_songs=100)
 print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
+
+# P0: all frozen eval/search songs must exist after CELL 3
+_missing = [b for b in PINNED if not any((Path(DATA_DIR) / str(b)).glob("*.json"))]
+assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 
 # %% ============================================================

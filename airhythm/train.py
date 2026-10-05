@@ -685,6 +685,10 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         # 4. scheduler step
         scheduler.step(val_loss)
 
+        # count THIS epoch's batches before saving (review #4 P2: checkpoint
+        # used to store the step count from before this epoch)
+        global_step += len(train_data)
+
         # 5. save checkpoints
         latest_path = os.path.join(ckpt_dir, f"latest_{stage}.pt")
         state = save_checkpoint(
@@ -713,7 +717,6 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         epoch_end = time.time()
         epoch_dur = epoch_end - epoch_start
         epoch_times.append(epoch_dur)
-        global_step += len(train_data)
         if on_epoch_end is not None:
             on_epoch_end(epoch, epoch_times)
 

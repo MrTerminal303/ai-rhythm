@@ -10,3 +10,5 @@ coverage/
 .wrangler/
 playwright-report/
 test-results/
+evidence/
+e2e/screenshots/

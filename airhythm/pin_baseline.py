@@ -7,7 +7,7 @@ Reconstructs refs from stitched labels, computes onset_strength, routes
 through shared peak_pick_frames(normalize_envelope(...)), buckets refs by
 top-30% oenv-at-frame salience (filter-refs-keep-ALL-ests), then mir_eval.
 
-Option-b params (D-10, STATE locked) are used for the pin AND written to
+Option-b params as amended in STATE D-10 (2026-10-02): 0.02/15/15 are used for the pin AND written to
 config.py afterward — the pin must not read config.PEAK_PICK_PARAMS (which
 still holds pre-derivation delta=0.3 at pin time).
 """
@@ -30,7 +30,7 @@ from airhythm.baseline import normalize_envelope, peak_pick_frames
 
 logger = logging.getLogger(__name__)
 
-# Option b — librosa defaults (STATE D-10 locked; RESEARCH.md Section 3.1)
+# Option b as amended in STATE D-10 (2026-10-02) — 0.02/15/15
 OPTION_B_PARAMS = {
     "pre_max": 3,
     "post_max": 1,
@@ -56,11 +56,11 @@ def reconstruct_ref_times(song_dir: Path) -> np.ndarray:
 
 
 def bucket_refs_by_salience(
-    ref_times: np.ndarray, oenv: np.ndarray, window_frames: int = 5
+    ref_times: np.ndarray, oenv: np.ndarray, window_frames: int = 5, cut_frac: float = 0.3
 ) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Rank-based top-30% salience split (SBOEP v1).
+    """Rank-based top-cut_frac salience split (SBOEP v1; default 0.3 gates, D-01).
 
-    Uses rank-based selection (exactly ceil(0.3*n) events) instead of
+    Uses rank-based selection (exactly ceil(cut_frac*n) events) instead of
     percentile threshold to avoid ties inflating the important bucket.
     Perplexity review found percentile ties as a protocol bug.
     """
@@ -81,13 +81,13 @@ def bucket_refs_by_salience(
         np.max(oenv[max(0, f - window_frames) : min(len(oenv), f + window_frames + 1)]) - local_avg[f]
         for f in frames
     ])
-    # Rank-based: exactly ceil(0.3*n) events, no ties inflation
-    n_important = int(np.ceil(0.3 * len(sal)))
+    # Rank-based: exactly ceil(cut_frac*n) events, no ties inflation
+    n_important = int(np.ceil(cut_frac * len(sal)))
     top_indices = np.argsort(sal)[-n_important:]
     mask = np.zeros(len(sal), dtype=bool)
     mask[top_indices] = True
     cut = float(sal[top_indices].min())
-    return ref_times[mask], ref_times[~mask], cut
+    return mask, ~mask, cut
 
 
 def safe_f_measure(ref: np.ndarray, est: np.ndarray, window: float = 0.05) -> Dict[str, float]:
@@ -212,7 +212,7 @@ def pin_baseline(args) -> dict:
         "fp_protocol": "global-one-to-one-match (SBOEP v1, Perplexity-reviewed)",
         "bucket_definition": "top-30% refs by oenv-at-frame, rank-based (ceil(0.3*n))",
         "pinned_at": datetime.now(timezone.utc).isoformat(),
-        "decision_ref": "D-10, D-16, RESEARCH.md Section 3.1 option b",
+        "decision_ref": "D-10 (amended 2026-10-02), D-16, RESEARCH.md Section 3.1 option b",
         "per_song": per_song,
         "aggregate": aggregate,
     }

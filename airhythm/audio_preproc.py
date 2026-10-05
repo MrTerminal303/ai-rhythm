@@ -80,7 +80,8 @@ def load_audio_from_osz(
 
     Raises:
         FileNotFoundError: If audio_filename cannot be found in the archive.
-        ValueError: If the .osz archive is invalid.
+        ValueError: If the .osz archive is invalid, or the audio is corrupt
+            and cannot be decoded.
     """
     # Normalize: strip leading ./, .\ for cross-platform paths
     normalized = audio_filename.lstrip("./\\")
@@ -104,9 +105,17 @@ def load_audio_from_osz(
         raise ValueError(f"Invalid .osz archive: {e}") from e
 
     # Decode with librosa as universal decoder
-    waveform, sr = librosa.load(
-        io.BytesIO(audio_bytes), sr=config.SAMPLE_RATE, mono=True
-    )
+    try:
+        waveform, sr = librosa.load(
+            io.BytesIO(audio_bytes), sr=config.SAMPLE_RATE, mono=True
+        )
+    except Exception as e:
+        # Corrupt/truncated audio: soundfile raises LibsndfileError (a
+        # RuntimeError), which callers catching ValueError would miss and a
+        # batch run would die on. Normalize to the documented ValueError.
+        raise ValueError(f"Audio decode failed for '{audio_filename}': {e}") from e
+    if waveform.size == 0:
+        raise ValueError(f"Audio '{audio_filename}' decoded to zero samples")
     return (waveform.astype(np.float32), sr)
 
 
@@ -197,6 +206,18 @@ def chunk_spectrogram(
         chunk = spec[:, :, start : start + n_frames]
         chunks.append(chunk.astype(np.float32))
 
+    # Option B (review #3): never silently drop the tail — if the last window
+    # doesn't reach the song end, append one edge-padded partial chunk so
+    # labels + training + eval all include the final frames.
+    if chunks and (len(chunks) - 1) * hop_frames + n_frames < time_frames:
+        start = (len(chunks) - 1) * hop_frames + n_frames
+        tail = np.pad(
+            spec[:, :, start:],
+            ((0, 0), (0, 0), (0, n_frames - (time_frames - start))),
+            mode="edge",
+        )
+        chunks.append(tail.astype(np.float32))
+
     return chunks
 
 
@@ -226,8 +247,8 @@ def extract_chunk_labels(
         onset:  1 at frame where a note starts.
         count:  number of notes whose start frame is this frame (0-4+).
 
-    Converts hit object times (milliseconds) to frame indices at 100Hz
-    (10ms per frame, matching hop_length=220 at 22050Hz).
+    Converts hit object times (milliseconds) to frame indices on the REAL mel
+    grid via config.ms_to_frame (config.FPS = SAMPLE_RATE/HOP_LENGTH ≈ 100.227 Hz).
 
     Args:
         hit_objects: List of HitObject from osu_parser.
@@ -241,8 +262,8 @@ def extract_chunk_labels(
     chunk_end_frame = chunk_start_frame + n_frames
 
     for ho in hit_objects:
-        start = int(round(ho.time / 1000 * 100))
-        end = int(round(ho.end_time / 1000 * 100))
+        start = config.ms_to_frame(ho.time)
+        end = config.ms_to_frame(ho.end_time)
         if not (chunk_start_frame <= start < chunk_end_frame):
             continue
         local = start - chunk_start_frame
@@ -316,6 +337,16 @@ def preprocess_osz(
             continue
         processed_difficulties.add(osu_filename)
 
+        # Dataset contract = 4K (review #3): archives may list 5K/7K first —
+        # never train on a non-4K just because of zip order. Missing CircleSize
+        # parses to CS_DEFAULT=4, so legacy 4K maps without the key keep working.
+        if metadata.cs != config.CS_DEFAULT:
+            logger.warning(
+                "Skipping cs=%s difficulty %r in %d (dataset contract = 4K)",
+                metadata.cs, metadata.difficulty_name, beatmapset_id,
+            )
+            continue
+
         # Extract AudioFilename from .osu content
         osu_content = osu_content_map.get(osu_filename)
         if osu_content is None:
@@ -382,6 +413,11 @@ def preprocess_osz(
                 chunk_start_frame=chunk_start_frame,
                 n_frames=config.N_FRAMES,
             )
+            # review #4 P2: the tail chunk is edge-padded — never put targets
+            # on synthetic frames beyond the real spectrogram.
+            real_tail = spec.shape[2] - chunk_start_frame
+            if real_tail < config.N_FRAMES:
+                labels[:, max(0, real_tail):] = 0
 
             # Save normalized spectrogram chunk
             chunk_filename = f"{chunk_idx:04d}.npy"

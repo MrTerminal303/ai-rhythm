@@ -312,7 +312,7 @@ def search_all_pages(
                 timeout=30,
             )
             if response.status_code == 530:
-                logger.warning("%s search returned 530 on page %d — stopping", source, page_val)
+                logger.warning("%s search returned 530 on page %d — stopping", source, page_idx)
                 break
             response.raise_for_status()
             data = response.json()

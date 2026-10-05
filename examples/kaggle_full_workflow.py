@@ -9,13 +9,16 @@ GPU: Enable in notebook settings for Phase 6+ (Model Build / Training).
 # CELL 0: Install missing deps (run once per session)
 # =============================================================
 # On Kaggle, datasets are read-only — pip doesn't auto-install from requirements.txt.
-# numpy 2.4+ breaks mir_eval/librosa on Kaggle, so pin < 2.0 first.
+# numpy: do NOT pin <2.0 — downgrading over the image's numpy corrupts dist-packages
+# (ModuleNotFoundError: numpy.char, observed 2026-10-01). Only repair if already broken.
 
-import sys
+import sys, subprocess
 from pathlib import Path
 
-# Pin numpy first to avoid _center import error
-!pip install "numpy<2.0" -q
+# Sanity-check numpy in a clean interpreter; force-reinstall only if broken
+# (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
+if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps", "numpy"])
 
 # Find and install from bundled requirements.txt (skip numpy line)
 for _d in Path("/kaggle/input").rglob("requirements.txt"):
@@ -32,6 +35,10 @@ print(f"numpy={np.__version__}")
 import torch, torchaudio, mir_eval, librosa
 print(f"torch={torch.__version__} torchaudio={torchaudio.__version__} "
       f"librosa={librosa.__version__} mir_eval={mir_eval.__version__}")
+# torch/torchaudio must be Kaggle's matched pair — never pip-mix them (review P1)
+assert torch.__version__.split("+")[0].rsplit(".", 1)[0] == \
+    torchaudio.__version__.split("+")[0].rsplit(".", 1)[0], \
+    f"torch/torchaudio mismatch: {torch.__version__} vs {torchaudio.__version__}"
 # =============================================================
 import sys, os
 from pathlib import Path
@@ -89,11 +96,54 @@ show_storage("Working disk", str(WORKING))
 # %% ============================================================
 # CELL 3: Download songs
 # =============================================================
-from download_minimal import main as download_main
+import logging
+# Show search page progress (default logger output is invisible in notebooks —
+# the old silent search looked frozen for minutes)
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+from airhythm.download_batch import main as download_main
+from airhythm.audio_preproc import preprocess_osz
+from airhythm.scraper import SOURCES, download_osz
 
 DATA_DIR = str(WORKING / "data" / "minimal_dataset")
-saved = download_main(output=DATA_DIR, n_songs=3)
-print(f"\nDownloaded {saved} songs to {DATA_DIR}")
+
+# P0 (review #4): frozen eval/search IDs first — the random fill shuffles
+# candidates and can miss them, aborting CELL 13/15 preflight later.
+import json
+_eval_meta = Path("metadata/eval_song_ids.json")
+if _eval_meta.exists():
+    _m = json.load(open(_eval_meta))
+    PINNED = sorted({int(x) for x in _m["song_ids"]} | {int(x) for x in _m.get("search_set_ids", [])})
+else:
+    PINNED = [2255671, 2256944, 2516285, 2527391, 2589624, 2561773]
+
+_dl_srcs = [s for s in SOURCES if SOURCES[s].get("download")]
+import time
+for bid in PINNED:
+    song_dir = Path(DATA_DIR) / str(bid)
+    if song_dir.is_dir() and any(song_dir.glob("*.json")):
+        print(f"pinned {bid}: already complete")
+        continue
+    osz = None
+    for src in _dl_srcs:
+        osz = download_osz(src, bid)
+        if osz is not None:
+            break
+    assert osz, f"frozen eval/search song {bid} failed to download from all mirrors"
+    time.sleep(1.0)  # D-14 serial delay between mirror requests
+    song_dir.mkdir(parents=True, exist_ok=True)
+    files = preprocess_osz(osz, bid, str(song_dir))
+    assert files, f"frozen eval/search song {bid} preprocess failed"
+    print(f"pinned {bid}: {len(files)} files")
+
+# n_songs = TOTAL target: resumes to 100 across reruns, prunes partial dirs;
+# the 6 pinned songs already complete count toward the target
+saved = download_main(output=DATA_DIR, n_songs=100)
+print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
+
+# P0: all frozen eval/search songs must exist after CELL 3
+_missing = [b for b in PINNED if not any((Path(DATA_DIR) / str(b)).glob("*.json"))]
+assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 
 # %% ============================================================
@@ -202,185 +252,367 @@ print(f"\nPeak-pick params: {config.PEAK_PICK_PARAMS}")
 # CELL 10: Build CRNN model (Phase 6 - shape + alignment check)
 # =============================================================
 import torch
-import torch.nn as nn
 
-class AIRhythmCRNN(nn.Module):
-    """CRNN backbone + onset detection head.
-    Input:  (batch, 1, 128, 400)  - mel spectrogram chunk
-    Output: (batch, 400, 1)       - per-frame onset logits
-    """
-    def __init__(self):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=(3, 3), padding=(1, 1)),
-            nn.BatchNorm2d(32), nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),   # 128->64, time=400
-            nn.Conv2d(32, 64, kernel_size=(3, 3), padding=(1, 1)),
-            nn.BatchNorm2d(64), nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),   # 64->32, time=400
-            nn.Conv2d(64, 128, kernel_size=(3, 3), padding=(1, 1)),
-            nn.BatchNorm2d(128), nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1)),   # 32->16, time=400
-        )
-        self.gru = nn.GRU(input_size=128*16, hidden_size=128,
-                          num_layers=2, batch_first=True, bidirectional=True)
-        self.head = nn.Linear(128*2, 1)
+from airhythm import config
+from airhythm.model import AIRhythmCRNN, alignment_delta   # package = single source of truth (D-08/D-09)
 
-    def forward(self, x):
-        x = self.conv(x)
-        x = x.permute(0, 3, 1, 2).reshape(x.size(0), x.size(1), -1)
-        x, _ = self.gru(x)
-        return self.head(x)
-
-
+torch.manual_seed(0)   # seed BEFORE construction — this is what pins the weights (review fix)
 model = AIRhythmCRNN()
-dummy = torch.randn(2, 1, 128, 400)
-out = model(dummy)
-assert out.shape == (2, 400, 1), f"Wrong shape: {out.shape}"
-print(f"Shape assert passed: {out.shape}")
 
-impulse = torch.zeros(1, 1, 128, 400)
-impulse[0, 0, :, 200] = 10.0
-with torch.no_grad():
-    probs = torch.sigmoid(model(impulse).squeeze())
-    argmax_frame = int(probs.argmax())
-    assert abs(argmax_frame - 200) <= 2, f"Alignment fail: argmax={argmax_frame}"
-    print(f"Alignment assert passed: argmax={argmax_frame} (target=200)")
+# MOD-02: gradient alignment FIRST on the fresh model — review fix: running the
+# shape check first would let a train-mode forward push a randn batch through BN,
+# corrupting running stats before alignment_delta switches to eval (breaks the
+# identical-code claim vs pytest, where every test gets a fresh fixture model)
+delta = alignment_delta(model, 200)
+align_ok = abs(delta) <= 2
+print(f"Alignment: {'PASS' if align_ok else 'FAIL'} delta={delta} (target=200, tol=2)")
+
+# MOD-01: shape assert — literal bool
+out = model(torch.randn(2, 1, 128, 400))
+shape_ok = out.shape == (2, 400, 1)
+print(f"Shape assert: {'PASS' if shape_ok else 'FAIL'} {tuple(out.shape)}")
+
+# MOD-01: param ceiling — D-03 corrected to 400,000 (M1 measures 353,121)
+n_params = sum(p.numel() for p in model.parameters())
+ceil_ok = n_params <= config.PARAM_CEILING
+print(f"Param ceiling: {'PASS' if ceil_ok else 'FAIL'} {n_params} <= {config.PARAM_CEILING}")
+
+assert shape_ok and ceil_ok and align_ok, "Phase 6 gate FAILED — do not proceed to Phase 7"
+print("Phase 6 gate: PASS (shape + params + alignment)")
 
 
 # %% ============================================================
-# CELL 11: Toy overfit gate (Phase 7)
+# CELL 11: Toy overfit gate (Phase 7) — probes -> loop -> gate -> PASS (D-07 single session)
 # =============================================================
-import torch.nn.functional as F
-from torch.optim import AdamW
-import torchaudio
+# standalone-safe: works even if CELL 10 not pasted (A1 pattern)
+from airhythm import config
+from airhythm.model import AIRhythmCRNN
+from airhythm.train import (
+    build_metronome_data, compute_pos_weight_candidate, stability_probe,
+    run_training_slice, rate_breach, run_toy_overfit_gate,
+)
+import torch
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.manual_seed(0)
+
+# D-04: 10 metronome_click songs ONLY (build_metronome_data never touches generate_toy_set)
+data, true_rate = build_metronome_data(config.N_TOY, device=DEVICE)
+print(f"toy songs={len(data)} true_pos_rate={true_rate:.4f}")
+
+# TRN-01 stability probe (D-01: large slice = FULL pass over data, halve on NaN)
+labels_all = torch.cat([y for _, y in data]).float()
+raw_w = compute_pos_weight_candidate(labels_all)
+
+def _slice_ok(w: float) -> bool:
+    return run_training_slice(AIRhythmCRNN().to(DEVICE), data, w, device=DEVICE)
+
+final_w, halvings = stability_probe(_slice_ok, raw_w)
+print(f"pos_weight raw={raw_w:.1f} final={final_w:.1f} halvings={halvings}")  # BOTH logged (TRN-01)
+
+# TRN-02 loop + TRN-03 gate (D-05: package owns the loop; cell only chains it)
 model = AIRhythmCRNN().to(DEVICE)
+result = run_toy_overfit_gate(model, data, device=DEVICE, pos_weight=final_w,
+                              max_epochs=config.MAX_EPOCHS)
 
-# Build 10 metronome toy samples as tensors
-from airhythm.toygen import MetronomeClickGenerator
-
-metronome_data = []
-for i in range(10):
-    gen = MetronomeClickGenerator(sample_rate=config.SAMPLE_RATE)
-    audio, labels = gen.generate(bpm=120.0 + i * 10)
-    exp_samples = int(config.SAMPLE_RATE * 4.0)
-    if len(audio) < exp_samples:
-        audio = np.pad(audio, (0, exp_samples - len(audio)))
-    else:
-        audio = audio[:exp_samples]
-    if len(labels) < config.N_FRAMES:
-        labels = np.pad(labels, (0, config.N_FRAMES - len(labels)))
-    else:
-        labels = labels[:config.N_FRAMES]
-    audio_t = torch.tensor(audio).unsqueeze(0).float()
-    mel = torchaudio.transforms.MelSpectrogram(
-        sample_rate=config.SAMPLE_RATE, n_fft=config.N_FFT,
-        hop_length=config.HOP_LENGTH, n_mels=config.N_MELS, power=config.POWER,
-    )(audio_t).unsqueeze(0)
-    T = mel.size(-1)
-    if T < 400:
-        mel = F.pad(mel, (0, 400 - T))
-    else:
-        mel = mel[:, :, :, :400]
-    metronome_data.append((mel.to(DEVICE), torch.tensor(labels[:400]).float().to(DEVICE)))
-
-optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-model.train()
-for epoch in range(200):
-    total_loss = 0
-    for mel, label in metronome_data:
-        out = model(mel).squeeze(-1)
-        loss = F.binary_cross_entropy_with_logits(out, label)
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        total_loss += loss.item()
-    if (epoch + 1) % 50 == 0:
-        model.eval()
-        with torch.no_grad():
-            pred_rate = np.mean([
-                (torch.sigmoid(model(m.to(DEVICE)).squeeze(-1)) > 0.5).float().mean().item()
-                for m, _ in metronome_data
-            ])
-        model.train()
-        print(f"Epoch {epoch+1:3d}  loss={total_loss/len(metronome_data):.4f}  pred_rate={pred_rate:.3f}")
-
-model.eval()
-correct = total = 0
-with torch.no_grad():
-    for mel, label in metronome_data:
-        pred = (torch.sigmoid(model(mel).squeeze(-1)) > 0.5).long()
-        correct += (pred == label.long()).sum().item()
-        total += len(label)
-print(f"\nToy overfit gate: accuracy={correct/total:.4f} (target ~1.0)")
+# D-03 diagnostics + degeneracy verdict + D-02 literal bool
+print(f"P={result['precision']:.4f} R={result['recall']:.4f} "
+      f"pred_rate={result['pred_rate']:.4f} final_loss={result['final_loss']:.4f} "
+      f"epoch={result['epoch']} halted={result['halted']} reason={result['halt_reason']}")
+print(f"degeneracy healthy={rate_breach(result['pred_rate'], result['true_rate']) is None}")
+gate_pass = bool(result["passed"] and not result["halted"])
+print(f"TOY OVERFIT GATE: {'PASS' if gate_pass else 'FAIL'} (need P>={config.GATE_P} AND R>={config.GATE_R}, epoch<={config.MAX_EPOCHS})")
+assert gate_pass, "Phase 7 toy gate FAILED — PLAN.md debug order: (1) alignment test (2) pos_weight logs (3) capacity"
+print("Phase 7 TRN-01/TRN-02/TRN-03: PASS")
 
 
 # %% ============================================================
-# CELL 12: Save checkpoint
+# CELL 12: Save checkpoint (Phase 8 resume contract seed — EXP-02 keys)
 # =============================================================
 ckpt_dir = str(WORKING / "checkpoints")
 os.makedirs(ckpt_dir, exist_ok=True)
-torch.save({"model_state_dict": model.state_dict(), "epoch": 0},
-           f"{ckpt_dir}/latest_epoch_0.pt")
-show_storage("Working disk after checkpoint", str(WORKING))
-print("Checkpoint saved")
+ckpt_path = f"{ckpt_dir}/phase7_toy_gate.pt"
+torch.save({
+    "model": model.state_dict(),
+    "optimizer": result["optimizer"].state_dict(),
+    "scheduler": result["scheduler"].state_dict(),
+    "epoch": result["epoch"],
+    "pos_weight": final_w,
+    "stage": "phase7_toy_gate",
+}, ckpt_path)
+print(f"Checkpoint saved: {ckpt_path} (pos_weight={final_w:.1f}, epoch={result['epoch']})")
+if "show_storage" in globals():  # CELL 2 optional — Phase 7 paste-set is CELL 0+11+12
+    show_storage("Working disk after checkpoint", str(WORKING))
 
 
 # %% ============================================================
-# CELL 13: Full training loop skeleton (Phase 8 - real songs)
+# CELL 13: Full training (Phase 8) — resume (D-11) -> train (D-08) -> time push (D-10)
 # =============================================================
-# This is the skeleton for full training. Fill in with real data
-# after toy gate passes.
-#
-# from torch.utils.data import DataLoader, Dataset
-#
-# class SongChunks(Dataset):
-#     """Load preprocessed .npy spectrogram chunks + labels."""
-#     def __init__(self, data_dir):
-#         self.chunks = []  # list of (spec_path, label_path)
-#         # Scan data_dir for *.npy files...
-#
-#     def __len__(self):
-#         return len(self.chunks)
-#
-#     def __getitem__(self, idx):
-#         spec = np.load(self.chunks[idx][0])
-#         label = np.load(self.chunks[idx][1])
-#         return torch.tensor(spec).float(), torch.tensor(label).float()
-#
-# train_loader = DataLoader(SongChunks(DATA_DIR), batch_size=16, shuffle=True)
-#
-# # Compute pos_weight from dataset (onset rate ~2-5%)
-# # pos_weight = n_neg / n_pos  (expect ~20-50x)
-#
-# # Training loop with:
-# #   - BCEWithLogitsLoss(pos_weight=...)
-# #   - AdamW(lr=1e-3, wd=1e-4)
-# #   - ReduceLROnPlateau(patience=3, factor=0.5)
-# #   - Grad clip 1.0
-# #   - Time-based checkpoint every 30min
-#
-print("Phase 8 training skeleton - implement after toy gate passes")
+import json
+import os
+import subprocess
+import time
+import torch
+from pathlib import Path
+
+from airhythm import config
+from airhythm.kaggle_push import prune_old_checkpoints
+from airhythm.model import AIRhythmCRNN
+from airhythm.train import (build_real_loaders, epoch_cap, load_checkpoint,
+                            median_epoch_time, resume_smoke_test, run_real_training)
+
+WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
+CKPT_DIR = WORKING / config.CHECKPOINTS_DIR
+CKPT_DIR.mkdir(exist_ok=True)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+POS_WEIGHT = 36.4  # Phase 7 logged seed (CELL 11 output: pos_weight raw=36.4 final=36.4)
+
+# D-16 frozen eval ids — read metadata/eval_song_ids.json when present (song_ids/search_set_ids)
+_eval_meta = Path("metadata/eval_song_ids.json")
+if _eval_meta.exists():
+    _meta = json.load(open(_eval_meta))
+    EVAL_IDS = [int(x) for x in _meta["song_ids"]]
+    SEARCH_ID = int(_meta["search_set_ids"][0])
+else:
+    EVAL_IDS = [2255671, 2256944, 2516285, 2527391, 2589624]
+    SEARCH_ID = 2561773
+
+# --- preflight: local resume smoke (CPU, ~seconds) before any GPU minute
+smoke = resume_smoke_test(device="cpu")
+print("resume smoke:", "PASS" if smoke["pass"] else "FAIL", smoke)
+assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02 criterion 4)"
+
+# --- corpus (prints 'corpus: train=... excluded=...' audit line)
+# Same DATA_ROOT as CELL 3/4 (data/minimal_dataset) — spectrograms path never existed.
+DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "minimal_dataset")))
+song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
+# P0-level data-integrity preflight: frozen eval/search songs must exist —
+# split exclusion ≠ presence (random corpus download may omit them).
+_required = set(EVAL_IDS) | {SEARCH_ID}
+_missing = sorted(_required - {int(d.name) for d in song_dirs})
+assert not _missing, f"Missing frozen eval/search songs: {_missing}"
+train_loader, val_loader, info = build_real_loaders(
+    song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID,
+    num_workers=2, pin_memory=DEVICE.startswith("cuda"))  # Kaggle = 4 cores
+assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
+
+# --- resume (D-11): user manually web-downloads latest_*.pt into CKPT_DIR (CLI pull NOT used)
+model = AIRhythmCRNN().to(DEVICE)
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR)
+start_epoch, global_step, resume_val = 0, 0, None
+resume_candidates = sorted(CKPT_DIR.glob("latest_*.pt"))
+if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 assert)
+    ckpt = load_checkpoint(str(resume_candidates[-1]), model=model, optimizer=optimizer,
+                           scheduler=scheduler, device=DEVICE)
+    start_epoch, global_step = ckpt["epoch"], ckpt["global_step"]
+    resume_val = ckpt.get("val_metric")
+    # best over ALL sessions lives in best_*.pt — latest val_metric alone would
+    # re-open best_ selection at a worse value after restart (review P1).
+    _best_cands = sorted(CKPT_DIR.glob("best_*.pt"))
+    if _best_cands:
+        _best = torch.load(_best_cands[-1], map_location="cpu", weights_only=False)
+        _bv = _best.get("val_metric")
+        if _bv is not None:
+            resume_val = _bv if resume_val is None else min(resume_val, _bv)
+    assert ckpt["stage"].startswith("phase8"), f"wrong-stage checkpoint: {ckpt['stage']}"
+    print(f"RESUMED at epoch={start_epoch} global_step={global_step}")
+else:
+    print("no local checkpoint — fresh start")
+
+# --- time-based checkpoint push (D-09: 1 latest + 1 best; D-10: ~30min cadence)
+PUSH_INTERVAL_S = 1800  # PLAN.md default ~30min
+_last_push = {"t": time.time()}
+
+def push_now():
+    prune_old_checkpoints(str(CKPT_DIR), keep_latest=1, keep_best=1)  # D-09: 1 latest + 1 best
+    # CLI needs -p <dir with dataset-metadata.json> + visible failures (review P0).
+    meta = CKPT_DIR / "dataset-metadata.json"
+    if not meta.exists():
+        meta.write_text(json.dumps({
+            "id": f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}",
+            "title": config.DATASET_HANDLE,
+            "licenses": [{"name": "CC0-100"}],
+        }, indent=2))
+    msg = f"phase8 checkpoint {time.strftime('%Y-%m-%d %H:%M')}"
+    r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CKPT_DIR), "-m", msg])
+    if r.returncode != 0:  # first push: dataset doesn't exist yet -> create it
+        subprocess.run(["kaggle", "datasets", "create", "-p", str(CKPT_DIR),
+                        "-s", config.DATASET_HANDLE], check=True)
+
+def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
+    if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
+        _last_push["t"] = time.time()
+        try:
+            push_now()
+            print(f"pushed at epoch={epoch} (D-10 {PUSH_INTERVAL_S // 60}min cadence)")
+        except subprocess.CalledProcessError as e:
+            # visible, but never kill a 12h run over a push: local ckpts still save
+            print(f"PUSH FAILED at epoch={epoch} ({e}) — will retry next cadence")
+
+# --- train (D-08): fresh session epoch cap from measured time; resume runs until stop
+result = run_real_training(
+    train_loader, val_loader, pos_weight=POS_WEIGHT, device=DEVICE,
+    ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
+    start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
+    max_epochs=epoch_cap(median_epoch_time([600.0])) if start_epoch == 0 else None,
+    on_epoch_end=maybe_push)
+print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
+
+# D-10: recompute display after run (median epoch times, epoch-1 warm-up discarded)
+if len(result["epoch_times"]) >= 2:
+    print(f"push cadence checked at epoch {start_epoch + len(result['epoch_times'])}: "
+          f"median_epoch_h={median_epoch_time(result['epoch_times']):.3f}")
+push_now()  # always push at clean session end (D-10)
 
 
 # %% ============================================================
 # CELL 14: Push to Kaggle Dataset (end of session)
 # =============================================================
-# Only run at END of training session to persist data.
-# Requires kagglehub: pip install kagglehub
+# D-10 session-end push — CLI only (D-11: resume pull is a manual Kaggle web download).
+# CELL 13's push_now() already does both; standalone fallback:
 #
-# from airhythm.kaggle_push import push_dataset, build_manifest
-# build_manifest(f"{DATA_DIR}/../metadata", base_dir=str(WORKING / "data"))
-# ok = push_dataset(local_dir=str(WORKING / "data"),
-#                    version_notes="Phase 7 - toy overfit gate passed")
-# print(f"Push {'succeeded' if ok else 'failed'}")
+# from airhythm.kaggle_push import prune_old_checkpoints
+# prune_old_checkpoints(str(WORKING / config.CHECKPOINTS_DIR), keep_latest=1, keep_best=1)
+# subprocess.run(["kaggle", "datasets", "version", "-m", "phase8 session end"])
 
 print("\n=== Workflow complete ===")
 print("Phase 6 (shape+alignment) - Cell 10")
 print("Phase 7 (toy overfit gate) - Cell 11")
-print("Phase 8 (full training)    - Cell 11 → Cell 13")
+print("Phase 8 (full training+gate) - Cell 13 -> Cell 15")
 print("Phase 9 (ONNX export)      - after Phase 8")
 print("Phase 10 (JSON charts)     - after Phase 9")
+
+# %% ============================================================
+# CELL 15: Salience gate (Phase 8) — EVL-03 report + EVL-04 pass/fail (D-03 halt on fail)
+# =============================================================
+import json
+import os
+import librosa
+import numpy as np
+import torch
+from pathlib import Path
+
+from airhythm import config
+from airhythm.audio_preproc import normalize_chunk
+from airhythm.datasets import boundary_fraction, build_full_song_cache, proximity_binned_recall
+from airhythm.model import AIRhythmCRNN
+from airhythm.pin_baseline import load_song_audio_sr, reconstruct_ref_times
+from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
+                                    stitch_envelope)
+
+# standalone (A1): re-derive context when CELL 13 was not pasted
+if "WORKING" not in globals():
+    WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
+if "DATA_ROOT" not in globals():
+    DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "minimal_dataset")))
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# D-16 frozen eval ids (metadata/eval_song_ids.json: song_ids/search_set_ids)
+_eval_meta = Path("metadata/eval_song_ids.json")
+if _eval_meta.exists():
+    _meta = json.load(open(_eval_meta))
+    EVAL_IDS = [int(x) for x in _meta["song_ids"]]
+    SEARCH_IDS = {int(x) for x in _meta.get("search_set_ids", [])}
+else:
+    EVAL_IDS = [2255671, 2256944, 2516285, 2527391, 2589624]
+    SEARCH_IDS = {2561773}
+
+# frozen eval/search songs must be present before gating (same preflight as CELL 13)
+_present = {int(p.name) for p in DATA_ROOT.iterdir() if p.is_dir()}
+_missing = sorted((set(EVAL_IDS) | SEARCH_IDS) - _present)
+assert not _missing, f"Missing frozen eval/search songs: {_missing}"
+
+# 1) best-val checkpoint ONLY (D-04: gate-time only + final best-val)
+best = sorted((WORKING / config.CHECKPOINTS_DIR).glob("best_*.pt"))
+assert best, "no best_*.pt — train first (CELL 13)"
+ckpt = torch.load(best[-1], map_location=DEVICE, weights_only=False)
+model = AIRhythmCRNN().to(DEVICE)
+model.load_state_dict(ckpt["model"])
+model.eval()
+print(f"gate checkpoint: {best[-1].name} epoch={ckpt['epoch']} stage={ckpt['stage']}")
+
+# 2) per-eval-song sliding-window envelope (hop = config.HOP_FRAMES = 200), sigmoid, stitch
+def _sliding_envelope(sdir):
+    # raw full-song spec (build_full_song_cache stores RAW, not chunk-normalized):
+    # every window is sliced from raw then normalize_chunk(window) — identical
+    # to RandomCropDataset training crops. Concatenating stored (independently
+    # normalized) chunks would mix normalized halves across chunk boundaries
+    # (review #3 P1 train/inference distribution mismatch).
+    spec_path, _ = build_full_song_cache(sdir)
+    spec = np.load(spec_path)  # (1,128,T) RAW
+    n_total = spec.shape[2]
+    # cover the tail stitch_envelope would zero out (review P1): align last
+    # window to the song end, edge-padding a short final chunk to N_FRAMES.
+    starts = list(range(0, max(1, n_total - config.N_FRAMES + 1), config.HOP_FRAMES))
+    last_start = max(0, n_total - config.N_FRAMES)
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    windows = []
+    for start in starts:
+        chunk = spec[:, :, start:start + config.N_FRAMES]
+        if chunk.shape[2] < config.N_FRAMES:
+            chunk = np.pad(chunk, ((0, 0), (0, 0), (0, config.N_FRAMES - chunk.shape[2])),
+                           mode="edge")
+        chunk = normalize_chunk(chunk)  # whole 4s window — matches training crops
+        chunk_t = torch.tensor(chunk).float().unsqueeze(0).to(DEVICE)
+        with torch.no_grad():
+            sig = torch.sigmoid(model(chunk_t)).squeeze().cpu().numpy()  # (400,)
+        windows.append((start, sig))
+    return stitch_envelope(windows, n_total)
+
+song_evals = []
+for sid in EVAL_IDS:
+    sdir = DATA_ROOT / str(sid)
+    env = _sliding_envelope(sdir)
+    est_times, dedup = est_times_from_envelope(env)
+    audio, sr = load_song_audio_sr(sdir)
+    oenv = librosa.onset.onset_strength(y=audio, sr=sr, hop_length=config.HOP_LENGTH,
+                                        fmax=config.FMAX)
+    print(f"song {sid}: n_est={len(est_times)} dedup_ratio={dedup:.3f}")  # P6: dedup-ratio ~= 1.0
+    song_evals.append({
+        "song_id": sid,
+        "ref_times": reconstruct_ref_times(sdir),
+        "oenv": oenv,
+        "est_times": est_times,
+        "pred_positive_rate": float((env > 0.5).mean()),
+    })
+
+# 3) GATE (reads data/eval_pins.json via package default — never recomputes baseline, D-04)
+gate = run_salience_gate(song_evals)
+print("GATE:", "PASS" if gate["pass"] else "FAIL",
+      f"mean_F={gate['mean_F_important']:.4f} bar={gate['bar']:.4f} wins={gate['wins']}/5",
+      f"ci95={gate['ci_95']} fragile={gate['fragile']}")
+print("per-song deltas:", [round(v, 4) for v in gate["deltas"]])
+# D-03: ALL diagnostics printed above (per-song deltas, P/R per bucket, pred rates)
+assert gate["pass"], (
+    "GATE FAILED (D-03 kill condition) — debug order: "
+    "(1) label order alignment (2) pos_weight re-derivation (3) data. "
+    "See diagnostics above: per-song F deltas, P/R per bucket, pred rates.")
+print("Phase 8 EVL-04: PASS")
+
+# 4) boundary-fraction report (success criterion 5) + conditional D-05 tool
+excluded = set(EVAL_IDS) | SEARCH_IDS
+train_dirs = [d for d in sorted(DATA_ROOT.iterdir())
+              if d.is_dir() and d.name.isdigit() and int(d.name) not in excluded]
+fracs = {d.name: boundary_fraction(d) for d in train_dirs}
+mean_frac = float(np.mean(list(fracs.values())))
+print(f"boundary-fraction: mean={mean_frac:.4f} max={max(fracs.values()):.4f} songs={len(fracs)}")
+if mean_frac > config.BOUNDARY_FRACTION_MAX:
+    print("boundary mitigation required — running proximity-binned recall on best checkpoint")
+    # D-05 sizing: refs = stored onset labels, est = best-checkpoint inference (one train song)
+    d = train_dirs[0]
+    env = _sliding_envelope(d)
+    est_times, _ = est_times_from_envelope(env)
+    est_frames = np.round(np.asarray(est_times) * config.FPS).astype(int)
+    labels = np.concatenate([np.load(p) for p in sorted(d.glob("*_labels.npy"))], axis=1)
+    ref_frames = np.where(labels[1] == 1)[0]
+    pbr = proximity_binned_recall(ref_frames, est_frames)
+    print("proximity-binned recall:", pbr)
+    if pbr["degradation"]:
+        print("D-05 degradation: chunk edge REALLY hurts — context-margin mitigation justified")
+    else:
+        print("D-05: no edge degradation — mitigation not justified")
+else:
+    print("boundary-fraction OK — no mitigation needed")

@@ -150,8 +150,10 @@ def save_eval_song_ids(song_ids: List[int], metadata_dir: str) -> str:
     Returns:
         Path to the saved file.
     """
+    # Frozen schema per metadata/eval_song_ids.json — readers (pin_baseline,
+    # notebook CELL 13/15) use "song_ids"; the old "eval_song_ids" key never matched.
     data = {
-        "eval_song_ids": sorted(song_ids),
+        "song_ids": sorted(song_ids),
         "selected_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "phase": "00-foundation",
     }

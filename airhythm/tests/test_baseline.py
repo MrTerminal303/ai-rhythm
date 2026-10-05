@@ -342,14 +342,16 @@ class TestGoldenOnsetTimes:
     ]
 
     @pytest.fixture(scope="class")
-    def fixtures_dir(self):
+    @staticmethod
+    def fixtures_dir():
         """Get fixtures directory, create if needed."""
         fixtures = Path(__file__).parent / "fixtures"
         fixtures.mkdir(exist_ok=True)
         return fixtures
 
     @pytest.fixture(scope="class")
-    def minimal_dataset_dir(self):
+    @staticmethod
+    def minimal_dataset_dir():
         """Path to minimal_dataset at repo root."""
         return Path(__file__).parent.parent.parent / "data" / "minimal_dataset"
 

@@ -19,6 +19,12 @@ single-notebook numbering (08-07 plan references CELL 0/3/4/13/15).
 import sys, subprocess
 from pathlib import Path
 
+# review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
+# fail fast if the image drifts
+assert sys.version_info >= (3, 11), f"need Python 3.11+, got {sys.version}"
+_kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
+print(f"python {sys.version.split()[0]}, kaggle {(_kver.stdout or _kver.stderr).strip()}")
+
 # Sanity-check numpy in a clean interpreter; force-reinstall only if broken
 # (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
 if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
@@ -214,12 +220,29 @@ if songs:
 # %% ============================================================
 # CELL 16: Publish corpus dataset (Notebook A end — B/C attach CORPUS_HANDLE)
 # =============================================================
-import json, os, subprocess, time
+import json, os, shutil, subprocess, time
 from airhythm import config
 
-# publish WORKING/data (contains minimal_dataset/ + this metadata json);
-# attached layout: /kaggle/input/<CORPUS_HANDLE>/minimal_dataset/<song dirs>
-CORPUS_ROOT = WORKING / "data"
+# review #7 P0: Kaggle CLI default --dir-mode skip uploads NO folders, so the
+# corpus goes out FLAT as song_<sid>__<file>; B/C rebuild <sid>/<file> dirs
+# as symlinks via kaggle_path.attach_corpus.
+CORPUS_ROOT = WORKING / "data" / "corpus_publish"
+CORPUS_ROOT.mkdir(exist_ok=True)
+_src_root = WORKING / "data" / "minimal_dataset"
+n_files = 0
+for song_dir in sorted(_src_root.iterdir()):
+    if song_dir.is_dir() and song_dir.name.isdigit():
+        for f in song_dir.iterdir():
+            n_files += 1
+            dst = CORPUS_ROOT / f"song_{song_dir.name}__{f.name}"
+            if dst.exists() or dst.is_symlink():
+                continue
+            try:
+                os.link(f, dst)  # hardlink — same fs, zero copy
+            except OSError:
+                shutil.copy2(f, dst)  # cross-fs fallback
+print(f"flat corpus staged: {n_files} files -> {CORPUS_ROOT}")
+
 meta = CORPUS_ROOT / "dataset-metadata.json"
 if not meta.exists():
     meta.write_text(json.dumps({
@@ -235,3 +258,5 @@ if r.returncode != 0:  # first push: no dataset yet — slug comes from
                    check=True)
 print(f"corpus published: {os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}"
       " — attach in Notebook B/C (Data → Add data)")
+subprocess.run(["kaggle", "datasets", "status",
+                f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}"])

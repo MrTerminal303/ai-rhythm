@@ -20,6 +20,12 @@ references CELL 0/13/14).
 import sys, subprocess
 from pathlib import Path
 
+# review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
+# fail fast if the image drifts
+assert sys.version_info >= (3, 11), f"need Python 3.11+, got {sys.version}"
+_kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
+print(f"python {sys.version.split()[0]}, kaggle {(_kver.stdout or _kver.stderr).strip()}")
+
 # Sanity-check numpy in a clean interpreter; force-reinstall only if broken
 # (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
 if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
@@ -277,12 +283,18 @@ print("resume smoke:", "PASS" if smoke["pass"] else "FAIL", smoke)
 assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02 criterion 4)"
 
 # --- corpus (prints 'corpus: train=... excluded=...' audit line)
-# Read-only attached corpus — full-song caches go to working/full_cache via
-# build_real_loaders(cache_root=...) (review #6: no corpus copy into the 20GB
-# working disk; /kaggle/input stays untouched). AIRHYTHM_DATA still overrides.
-DATA_ROOT = Path(os.environ.get(
-    "AIRHYTHM_DATA",
-    str(Path("/kaggle/input") / config.CORPUS_HANDLE / "minimal_dataset")))
+# Read-only attached corpus: A publishes FLAT (Kaggle CLI --dir-mode skip
+# uploads no folders — review #7 P0), so attach_corpus rebuilds <sid>/<file>
+# as SYMLINKS (zero-copy); full-song caches go to working/full_cache via
+# build_real_loaders(cache_root=...). AIRHYTHM_DATA still overrides.
+from airhythm.kaggle_path import attach_corpus
+
+_env_data = os.environ.get("AIRHYTHM_DATA")
+if _env_data:
+    DATA_ROOT = Path(_env_data)
+else:
+    DATA_ROOT = attach_corpus(Path("/kaggle/input") / config.CORPUS_HANDLE,
+                              WORKING / "data" / "minimal_dataset")
 assert DATA_ROOT.is_dir(), f"corpus not attached: {DATA_ROOT}"
 print(f"DATA_ROOT = {DATA_ROOT}")
 song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
@@ -360,6 +372,9 @@ def push_now():
         # dataset-metadata.json "id"; current CLI create has no -s (review #6)
         subprocess.run(["kaggle", "datasets", "create", "-p", str(CKPT_DIR)],
                        check=True)
+    # review #7: verify the push actually landed
+    subprocess.run(["kaggle", "datasets", "status",
+                    f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}"])
 
 def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
     if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
@@ -373,14 +388,16 @@ def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
 
 # --- train (D-08): fresh session epoch cap from measured time; resume runs until stop
 # review #6: 12h Kaggle session − ~1h margin — stop intentional, push clean,
-# resume next session (repeated-resume makes the old 45h budget moot)
+# resume next session (repeated-resume makes the old 45h budget moot).
+# review #7: cap EVERY session incl. resumed ones — otherwise resume runs
+# until early-stop and Kaggle kills it at 12h mid-session.
 SESSION_BUDGET_H = 11.0
+session_epochs = epoch_cap(median_epoch_time([600.0]), budget_h=SESSION_BUDGET_H)
 result = run_real_training(
     train_loader, val_loader, pos_weight=POS_WEIGHT, device=DEVICE,
     ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
     start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
-    max_epochs=epoch_cap(median_epoch_time([600.0]), budget_h=SESSION_BUDGET_H)
-    if start_epoch == 0 else None,
+    max_epochs=start_epoch + session_epochs,
     on_epoch_end=maybe_push)
 print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
 

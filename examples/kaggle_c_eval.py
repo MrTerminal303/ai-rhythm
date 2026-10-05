@@ -21,6 +21,12 @@ single-notebook numbering (08-07 plan references CELL 15).
 import sys, subprocess
 from pathlib import Path
 
+# review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
+# fail fast if the image drifts
+assert sys.version_info >= (3, 11), f"need Python 3.11+, got {sys.version}"
+_kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
+print(f"python {sys.version.split()[0]}, kaggle {(_kver.stdout or _kver.stderr).strip()}")
+
 # Sanity-check numpy in a clean interpreter; force-reinstall only if broken
 # (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
 if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
@@ -99,6 +105,7 @@ from airhythm.audio_preproc import normalize_chunk
 from airhythm.datasets import boundary_fraction, build_full_song_cache, proximity_binned_recall
 from airhythm.model import AIRhythmCRNN
 from airhythm.pin_baseline import load_song_audio_sr, reconstruct_ref_times
+from airhythm.kaggle_path import attach_corpus
 from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
                                     stitch_envelope)
 
@@ -106,12 +113,16 @@ from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
 if "WORKING" not in globals():
     WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
 if "DATA_ROOT" not in globals():
-    # read-only attached corpus — caches land in working/full_cache only for
-    # the songs actually evaluated (review #6: no 100-song copy into the 20GB
-    # working disk). AIRHYTHM_DATA still overrides.
-    DATA_ROOT = Path(os.environ.get(
-        "AIRHYTHM_DATA",
-        str(Path("/kaggle/input") / config.CORPUS_HANDLE / "minimal_dataset")))
+    # Read-only attached corpus: A publishes FLAT (Kaggle CLI --dir-mode skip
+    # uploads no folders — review #7 P0), so attach_corpus rebuilds <sid>/<file>
+    # as SYMLINKS (zero-copy) — caches land in working/full_cache only for the
+    # songs actually evaluated. AIRHYTHM_DATA still overrides.
+    _env_data = os.environ.get("AIRHYTHM_DATA")
+    if _env_data:
+        DATA_ROOT = Path(_env_data)
+    else:
+        DATA_ROOT = attach_corpus(Path("/kaggle/input") / config.CORPUS_HANDLE,
+                                  WORKING / "data" / "minimal_dataset")
 assert DATA_ROOT.is_dir(), f"corpus not attached: {DATA_ROOT}"
 print(f"DATA_ROOT = {DATA_ROOT}")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

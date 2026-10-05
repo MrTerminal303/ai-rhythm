@@ -129,3 +129,32 @@ class TestKagglePathModule:
         from airhythm.kaggle_path import resolve_kaggle_input_dir
         result = resolve_kaggle_input_dir()
         assert result is None or isinstance(result, Path)
+
+    def test_attach_corpus_flat_rebuilds_symlink_dirs(self, tmp_path):
+        """review #7 P0: flat song_<sid>__<file> upload -> <sid>/<file> symlinks."""
+        from airhythm.kaggle_path import attach_corpus
+
+        flat = tmp_path / "corpus"
+        flat.mkdir()
+        (flat / "song_1__0000.npy").write_bytes(b"x")
+        (flat / "song_1__original.audio").write_bytes(b"a")
+        (flat / "song_2__0000.npy").write_bytes(b"y")
+        dest = tmp_path / "rebuild"
+        out = attach_corpus(flat, dest)
+        assert out == dest
+        assert (dest / "1" / "0000.npy").is_symlink()
+        assert (dest / "1" / "original.audio").read_bytes() == b"a"
+        assert (dest / "2" / "0000.npy").is_symlink()
+        # idempotent second attach
+        attach_corpus(flat, dest)
+        assert (dest / "1" / "0000.npy").is_symlink()
+
+    def test_attach_corpus_nested_passthrough_and_missing_raises(self, tmp_path):
+        from airhythm.kaggle_path import attach_corpus
+
+        nested_root = tmp_path / "nested"
+        (nested_root / "minimal_dataset" / "9").mkdir(parents=True)
+        assert attach_corpus(nested_root, tmp_path / "dest") == (
+            nested_root / "minimal_dataset")
+        with pytest.raises(FileNotFoundError):
+            attach_corpus(tmp_path / "does_not_exist", tmp_path / "dest")

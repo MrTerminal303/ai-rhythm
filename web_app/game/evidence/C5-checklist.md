@@ -2,7 +2,7 @@
 
 The spec has no §17 (pre-flight ruling): this checklist = the C5 brief Step 2 list, mirroring spec §4 Success Criteria. Each line checked with evidence pointer. Date: 2026-10-05.
 
-- [x] Monorepo builds/typechecks/tests green — CI `check` job: latest green `web-game-ci` run on `worktree-w1-web-app-sdd` → https://github.com/MrTerminal303/ai-rhythm/actions/runs/37290525597 (C5 closeout commit `48fba72`, conclusion `success`, 2026-10-05; prior green: https://github.com/MrTerminal303/ai-rhythm/actions/runs/37285879237)
+- [x] Monorepo builds/typechecks/tests green — CI `check` job: `web-game-ci` green on the branch (all runs to date `success`, 2026-10-05): C5 closeout pack run https://github.com/MrTerminal303/ai-rhythm/actions/runs/37290525597 (commit `48fba72`), prior https://github.com/MrTerminal303/ai-rhythm/actions/runs/37285879237 (commit `2c94042`)
 - [x] `/play` renders WebGL2 highway + HUD, judges keys, freezes at chart end — B5 manual verify note + screenshots: `.superpowers/sdd/2026-10-03-web-app-week-1-design/task-B5-freeze.png` (freeze at chart end), also `task-B2-highway.png` (WebGL2 highway) and `task-B4-hud.png` (HUD + key judgement)
 - [x] Benchmarks: p95 render ≤ 16.7 ms — `evidence/C5-perf.json`: `p95RenderDurationMs = 0.40` on production build, chart `benchmark`, laptop `550-160l`, samples 9444/9444/9444, `pass: true`
 - [x] Worker deployed, smoke PASS incl. DB + WS persist — `evidence/C3-prod-smoke.txt` (health + db ok, echo, session counter 3→4 persisted across connections, `smoke OK`); worker URL: https://airhythm-worker.trung-nt235444.workers.dev

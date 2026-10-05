@@ -1,0 +1,16 @@
+name: Supabase keep-alive
+on:
+  schedule:
+    - cron: "0 4 */3 * *"   # roughly every 3 days (day-of-month schedule, gap varies by month)
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping REST endpoint (best-effort activity; reduces idle-pause risk)
+        run: |
+          # SECRET_KEY is not a JWT — Supabase docs: send secret keys via apikey ONLY,
+          # never as Authorization: Bearer (that header is for JWTs).
+          curl -fsS -o /dev/null -w "%{http_code}\n" \
+            -H "apikey: ${{ secrets.SUPABASE_SECRET_KEY }}" \
+            "${{ secrets.SUPABASE_PROJECT_URL }}/rest/v1/"

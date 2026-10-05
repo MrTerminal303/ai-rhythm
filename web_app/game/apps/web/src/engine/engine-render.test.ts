@@ -77,6 +77,21 @@ describe("GameEngine update ordering (§2.9)", () => {
     expect(snap.noteStates[0]).toBe("pending");
   });
 
+  it("no duplicate miss: second update +50ms after expiry re-emits nothing (pending guard)", () => {
+    const { src, clock, engine } = makeEngine();
+    clock.start(0);
+    src.t = 1111; // note0 (t=1000) expires: 1111 > 1000 + 110
+    const first = engine.update();
+    expect(first.events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
+    expect(first.noteStates).toEqual(["missed", "pending"]);
+    expect(first.frozen).toBe(false);
+    src.t = 1161; // +50ms — guard must skip the already-missed note0, no re-emission
+    const second = engine.update();
+    expect(second.events).toEqual([]);
+    expect(second.noteStates).toEqual(["missed", "pending"]);
+    expect(second.frozen).toBe(false);
+  });
+
   it("emits a NEW snapshot each update; previous stays intact (§2.7)", () => {
     const { src, clock, engine } = makeEngine();
     clock.start(0);

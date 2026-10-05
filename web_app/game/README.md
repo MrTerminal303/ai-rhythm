@@ -12,3 +12,10 @@
 ## Deploy
 pnpm --filter @airhythm/worker run deploy   # wrangler login first time
 $env:WORKER_URL="https://airhythm-worker.trung-nt235444.workers.dev"; node scripts/smoke.mjs  # post-deploy smoke (PowerShell; Git Bash: WORKER_URL=https://airhythm-worker.trung-nt235444.workers.dev node scripts/smoke.mjs)
+
+## Vercel (web production)
+- Root Directory: `apps/web` (relative to upload root `web_app/game`), framework nextjs
+- Install Command: `pnpm install --frozen-lockfile`
+- Build Command: `cd ../.. && pnpm --filter @airhythm/web build`
+- Deploy: from `web_app/game` run `./apps/web/node_modules/.bin/vercel --prod` (pinned CLI 62.2.0; run the binary directly so cwd stays the workspace root — `pnpm --filter … exec` chdirs back to `apps/web` and breaks the upload root)
+- Live: https://dualbeat-trungfa30-gmailcoms-projects.vercel.app

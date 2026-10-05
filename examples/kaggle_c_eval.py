@@ -89,7 +89,6 @@ if torch.cuda.is_available():
 # =============================================================
 import json
 import os
-import shutil
 import librosa
 import numpy as np
 import torch
@@ -107,20 +106,13 @@ from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
 if "WORKING" not in globals():
     WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
 if "DATA_ROOT" not in globals():
-    # fresh session: seed the writable working copy from the attached corpus
-    # (Notebook A publish) — build_full_song_cache writes into song dirs and
-    # /kaggle/input is read-only. AIRHYTHM_DATA still overrides.
-    _local = WORKING / "data" / "minimal_dataset"
-    if not _local.is_dir():
-        _att = Path("/kaggle/input") / config.CORPUS_HANDLE / "minimal_dataset"
-        if _att.is_dir():
-            print(f"copying attached corpus {_att} -> {_local}")
-            _tmp = _local.with_name("minimal_dataset.partial")
-            if _tmp.exists():
-                shutil.rmtree(_tmp)
-            shutil.copytree(_att, _tmp)
-            _tmp.rename(_local)
-    DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(_local)))
+    # read-only attached corpus — caches land in working/full_cache only for
+    # the songs actually evaluated (review #6: no 100-song copy into the 20GB
+    # working disk). AIRHYTHM_DATA still overrides.
+    DATA_ROOT = Path(os.environ.get(
+        "AIRHYTHM_DATA",
+        str(Path("/kaggle/input") / config.CORPUS_HANDLE / "minimal_dataset")))
+assert DATA_ROOT.is_dir(), f"corpus not attached: {DATA_ROOT}"
 print(f"DATA_ROOT = {DATA_ROOT}")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -159,7 +151,7 @@ def _sliding_envelope(sdir):
     # to RandomCropDataset training crops. Concatenating stored (independently
     # normalized) chunks would mix normalized halves across chunk boundaries
     # (review #3 P1 train/inference distribution mismatch).
-    spec_path, _ = build_full_song_cache(sdir)
+    spec_path, _ = build_full_song_cache(sdir, cache_root=WORKING / "full_cache")
     spec = np.load(spec_path)  # (1,128,T) RAW
     n_total = spec.shape[2]
     # cover the tail stitch_envelope would zero out (review P1): align last

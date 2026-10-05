@@ -225,12 +225,13 @@ if not meta.exists():
     meta.write_text(json.dumps({
         "id": f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}",
         "title": config.CORPUS_HANDLE,
-        "licenses": [{"name": "CC0-100"}],
+        "licenses": [{"name": "CC0-1.0"}],
     }, indent=2))
 msg = f"corpus {time.strftime('%Y-%m-%d %H:%M')}"
 r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CORPUS_ROOT), "-m", msg])
-if r.returncode != 0:  # first push: dataset doesn't exist yet -> create it
-    subprocess.run(["kaggle", "datasets", "create", "-p", str(CORPUS_ROOT),
-                    "-s", config.CORPUS_HANDLE], check=True)
+if r.returncode != 0:  # first push: no dataset yet — slug comes from
+    # dataset-metadata.json "id"; current CLI create has no -s (review #6)
+    subprocess.run(["kaggle", "datasets", "create", "-p", str(CORPUS_ROOT)],
+                   check=True)
 print(f"corpus published: {os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}"
       " — attach in Notebook B/C (Data → Add data)")

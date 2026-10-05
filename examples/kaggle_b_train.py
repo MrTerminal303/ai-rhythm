@@ -243,7 +243,7 @@ if "show_storage" in globals():  # CELL 2 optional — Phase 7 paste-set is CELL
 # =============================================================
 import json
 import os
-import shutil
+import shutil  # _ckpt_globs copies attached ckpts into CKPT_DIR
 import subprocess
 import time
 import torch
@@ -277,20 +277,13 @@ print("resume smoke:", "PASS" if smoke["pass"] else "FAIL", smoke)
 assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02 criterion 4)"
 
 # --- corpus (prints 'corpus: train=... excluded=...' audit line)
-# Notebook A publishes the corpus; seed the writable working copy from the
-# attached dataset once (full-song cache writes *_full_spec.npy into song
-# dirs, and /kaggle/input is read-only). AIRHYTHM_DATA still overrides.
-LOCAL_DATA = WORKING / "data" / "minimal_dataset"
-if not LOCAL_DATA.is_dir():
-    _att = Path("/kaggle/input") / config.CORPUS_HANDLE / "minimal_dataset"
-    if _att.is_dir():
-        print(f"copying attached corpus {_att} -> {LOCAL_DATA}")
-        _tmp = LOCAL_DATA.with_name("minimal_dataset.partial")
-        if _tmp.exists():
-            shutil.rmtree(_tmp)
-        shutil.copytree(_att, _tmp)
-        _tmp.rename(LOCAL_DATA)
-DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(LOCAL_DATA)))
+# Read-only attached corpus — full-song caches go to working/full_cache via
+# build_real_loaders(cache_root=...) (review #6: no corpus copy into the 20GB
+# working disk; /kaggle/input stays untouched). AIRHYTHM_DATA still overrides.
+DATA_ROOT = Path(os.environ.get(
+    "AIRHYTHM_DATA",
+    str(Path("/kaggle/input") / config.CORPUS_HANDLE / "minimal_dataset")))
+assert DATA_ROOT.is_dir(), f"corpus not attached: {DATA_ROOT}"
 print(f"DATA_ROOT = {DATA_ROOT}")
 song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
 # P0-level data-integrity preflight: frozen eval/search songs must exist —
@@ -300,7 +293,8 @@ _missing = sorted(_required - {int(d.name) for d in song_dirs})
 assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 train_loader, val_loader, info = build_real_loaders(
     song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID,
-    num_workers=2, pin_memory=DEVICE.startswith("cuda"))  # Kaggle = 4 cores
+    num_workers=2, pin_memory=DEVICE.startswith("cuda"),  # Kaggle = 4 cores
+    cache_root=str(WORKING / "full_cache"))  # read-only corpus (review #6)
 assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
 
 # --- resume (D-11): local latest_*.pt (manually web-downloaded, or written by
@@ -356,13 +350,16 @@ def push_now():
         meta.write_text(json.dumps({
             "id": f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}",
             "title": config.DATASET_HANDLE,
-            "licenses": [{"name": "CC0-100"}],
+            "licenses": [{"name": "CC0-1.0"}],
         }, indent=2))
     msg = f"phase8 checkpoint {time.strftime('%Y-%m-%d %H:%M')}"
-    r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CKPT_DIR), "-m", msg])
-    if r.returncode != 0:  # first push: dataset doesn't exist yet -> create it
-        subprocess.run(["kaggle", "datasets", "create", "-p", str(CKPT_DIR),
-                        "-s", config.DATASET_HANDLE], check=True)
+    # -d: delete old versions — checkpoint dataset needs only latest_/best_ (review #6)
+    r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CKPT_DIR),
+                        "-m", msg, "-d"])
+    if r.returncode != 0:  # first push: no dataset yet — slug comes from
+        # dataset-metadata.json "id"; current CLI create has no -s (review #6)
+        subprocess.run(["kaggle", "datasets", "create", "-p", str(CKPT_DIR)],
+                       check=True)
 
 def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
     if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
@@ -375,11 +372,15 @@ def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
             print(f"PUSH FAILED at epoch={epoch} ({e}) — will retry next cadence")
 
 # --- train (D-08): fresh session epoch cap from measured time; resume runs until stop
+# review #6: 12h Kaggle session − ~1h margin — stop intentional, push clean,
+# resume next session (repeated-resume makes the old 45h budget moot)
+SESSION_BUDGET_H = 11.0
 result = run_real_training(
     train_loader, val_loader, pos_weight=POS_WEIGHT, device=DEVICE,
     ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
     start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
-    max_epochs=epoch_cap(median_epoch_time([600.0])) if start_epoch == 0 else None,
+    max_epochs=epoch_cap(median_epoch_time([600.0]), budget_h=SESSION_BUDGET_H)
+    if start_epoch == 0 else None,
     on_epoch_end=maybe_push)
 print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
 

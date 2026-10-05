@@ -113,7 +113,7 @@ def _song_stem(song_dir: Path) -> str:
     return song_dir.name
 
 
-def build_full_song_cache(song_dir) -> tuple[Path, Path]:
+def build_full_song_cache(song_dir, cache_root=None) -> tuple[Path, Path]:
     """D-05: one-time per-song build of FULL-SONG spec + FULL-SONG labels for random crops.
 
     Spec: librosa/audio_to_mel_spec(load original.audio) -> raw (1,128,T) float32
@@ -123,12 +123,18 @@ def build_full_song_cache(song_dir) -> tuple[Path, Path]:
     Labels: np.concatenate(sorted *_labels.npy, axis=1) -> (3,T) int8
       -> save `<stem>_full_labels.npy` (exact concatenation of stored labels;
       they are already absolute-frame anchored, so no reparse needed).
-    Returns (spec_path, label_path). Idempotent: if both files exist, return them unchanged.
+    Cache location: song_dir itself (default) or cache_root when given —
+    review #6: attached Kaggle corpus is read-only, caches must land in the
+    writable working disk. Returns (spec_path, label_path). Idempotent: if
+    both files exist, return them unchanged.
     """
     song_dir = Path(song_dir)
     stem = _song_stem(song_dir)
-    spec_path = song_dir / f"{stem}_full_spec.npy"
-    label_path = song_dir / f"{stem}_full_labels.npy"
+    out_dir = song_dir if cache_root is None else Path(cache_root)
+    if cache_root is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = out_dir / f"{stem}_full_spec.npy"
+    label_path = out_dir / f"{stem}_full_labels.npy"
     if spec_path.exists() and label_path.exists():
         return spec_path, label_path
     audio_path = song_dir / "original.audio"
@@ -158,7 +164,7 @@ class RandomCropDataset(torch.utils.data.Dataset):
     """D-05 TRAIN-side only. Seeded random crops over full-song spec + labels."""
 
     def __init__(self, song_dirs, *, n_frames: int = config.N_FRAMES,
-                 crops_per_song: int = 1, rng=None):
+                 crops_per_song: int = 1, rng=None, cache_root=None):
         super().__init__()
         self.n_frames = n_frames
         self.crops_per_song = crops_per_song
@@ -166,7 +172,7 @@ class RandomCropDataset(torch.utils.data.Dataset):
         self._specs: list[np.ndarray] = []
         self._labels: list[np.ndarray] = []
         for song_dir in song_dirs:
-            spec_path, label_path = build_full_song_cache(song_dir)
+            spec_path, label_path = build_full_song_cache(song_dir, cache_root=cache_root)
             self._specs.append(np.load(spec_path))
             self._labels.append(np.load(label_path))
 

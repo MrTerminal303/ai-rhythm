@@ -490,7 +490,8 @@ def epoch_cap(measured_epoch_h: float, budget_h: float = config.EPOCH_CAP_HOURS)
 
 def build_real_loaders(all_song_dirs, *, eval_ids, search_id, device=None,
                        batch_size: int = 8, crops_per_song: int = 1, seed: int = 0,
-                       num_workers: int = 0, pin_memory: bool = False) -> tuple:
+                       num_workers: int = 0, pin_memory: bool = False,
+                       cache_root=None) -> tuple:
     """D-05/D-06/D-07 wiring: ids = [int(dir.name) for dir in all_song_dirs]
     train_ids, val_ids, excluded = split_song_ids(ids, eval_ids, search_id)
     train_ds = RandomCropDataset([dirs[s] for s in train_ids], rng=random.Random(seed))
@@ -507,7 +508,8 @@ def build_real_loaders(all_song_dirs, *, eval_ids, search_id, device=None,
     dir_by_id = {int(d.name): d for d in all_song_dirs}
     train_ids, val_ids, excluded = split_song_ids(ids, eval_ids, search_id)
     train_ds = RandomCropDataset([dir_by_id[s] for s in train_ids],
-                                 crops_per_song=crops_per_song, rng=random.Random(seed))
+                                 crops_per_song=crops_per_song, rng=random.Random(seed),
+                                 cache_root=cache_root)
     val_ds = FixedChunkDataset([dir_by_id[s] for s in val_ids])
 
     def _onset_collate(batch):

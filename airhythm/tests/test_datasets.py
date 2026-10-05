@@ -129,6 +129,18 @@ class TestFullSongCache:
         with pytest.raises(FileNotFoundError):
             build_full_song_cache(song)
 
+    def test_cache_root_redirects_writes(self, tmp_path):
+        """review #6: read-only corpus — cache files land in cache_root,
+        song dir stays untouched."""
+        song = self._copy_song("2255671", tmp_path)
+        cache = tmp_path / "full_cache"
+        spec_path, label_path = build_full_song_cache(song, cache_root=cache)
+        assert spec_path.parent == cache and label_path.parent == cache
+        assert spec_path.exists() and label_path.exists()
+        assert not list(song.glob("*_full_*.npy"))  # song dir untouched
+        spec_path2, _ = build_full_song_cache(song, cache_root=cache)
+        assert spec_path2 == spec_path  # idempotent
+
 
 class TestRandomCrop:
     def _songs(self, tmp_path) -> list[Path]:

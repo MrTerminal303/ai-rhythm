@@ -67,6 +67,7 @@ SCALE_BATCH_SIZE = 300   # full scrape target
 
 # Kaggle Dataset structure (D-04)
 DATASET_HANDLE = "airhythm-data"
+CORPUS_HANDLE = "airhythm-corpus"  # Notebook A publishes corpus here; B/C attach it
 SPECTROGRAMS_DIR = "spectrograms"
 BASELINE_DIR = "baseline"
 CHECKPOINTS_DIR = "checkpoints"
@@ -167,6 +168,7 @@ __all__: List[str] = [
     "TEST_BATCH_SIZE",
     "SCALE_BATCH_SIZE",
     "DATASET_HANDLE",
+    "CORPUS_HANDLE",
     "SPECTROGRAMS_DIR",
     "BASELINE_DIR",
     "CHECKPOINTS_DIR",

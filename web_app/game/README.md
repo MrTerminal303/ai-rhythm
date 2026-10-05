@@ -10,5 +10,5 @@
 7. pnpm --filter @airhythm/worker dev   # wrangler dev (worker)
 
 ## Deploy
-pnpm --filter @airhythm/worker deploy   # wrangler login first time
+pnpm --filter @airhythm/worker run deploy   # wrangler login first time
 $env:WORKER_URL="https://airhythm-worker.trung-nt235444.workers.dev"; node scripts/smoke.mjs  # post-deploy smoke (PowerShell; Git Bash: WORKER_URL=https://airhythm-worker.trung-nt235444.workers.dev node scripts/smoke.mjs)

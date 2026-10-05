@@ -3,10 +3,10 @@
 The spec has no §17 (pre-flight ruling): this checklist = the C5 brief Step 2 list, mirroring spec §4 Success Criteria. Each line checked with evidence pointer. Date: 2026-10-05.
 
 - [x] Monorepo builds/typechecks/tests green — CI `check` job: `web-game-ci` green on the branch (all runs to date `success`, 2026-10-05): C5 closeout pack run https://github.com/MrTerminal303/ai-rhythm/actions/runs/37290525597 (commit `48fba72`), prior https://github.com/MrTerminal303/ai-rhythm/actions/runs/37285879237 (commit `2c94042`)
-- [x] `/play` renders WebGL2 highway + HUD, judges keys, freezes at chart end — B5 manual verify note + screenshots: `.superpowers/sdd/2026-10-03-web-app-week-1-design/task-B5-freeze.png` (freeze at chart end), also `task-B2-highway.png` (WebGL2 highway) and `task-B4-hud.png` (HUD + key judgement)
+- [x] `/play` renders WebGL2 highway + HUD, judges keys, freezes at chart end — B5 manual verify note + screenshots: `evidence/task-B5-freeze.png` (freeze at chart end), also `evidence/task-B2-highway.png` (WebGL2 highway) and `evidence/task-B4-hud.png` (HUD + key judgement)
 - [x] Benchmarks: p95 render ≤ 16.7 ms — `evidence/C5-perf.json`: `p95RenderDurationMs = 0.40` on production build, chart `benchmark`, laptop `550-160l`, samples 9444/9444/9444, `pass: true`
 - [x] Worker deployed, smoke PASS incl. DB + WS persist — `evidence/C3-prod-smoke.txt` (health + db ok, echo, session counter 3→4 persisted across connections, `smoke OK`); worker URL: https://airhythm-worker.trung-nt235444.workers.dev
-- [x] Web deployed on Vercel — https://dualbeat-trungfa30-gmailcoms-projects.vercel.app (C2 verified live; screenshot `.superpowers/sdd/2026-10-03-web-app-week-1-design/task-C2-live.png`; prod is auth-gated, operator protection still on)
+- [x] Web deployed on Vercel — https://dualbeat-trungfa30-gmailcoms-projects.vercel.app (C2 verified live; screenshot `evidence/task-C2-live.png`; prod is auth-gated, operator protection still on)
 - [x] Keep-alive cron scheduled — workflow run: https://github.com/MrTerminal303/ai-rhythm/actions/runs/37288061997
 - [x] CI green incl. e2e screenshot — Actions: https://github.com/MrTerminal303/ai-rhythm/actions/runs/37290525597 (`check` + `e2e` jobs green with artifact `w1-highway-screenshot`, committed copy `web_app/game/e2e/screenshots/w1-highway.png`; artifact first uploaded on run 37285879237)
 - [x] No secrets/audio/copyrighted beatmaps in git — Step 3 scan output below: `OK no audio`, `OK no secrets`; copyrighted beatmaps: manual check below

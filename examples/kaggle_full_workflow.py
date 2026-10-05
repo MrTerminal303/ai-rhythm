@@ -349,6 +349,11 @@ assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02
 # Same DATA_ROOT as CELL 3/4 (data/minimal_dataset) — spectrograms path never existed.
 DATA_ROOT = Path(os.environ.get("AIRHYTHM_DATA", str(WORKING / "data" / "minimal_dataset")))
 song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
+# P0-level data-integrity preflight: frozen eval/search songs must exist —
+# split exclusion ≠ presence (random corpus download may omit them).
+_required = set(EVAL_IDS) | {SEARCH_ID}
+_missing = sorted(_required - {int(d.name) for d in song_dirs})
+assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 train_loader, val_loader, info = build_real_loaders(
     song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID,
     num_workers=2, pin_memory=DEVICE.startswith("cuda"))  # Kaggle = 4 cores
@@ -475,6 +480,11 @@ if _eval_meta.exists():
 else:
     EVAL_IDS = [2255671, 2256944, 2516285, 2527391, 2589624]
     SEARCH_IDS = {2561773}
+
+# frozen eval/search songs must be present before gating (same preflight as CELL 13)
+_present = {int(p.name) for p in DATA_ROOT.iterdir() if p.is_dir()}
+_missing = sorted((set(EVAL_IDS) | SEARCH_IDS) - _present)
+assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 # 1) best-val checkpoint ONLY (D-04: gate-time only + final best-val)
 best = sorted((WORKING / config.CHECKPOINTS_DIR).glob("best_*.pt"))

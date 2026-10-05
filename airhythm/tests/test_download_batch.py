@@ -139,3 +139,61 @@ class TestMainBatch:
 
         assert saved == 0
         mock_dl.assert_not_called()
+
+
+class TestCs4Contract:
+    """Review #2: preprocess_osz must never process a non-4K difficulty,
+    even when the archive lists 5K first (zip order is arbitrary)."""
+
+    @staticmethod
+    def _make_osz_two_diffs() -> bytes:
+        def osu(version: str, cs: int) -> str:
+            return (
+                "[General]\n"
+                "Mode: 3\n"
+                "AudioFilename: audio.mp3\n"
+                "[Difficulty]\n"
+                f"CircleSize: {cs}\n"
+                "OverallDifficulty:4\n"
+                "[Metadata]\n"
+                "Title: T\n"
+                "Artist: A\n"
+                "BeatmapSetID: 7\n"
+                f"Version: {version}\n"
+                "[HitObjects]\n"
+                "256,192,5000,1,0,0:0:0:0:\n"
+            )
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("song/5K.osu", osu("5K", 5))  # listed FIRST on purpose
+            zf.writestr("song/4K.osu", osu("4K", 4))
+            zf.writestr("audio.mp3", b"x")
+        return buf.getvalue()
+
+    def test_skips_5k_processes_4k(self, tmp_path, monkeypatch):
+        import json
+
+        import numpy as np
+
+        song_dir = tmp_path / "7"
+        song_dir.mkdir()
+        monkeypatch.setattr(
+            "airhythm.audio_preproc.load_audio_from_osz",
+            lambda *a, **k: (np.zeros(16000, dtype=np.float32), 16000),
+        )
+        monkeypatch.setattr(
+            "airhythm.audio_preproc.audio_to_mel_spec",
+            lambda *a, **k: np.zeros((1, 128, 900), dtype=np.float32),
+        )
+
+        files = preprocess_osz(self._make_osz_two_diffs(), 7, str(song_dir))
+
+        metas = [f for f in files if f["file_type"] == "metadata"]
+        assert len(metas) == 1
+        assert metas[0]["difficulty_name"] == "4K"
+        meta_json = next(song_dir.glob("*.json"))
+        data = json.loads(meta_json.read_text())
+        assert data["difficulty_name"] == "4K"
+        assert data["cs"] == 4
+        assert data["num_chunks"] >= 1

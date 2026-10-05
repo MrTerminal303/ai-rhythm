@@ -325,6 +325,16 @@ def preprocess_osz(
             continue
         processed_difficulties.add(osu_filename)
 
+        # Dataset contract = 4K (review #3): archives may list 5K/7K first —
+        # never train on a non-4K just because of zip order. Missing CircleSize
+        # parses to CS_DEFAULT=4, so legacy 4K maps without the key keep working.
+        if metadata.cs != config.CS_DEFAULT:
+            logger.warning(
+                "Skipping cs=%s difficulty %r in %d (dataset contract = 4K)",
+                metadata.cs, metadata.difficulty_name, beatmapset_id,
+            )
+            continue
+
         # Extract AudioFilename from .osu content
         osu_content = osu_content_map.get(osu_filename)
         if osu_content is None:

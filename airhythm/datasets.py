@@ -173,16 +173,30 @@ class RandomCropDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self._specs) * self.crops_per_song
 
+    def _worker_rng(self):
+        info = torch.utils.data.get_worker_info()
+        if info is None or isinstance(self.rng, torch.Generator):
+            return self.rng
+        # DataLoader workers inherit the same pickled rng state -> identical
+        # crop streams across workers (duplicate crops). Fork once per worker
+        # keyed by torch's unique per-worker seed. Main-process path (workers=0)
+        # returns the seeded rng untouched — determinism unchanged.
+        if getattr(self, "_wrng_seed", None) != info.seed:
+            self._wrng_seed = info.seed
+            self.rng = random.Random(info.seed)
+        return self.rng
+
     def __getitem__(self, idx):
         song_idx = (idx // self.crops_per_song) % len(self._specs)
         spec = self._specs[song_idx]
         full_labels = self._labels[song_idx]
         T = spec.shape[2]
+        rng = self._worker_rng()
         if T >= self.n_frames:
-            if isinstance(self.rng, torch.Generator):
-                off = int(torch.randint(0, T - self.n_frames + 1, (1,), generator=self.rng).item())
+            if isinstance(rng, torch.Generator):
+                off = int(torch.randint(0, T - self.n_frames + 1, (1,), generator=rng).item())
             else:
-                off = int(self.rng.randint(0, T - self.n_frames + 1))
+                off = int(rng.randint(0, T - self.n_frames + 1))
         else:
             off = 0
         crop = spec[:, :, off : off + self.n_frames]

@@ -222,3 +222,37 @@ class TestProximityBins:
         out = proximity_binned_recall(refs, refs)
         assert sum(out["n_refs"]) == len(refs)
         assert len(out["bin_edges"]) == 5
+
+
+class TestWorkerRNG:
+    """Review #2: DataLoader workers inherit the same pickled rng state ->
+    identical crop streams. _worker_rng forks per worker; workers=0 unchanged."""
+
+    @staticmethod
+    def _ds() -> RandomCropDataset:
+        ds = RandomCropDataset.__new__(RandomCropDataset)
+        ds.rng = random.Random(0)
+        return ds
+
+    def test_main_process_returns_untouched_rng(self, monkeypatch):
+        ds = self._ds()
+        monkeypatch.setattr("torch.utils.data.get_worker_info", lambda: None)
+        before = ds.rng.getstate()
+        assert ds._worker_rng() is ds.rng
+        assert ds.rng.getstate() == before
+
+    def test_workers_get_distinct_stable_streams(self, monkeypatch):
+        class W:
+            def __init__(self, seed):
+                self.seed = seed
+
+        monkeypatch.setattr("torch.utils.data.get_worker_info", lambda: W(111))
+        a = self._ds()
+        ra = a._worker_rng()
+        monkeypatch.setattr("torch.utils.data.get_worker_info", lambda: W(222))
+        rb = self._ds()._worker_rng()
+        assert ra is not rb
+        assert [ra.random() for _ in range(5)] != [rb.random() for _ in range(5)]
+        # same worker seed again -> same rng object (no re-fork mid-epoch)
+        monkeypatch.setattr("torch.utils.data.get_worker_info", lambda: W(111))
+        assert a._worker_rng() is ra

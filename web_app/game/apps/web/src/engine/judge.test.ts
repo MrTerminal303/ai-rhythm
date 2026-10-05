@@ -113,7 +113,8 @@ describe("engine.judge (§2.3)", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
     src.t = 1111;
     expect(engine.update().noteStates[0]).toBe("missed");
-    src.t = 1200;
-    expect(engine.update().events).toEqual([]);
+    // engine is now frozen (chartTime > endTimeMs); further update() throws
+    expect(engine.isFrozen()).toBe(true);
+    expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
   });
 });

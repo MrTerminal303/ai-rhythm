@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import w1Chart from "../../../fixtures/w1-chart.json";
 import benchChart from "../../../fixtures/w1-benchmark-chart.json";
 import { parseBeatmap } from "@airhythm/shared";
+import { PerfMonitor, RENDER_BUDGET_MS } from "../../engine/perf.js";
 import { GameEngine } from "../../engine/engine.js";
 import { PerformanceClock } from "../../engine/clock.js";
 import { createKeyHandler } from "../../engine/controller.js";
@@ -32,7 +33,11 @@ export default function PlayPage() {
     // unavailable) — the B6 e2e waits on this attribute instead of calling getContext()
     // itself, which would succeed even if the app never initialized the renderer
     canvas.dataset.webglReady = "true";
-    const engine = new GameEngine({ chart, clock, renderer });
+    // PerfMonitor created INSIDE the mount effect (stable for the effect's lifetime),
+    // never at component scope — React re-renders driven by snapshot updates would
+    // otherwise reset the metrics every frame (p95 would be garbage).
+    const perf = new PerfMonitor();
+    const engine = new GameEngine({ chart, clock, renderer, perf });
     clock.start(0);
     const activeTimers = new Set<number>(); // key-flash timeout ids; cleared in cleanup below
     const onKey = createKeyHandler({
@@ -58,9 +63,26 @@ export default function PlayPage() {
 
     store.set(engine.snapshot()); // HUD shows 0s on first paint
     let raf = 0;
-    const frame = () => {
-      if (engine.isFrozen()) return;
+    let lastRaf: number | undefined;
+    const frame = (rafMs: number) => {
+      if (lastRaf !== undefined) perf.recordFrameInterval(rafMs - lastRaf);
+      lastRaf = rafMs;
+      if (engine.isFrozen()) {
+        const report = {
+          p95RenderDurationMs: perf.p95RenderDurationMs(),
+          p95UpdateDurationMs: perf.p95UpdateDurationMs(),
+          p95FrameIntervalMs: perf.p95FrameIntervalMs(),
+          samples: perf.sampleCounts(),
+          pass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
+          chart: benchmark ? "benchmark" : "w1",
+        };
+        console.log("[perf]", report);
+        store.set(engine.snapshot()); // final frozen snapshot reaches HUD
+        return;
+      }
+      const t0 = performance.now();
       store.set(engine.update());
+      perf.recordUpdateDuration(performance.now() - t0);
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);

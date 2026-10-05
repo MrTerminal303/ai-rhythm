@@ -2,6 +2,7 @@ import type { Beatmap } from "@airhythm/shared";
 import { accuracyFraction, scoreFromWeights, grade, SCORE_WEIGHTS, JUDGE_WINDOWS } from "@airhythm/shared";
 import type { GameClock } from "./clock.js";
 import type { GameSnapshot, JudgementEvent, NoteState, Renderer } from "./types.js";
+import type { PerfMonitor } from "./perf.js";
 
 const AUTO_MISS_MS = JUDGE_WINDOWS.good; // single source of truth — never restate 110 (D3)
 
@@ -9,6 +10,7 @@ export interface GameEngineOptions {
   chart: Beatmap;
   clock: GameClock;
   renderer: Renderer;
+  perf?: PerfMonitor;
 }
 
 export class GameEngine {
@@ -18,6 +20,7 @@ export class GameEngine {
   private readonly states: NoteState[];
   private readonly totalTargets: number;
   private readonly endTimeMs: number;
+  private readonly perf?: PerfMonitor;
   private sumWeights = 0;
   private combo = 0;
   private frozen = false;
@@ -28,6 +31,7 @@ export class GameEngine {
     this.chart = opts.chart;
     this.clock = opts.clock;
     this.renderer = opts.renderer;
+    this.perf = opts.perf;
     this.states = opts.chart.notes.map(() => "pending");
     this.totalTargets = opts.chart.notes.length;
     this.endTimeMs =
@@ -72,14 +76,21 @@ export class GameEngine {
   }
 
   update(): GameSnapshot {
+    if (this.frozen) throw new Error("engine frozen");
     const chartTime = this.clock.chartTimeMs();
     const events = this.markExpiredPendingNotes(chartTime);
+    const renderStart = performance.now();
     this.renderer.render(chartTime, this.states);
-    // B5 adds: freeze when chartTime > endTimeMs (strict) + reject updates once frozen
+    this.perf?.recordRenderDuration(performance.now() - renderStart);
+    if (chartTime > this.endTimeMs) this.freeze();
     const next = this.emit(chartTime, events);
     this.prev = this.current;
     this.current = next;
     return next;
+  }
+
+  private freeze(): void {
+    this.frozen = true;
   }
 
   snapshot(): GameSnapshot {

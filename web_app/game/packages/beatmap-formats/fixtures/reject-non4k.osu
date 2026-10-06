@@ -1,0 +1,22 @@
+osu file format v14
+
+[General]
+AudioFilename: track.mp3
+Mode: 3
+
+[Metadata]
+Title:Fixture Non4K
+Artist:Owned
+Creator:W2
+Version:7K
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:7
+OverallDifficulty:8
+
+[TimingPoints]
+0,500,4,2,0,60,1,0
+
+[HitObjects]
+64,192,1000,1,0,0:0:0:0:

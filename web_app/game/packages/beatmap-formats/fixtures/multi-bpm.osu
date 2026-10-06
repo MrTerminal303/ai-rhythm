@@ -1,0 +1,26 @@
+osu file format v14
+
+[General]
+AudioFilename: track.mp3
+Mode: 3
+
+[Metadata]
+Title:Fixture Multi BPM
+Artist:Owned
+Creator:W2
+Version:Multi
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:8
+
+[TimingPoints]
+0,500,4,2,0,60,1,0
+4000,400,4,2,0,60,1,0
+
+[HitObjects]
+64,192,1000,1,0,0:0:0:0:
+192,192,2000,1,0,0:0:0:0:
+64,192,4500,1,0,0:0:0:0:
+192,192,5000,128,0,6000:0:0:0:0:

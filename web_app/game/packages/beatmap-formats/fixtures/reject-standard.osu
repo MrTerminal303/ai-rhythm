@@ -1,0 +1,22 @@
+osu file format v14
+
+[General]
+AudioFilename: track.mp3
+Mode:1
+
+[Metadata]
+Title:Fixture Standard
+Artist:Owned
+Creator:W2
+Version:Standard
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:8
+
+[TimingPoints]
+0,500,4,2,0,60,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:

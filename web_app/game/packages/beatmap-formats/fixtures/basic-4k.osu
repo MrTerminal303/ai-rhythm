@@ -1,0 +1,26 @@
+osu file format v14
+
+[General]
+AudioFilename: track.mp3
+Mode: 3
+
+[Metadata]
+Title:Fixture Basic
+Artist:Owned
+Creator:W2
+Version:Insane
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:8
+ApproachRate:9
+SliderMultiplier:1.4
+SliderTickRate:1
+
+[TimingPoints]
+0,500,4,2,0,60,1,0
+
+[HitObjects]
+64,192,1000,1,0,0:0:0:0:
+448,192,1500,128,0,2000:0:0:0:0:

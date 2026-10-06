@@ -403,35 +403,44 @@ def check_storage(dataset_dir: str | None = None) -> Dict:
     }
 
 
-def wait_dataset_ready(slug: str, *, attempts: int = 12, delay_s: float = 15.0) -> None:
+def wait_dataset_ready(slug: str, *, attempts: int = 20, delay_s: float = 15.0) -> None:
     """Poll `kaggle datasets status` until READY (review #8 #1).
 
-    Uploads keep processing after version/create returns, so the first status
-    response is not final: status -> READY? no -> sleep -> status; yes -> return;
-    CLI error or timeout -> raise subprocess.CalledProcessError with the last
-    output (fail loudly). B's maybe_push catches CalledProcessError, so a
-    mid-run blip never kills a 12h session while a session-end push fails the
-    cell visibly.
+    Observed 08-07: status exits non-zero both while processing has not
+    registered yet AND after completion (the API drops the processing record
+    and 404s — "expected behavior" per Kaggle API docs), so a non-zero exit
+    is polled, not fatal. Timeout still raises CalledProcessError with the
+    last output (fail loudly). B's maybe_push catches CalledProcessError, so
+    a mid-run blip never kills a 12h session while a session-end push fails
+    the cell visibly.
 
     slug: full handle, e.g. "username/airhythm-corpus".
-    ponytail: READY detected by keyword ("ready", not "not ready") — adjust the
-    match here if the CLI wording changes.
+    ponytail: READY via keyword match or TWO consecutive not-founds (first
+    not-found may be pre-create index lag; a slug typo also lands here but
+    then B/C attach fails loudly on the missing manifest) — adjust the match
+    if the CLI wording changes.
     """
     import subprocess
     import time
 
     last = ""
+    gone = 0  # consecutive not-found: pre-start lag OR finished (record dropped)
     for i in range(attempts):
         r = subprocess.run(["kaggle", "datasets", "status", slug],
                            capture_output=True, text=True)
         out = ((r.stdout or "") + (r.stderr or "")).strip()
-        if r.returncode != 0:
-            raise subprocess.CalledProcessError(r.returncode, r.args, output=out)
         low = out.lower()
         if "ready" in low and "not ready" not in low:
             print(f"dataset ready: {slug}")
             return
-        last = out or "(no output)"
+        if "not found" in low or "404" in low:
+            gone += 1
+            if gone >= 2:
+                print(f"dataset ready: {slug} (processing record gone)")
+                return
+        else:
+            gone = 0
+        last = out or f"(exit {r.returncode}, no output)"
         print(f"not ready yet ({i + 1}/{attempts}): {last}")
         time.sleep(delay_s)
     raise subprocess.CalledProcessError(

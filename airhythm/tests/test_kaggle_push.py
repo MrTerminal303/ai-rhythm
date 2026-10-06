@@ -282,14 +282,17 @@ class TestWaitDatasetReady:
 
     @staticmethod
     def _patch_run(monkeypatch, results):
-        """results: list of (returncode, stdout) consumed one per call."""
+        """results: list of (returncode, stdout) consumed one per call;
+        the last result repeats if the poll runs longer (retry-on-error)."""
         import subprocess
         import time
 
         calls = []
+        held = []
 
         def fake_run(cmd, capture_output=True, text=True):
-            rc, out = results.pop(0)
+            rc, out = results.pop(0) if results else held[-1]
+            held.append((rc, out))
             calls.append(cmd)
 
             class R:
@@ -331,6 +334,20 @@ class TestWaitDatasetReady:
         with pytest.raises(subprocess.CalledProcessError) as exc:
             wait_dataset_ready("user/airhythm-corpus", attempts=3, delay_s=0)
         assert "not READY after 3 attempts" in (exc.value.output or "")
+
+    def test_not_found_polls_then_finishes_on_streak(self, monkeypatch):
+        """08-07: status exits non-zero (404) before AND after processing —
+        a lone not-found must keep polling; two consecutive mean finished."""
+        from airhythm.kaggle_push import wait_dataset_ready
+
+        calls = self._patch_run(monkeypatch, [
+            (1, "404 Client Error: Not Found"),   # pre-create index lag
+            (0, "the dataset is processing"),
+            (1, "404 Client Error: Not Found"),   # record dropped = done
+            (1, "404 Client Error: Not Found"),
+        ])
+        wait_dataset_ready("user/airhythm-corpus", delay_s=0)  # no raise
+        assert len(calls) == 4
 
 
 class TestBuildCorpusManifest:

@@ -4,6 +4,9 @@
 Prereqs: Notebook A run (corpus published as CORPUS_HANDLE); enable GPU.
 Attach via Data → Add data: the corpus dataset (airhythm-corpus) and,
 for resume across sessions, the checkpoint dataset (airhythm-data).
+Runs on Kaggle OR Colab (review #9) — same notebook; Colab clones the
+repo in CELL 0 and persists checkpoints to Google Drive instead of the
+checkpoint dataset.
 
 Cells: 0 setup, 2 storage, 6/7 toy baseline, 9-12 model + gates,
 13 train (resume → corpus preflight → ~30min push), 14 session-end push.
@@ -23,19 +26,39 @@ from pathlib import Path
 # review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
 # fail fast if the image drifts
 assert sys.version_info >= (3, 11), f"need Python 3.11+, got {sys.version}"
-_kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
-print(f"python {sys.version.split()[0]}, kaggle {(_kver.stdout or _kver.stderr).strip()}")
+# review #9: Colab image may lack the CLI (Kaggle ships it) — report, install below
+try:
+    _kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
+    _kver_s = (_kver.stdout or _kver.stderr).strip()
+except FileNotFoundError:
+    _kver_s = "not installed"
+print(f"python {sys.version.split()[0]}, kaggle {_kver_s}")
+
+# review #9: Colab has no /kaggle/input — clone repo, editable-install airhythm,
+# ensure kaggle CLI. Kaggle path unchanged (mount auto-find below still runs).
+if not Path("/kaggle/input").exists() and Path("/content").exists():
+    import importlib.util
+    if importlib.util.find_spec("airhythm") is None:
+        if not Path("/content/ai-rhythm").is_dir():
+            subprocess.run(["git", "clone", "https://github.com/MrTerminal303/ai-rhythm.git",
+                            "/content/ai-rhythm"], check=True)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-e", "/content/ai-rhythm"])
+    if importlib.util.find_spec("kaggle") is None:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "kaggle"])
 
 # Sanity-check numpy in a clean interpreter; force-reinstall only if broken
 # (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
 if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps", "numpy"])
 
-# Find and install from bundled requirements.txt (skip numpy line)
-for _d in Path("/kaggle/input").rglob("requirements.txt"):
-    if "airhythm" in str(_d):
-        !grep -v "^numpy" {_d} | pip install -r /dev/stdin -q
-        break
+# Find and install from bundled requirements.txt (skip numpy line) —
+# Kaggle: mounted dataset; Colab: cloned repo
+_req = next((p for _r in (Path("/kaggle/input"), Path("/content/ai-rhythm"))
+             if _r.is_dir()
+             for p in _r.rglob("requirements.txt")
+             if "airhythm" in str(p) or "ai-rhythm" in str(p)), None)
+if _req:
+    !grep -v "^numpy" {_req} | pip install -r /dev/stdin -q
 else:
     !pip install mir_eval==0.8.2 librosa==0.11.0 -q
 
@@ -73,10 +96,12 @@ if airhythm_root is None:
     airhythm_root = Path.cwd()
 
 sys.path.insert(0, str(airhythm_root))
-WORKING = Path("/kaggle/working")
 
 from airhythm import config
+from airhythm.runtime import runtime
+WORKING = runtime.scratch   # review #9: Kaggle /kaggle/working, Colab /content/airhythm
 print(f"airhythm loaded from: {airhythm_root}")
+print(f"runtime: {runtime.name} scratch={WORKING}")
 
 # --- Version check (Kaggle compatibility) ---
 import torch, torchaudio, librosa, numpy as np
@@ -249,21 +274,23 @@ if "show_storage" in globals():  # CELL 2 optional — Phase 7 paste-set is CELL
 # =============================================================
 import json
 import os
-import shutil  # _ckpt_globs copies attached ckpts into CKPT_DIR
+import shutil  # disk guard: shutil.disk_usage
 import subprocess
-import sys
 import time
 import torch
-import torchaudio
 from pathlib import Path
 
 from airhythm import config
+from airhythm.checkpoint_store import CheckpointStore
+from airhythm.kaggle_path import ensure_corpus, read_corpus_manifest
 from airhythm.kaggle_push import prune_old_checkpoints, wait_dataset_ready
 from airhythm.model import AIRhythmCRNN
+from airhythm.run_meta import build_run_meta, verify_resume_compat
+from airhythm.runtime import runtime
 from airhythm.train import (build_real_loaders, epoch_cap, load_checkpoint,
                             median_epoch_time, resume_smoke_test, run_real_training)
 
-WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
+WORKING = runtime.scratch   # review #9: replace hard-coded Path("/kaggle/working")
 CKPT_DIR = WORKING / config.CHECKPOINTS_DIR
 CKPT_DIR.mkdir(exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -288,17 +315,20 @@ assert smoke["pass"], "resume smoke FAILED — do not start GPU training (EXP-02
 # Read-only attached corpus: A publishes FLAT (Kaggle CLI --dir-mode skip
 # uploads no folders — review #7 P0), so attach_corpus rebuilds <sid>/<file>
 # as SYMLINKS (zero-copy); full-song caches go to working/full_cache via
-# build_real_loaders(cache_root=...). AIRHYTHM_DATA still overrides.
-from airhythm.kaggle_path import attach_corpus
-
-_env_data = os.environ.get("AIRHYTHM_DATA")
-if _env_data:
-    DATA_ROOT = Path(_env_data)
-else:
-    DATA_ROOT = attach_corpus(Path("/kaggle/input") / config.CORPUS_HANDLE,
-                              WORKING / "data" / "minimal_dataset")
+# build_real_loaders(cache_root=...). Obtain order (review #9 B3):
+# AIRHYTHM_DATA override > attached dataset > kaggle CLI download (Colab).
+DATA_ROOT, _corpus_src = ensure_corpus(
+    WORKING / "data" / "minimal_dataset",
+    download_handle=config.CORPUS_HANDLE)
 assert DATA_ROOT.is_dir(), f"corpus not attached: {DATA_ROOT}"
 print(f"DATA_ROOT = {DATA_ROOT}")
+CORPUS_MANIFEST = read_corpus_manifest(_corpus_src)
+if CORPUS_MANIFEST:
+    print(f"corpus manifest: version={CORPUS_MANIFEST['corpus_version']} "
+          f"songs={CORPUS_MANIFEST['song_count']} "
+          f"complete={CORPUS_MANIFEST['complete_song_count']}")
+else:
+    print("corpus manifest: not found (pre-A5 corpus) — resume corpus check will skip")
 song_dirs = sorted(p for p in DATA_ROOT.iterdir() if p.is_dir())
 # P0-level data-integrity preflight: frozen eval/search songs must exist —
 # split exclusion ≠ presence (random corpus download may omit them).
@@ -325,28 +355,26 @@ train_loader, val_loader, info = build_real_loaders(
 assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
 
 # --- resume (D-11): local latest_*.pt (manually web-downloaded, or written by
-# an earlier run in this session) OR the attached checkpoint dataset)
+# an earlier run in this session) OR the published checkpoint dataset —
+# attached Kaggle Dataset on Kaggle, Google Drive on Colab (review #9 B4/B5)
+if runtime.is_colab and runtime.drive_root:
+    from google.colab import drive
+    drive.mount("/content/drive")
 model = AIRhythmCRNN().to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR)
 
-def _ckpt_globs(pat):
-    """Local working copy first, then the attached checkpoint dataset — a fresh
-    session resumes from Notebook B's published push without a web pull.
-    Attached hits are COPIED into CKPT_DIR: push_now() publishes CKPT_DIR only,
-    so without the copy an attached best_*.pt vanishes from the published
-    dataset when this session never improves past it (review #5)."""
-    hits = sorted(CKPT_DIR.glob(pat))
-    if hits:
-        return hits
-    _att = Path("/kaggle/input") / config.DATASET_HANDLE
-    for src in sorted(_att.glob(pat)) if _att.is_dir() else []:
-        shutil.copy2(src, CKPT_DIR / src.name)
-    return sorted(CKPT_DIR.glob(pat))
+# copy-in semantics (review #5): hits outside CKPT_DIR are copied in first, so
+# push_now() publishing CKPT_DIR always contains whatever selection picked
+STORE = CheckpointStore(
+    CKPT_DIR,
+    attached_dir=Path("/kaggle/input") / config.DATASET_HANDLE,
+    drive_dir=runtime.drive_checkpoints,
+)
 
 start_epoch, global_step, resume_val = 0, 0, None
-resume_candidates = _ckpt_globs("latest_*.pt")
+resume_candidates = STORE.glob("latest_*.pt")
 if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 assert)
     ckpt = load_checkpoint(str(resume_candidates[-1]), model=model, optimizer=optimizer,
                            scheduler=scheduler, device=DEVICE)
@@ -354,13 +382,15 @@ if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 a
     resume_val = ckpt.get("val_metric")
     # best over ALL sessions lives in best_*.pt — latest val_metric alone would
     # re-open best_ selection at a worse value after restart (review P1).
-    _best_cands = _ckpt_globs("best_*.pt")
+    _best_cands = STORE.glob("best_*.pt")
     if _best_cands:
         _best = torch.load(_best_cands[-1], map_location="cpu", weights_only=False)
         _bv = _best.get("val_metric")
         if _bv is not None:
             resume_val = _bv if resume_val is None else min(resume_val, _bv)
     assert ckpt["stage"].startswith("phase8"), f"wrong-stage checkpoint: {ckpt['stage']}"
+    # review #9 B9: corpus/schema mismatch FAILs loudly — never train from wrong state
+    verify_resume_compat(ckpt.get("meta"), CORPUS_MANIFEST, where="resume")
     print(f"RESUMED at epoch={start_epoch} global_step={global_step}")
 else:
     print("no local checkpoint — fresh start")
@@ -371,11 +401,26 @@ _last_push = {"t": time.time()}
 
 def push_now():
     prune_old_checkpoints(str(CKPT_DIR), keep_latest=1, keep_best=1)  # D-09: 1 latest + 1 best
+    # review #9 B4: Colab safety net — copies latest_/best_ to Drive (0 off Colab)
+    _n = STORE.sync_to_drive()
+    if _n:
+        print(f"drive sync: {_n} checkpoints")
+    # CLI needs credentials: Kaggle kernels always have KAGGLE_USERNAME; Colab
+    # only when the user mounted ~/.kaggle/kaggle.json
+    _user = os.environ.get("KAGGLE_USERNAME")
+    if not _user:
+        try:
+            _user = json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text()).get("username")
+        except OSError:
+            _user = None
+    if not _user:
+        print("push skipped: no Kaggle credentials — Drive sync only (review #9)")
+        return
     # CLI needs -p <dir with dataset-metadata.json> + visible failures (review P0).
     meta = CKPT_DIR / "dataset-metadata.json"
     if not meta.exists():
         meta.write_text(json.dumps({
-            "id": f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}",
+            "id": f"{_user}/{config.DATASET_HANDLE}",
             "title": config.DATASET_HANDLE,
             "licenses": [{"name": "CC0-1.0"}],
         }, indent=2))
@@ -390,7 +435,7 @@ def push_now():
     # review #8 #1: poll until READY — version/create returns while the upload
     # is still processing (raises CalledProcessError: maybe_push catches it
     # mid-run, session-end push fails the cell visibly)
-    wait_dataset_ready(f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.DATASET_HANDLE}")
+    wait_dataset_ready(f"{_user}/{config.DATASET_HANDLE}")
 
 def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
     if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:
@@ -407,18 +452,9 @@ def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
 # resume next session (repeated-resume makes the old 45h budget moot).
 # review #7: cap EVERY session incl. resumed ones — otherwise resume runs
 # until early-stop and Kaggle kills it at 12h mid-session.
-# review #8 #4: run identity — when a later checkpoint wins, know what made it
-# (provenance helpers, not guarantees: env values as observed at save time).
-_rrev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                       capture_output=True, text=True)
-RUN_META = {
-    "git_commit": (_rrev.stdout or "unknown").strip() or "unknown",
-    # ponytail: no corpus pin manifest yet (deferred review #5) — handle + count
-    "corpus_version": f"{config.CORPUS_HANDLE}:{len(song_dirs)}songs",
-    "torch": torch.__version__, "torchaudio": torchaudio.__version__,
-    "cuda": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-    "python": sys.version.split()[0],
-}
+# review #8 #4 + review #9 B8: run identity in ckpt meta — logical ids only
+# (B6, no absolute paths), corpus pinned via A5 manifest, schema tagged
+RUN_META = build_run_meta(runtime.name, CORPUS_MANIFEST)
 SESSION_BUDGET_H = 11.0
 session_epochs = epoch_cap(median_epoch_time([600.0]), budget_h=SESSION_BUDGET_H)
 result = run_real_training(
@@ -440,7 +476,7 @@ push_now()  # always push at clean session end (D-10)
 # CELL 14: Push to Kaggle Dataset (end of session)
 # =============================================================
 # D-10 session-end push — CLI only (D-11: resume pull is a manual Kaggle web download
-# OR the attached checkpoint dataset — CELL 13's _ckpt_globs finds it).
+# OR the attached checkpoint dataset — CELL 13's CheckpointStore finds it).
 # CELL 13's push_now() already does both; standalone fallback:
 #
 # from airhythm.kaggle_push import prune_old_checkpoints

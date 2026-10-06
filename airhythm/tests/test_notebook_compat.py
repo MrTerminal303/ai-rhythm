@@ -194,3 +194,83 @@ class TestKagglePathModule:
             assert link.read_bytes() == b"spec-bytes"
         finally:
             os.chmod(src7, 0o755)
+
+
+class TestEnsureCorpus:
+    """review #9 B3: env override > attached > CLI download > loud failure."""
+
+    def test_env_override(self, tmp_path, monkeypatch):
+        from airhythm.kaggle_path import ensure_corpus
+
+        monkeypatch.setenv("AIRHYTHM_DATA", str(tmp_path / "env_corpus"))
+        (tmp_path / "env_corpus" / "7").mkdir(parents=True)
+        dest, src = ensure_corpus(tmp_path / "dest")
+        assert dest == tmp_path / "env_corpus"
+        assert src == tmp_path / "env_corpus"
+
+    def test_attached_passthrough(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm.kaggle_path import ensure_corpus
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        input_root = tmp_path / "input"
+        flat = input_root / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        (flat / "song_7__0000.npy").write_bytes(b"x")
+        dest, src = ensure_corpus(tmp_path / "dest", input_root=str(input_root))
+        assert (dest / "7" / "0000.npy").is_symlink()
+        assert src == flat
+
+    def test_download_branch_invoked(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        calls = []
+
+        def fake_download(handle, dest):
+            calls.append(handle)
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "song_7__0000.npy").write_bytes(b"x")
+
+        monkeypatch.setattr(kaggle_path, "_download_corpus_dataset", fake_download)
+        dest, src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "empty_input"),
+            download_handle=config.CORPUS_HANDLE)
+        assert calls == [config.CORPUS_HANDLE]
+        assert (dest / "7" / "0000.npy").is_symlink()
+        assert src == tmp_path / "corpus_dl"
+        # second call: files already present — no re-download
+        kaggle_path.ensure_corpus(
+            tmp_path / "dest2", input_root=str(tmp_path / "empty_input"),
+            download_handle=config.CORPUS_HANDLE)
+        assert calls == [config.CORPUS_HANDLE]
+
+    def test_missing_everything_fails_loudly(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm.kaggle_path import ensure_corpus
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        with pytest.raises(FileNotFoundError, match=config.CORPUS_HANDLE):
+            ensure_corpus(tmp_path / "dest", input_root=str(tmp_path / "empty"))
+
+
+class TestReadCorpusManifest:
+    def test_reads_json(self, tmp_path):
+        from airhythm.kaggle_path import read_corpus_manifest
+
+        (tmp_path / "corpus_manifest.json").write_text(
+            '{"corpus_version": "v1-abc", "song_count": 100}')
+        m = read_corpus_manifest(tmp_path)
+        assert m["corpus_version"] == "v1-abc"
+        assert m["song_count"] == 100
+
+    def test_absent_returns_none(self, tmp_path):
+        from airhythm.kaggle_path import read_corpus_manifest
+
+        assert read_corpus_manifest(tmp_path) is None
+
+    def test_none_source_returns_none(self):
+        from airhythm.kaggle_path import read_corpus_manifest
+
+        assert read_corpus_manifest(None) is None

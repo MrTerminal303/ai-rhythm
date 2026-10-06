@@ -1,0 +1,15 @@
+# Minimal packaging so Colab's `pip install -e /content/ai-rhythm` works.
+# Runtime deps stay in requirements.txt (CELL 0 installs those — Kaggle path
+# unchanged).
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airhythm"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["airhythm"]

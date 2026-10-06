@@ -6,10 +6,19 @@ mounted dataset root and resolves paths relative to it.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-__all__ = ["detect_kaggle_env", "resolve_kaggle_input_dir", "attach_corpus"]
+from airhythm import config
+
+__all__ = [
+    "detect_kaggle_env",
+    "resolve_kaggle_input_dir",
+    "attach_corpus",
+    "ensure_corpus",
+    "read_corpus_manifest",
+]
 
 
 def detect_kaggle_env() -> bool:
@@ -67,3 +76,72 @@ def attach_corpus(flat_root, dest_root) -> Path:
             "and no minimal_dataset/ subdir — is the corpus dataset attached?"
         )
     return dest_root
+
+
+def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None) -> tuple[Path, Path | None]:
+    """Obtain the corpus for B/C (review #9 B3).
+
+    Order: AIRHYTHM_DATA env (local override) > attached Kaggle Dataset >
+    CLI download (Colab) > loud failure. Returns (attached_dest, source_root);
+    source_root is where corpus_manifest.json lives (A5) — callers pass it to
+    read_corpus_manifest(). Never re-downloads: skips the kaggle CLI when
+    corpus_dl/ already holds flat corpus files.
+    """
+    env = os.environ.get("AIRHYTHM_DATA")
+    if env:
+        return Path(env), Path(env)
+    attached = Path(input_root) / config.CORPUS_HANDLE
+    if attached.is_dir():
+        return attach_corpus(attached, dest_root), attached
+    if download_handle:
+        dl = Path(dest_root).parent / "corpus_dl"
+        if not any(dl.glob("song_*__*")):
+            _download_corpus_dataset(download_handle, dl)
+        return attach_corpus(dl, dest_root), dl
+    raise FileNotFoundError(
+        "corpus not found: no AIRHYTHM_DATA env, no "
+        f"{attached} mount, no download_handle — attach the corpus dataset "
+        f"({config.CORPUS_HANDLE}) or set AIRHYTHM_DATA"
+    )
+
+
+def _download_corpus_dataset(handle: str, dest) -> None:
+    """kaggle CLI download for Colab (review #9 B3). Bare handle is expanded
+    with the owner from KAGGLE_USERNAME or ~/.kaggle/kaggle.json."""
+    if "/" not in handle:
+        owner = os.environ.get("KAGGLE_USERNAME")
+        if not owner:
+            try:
+                with open(Path.home() / ".kaggle" / "kaggle.json") as f:
+                    owner = json.load(f).get("username")
+            except (OSError, ValueError):
+                owner = None
+        if not owner:
+            raise ValueError(
+                f"cannot expand bare handle {handle!r}: set KAGGLE_USERNAME "
+                "or provide ~/.kaggle/kaggle.json"
+            )
+        handle = f"{owner}/{handle}"
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    import subprocess
+
+    r = subprocess.run(
+        ["kaggle", "datasets", "download", "-d", handle, "-p", str(dest), "--unzip"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"kaggle datasets download {handle} failed (rc={r.returncode}): "
+            + ((r.stdout or "") + (r.stderr or "")).strip()
+        )
+
+
+def read_corpus_manifest(source_root) -> dict | None:
+    """corpus_manifest.json at the corpus source root (A5), or None if absent."""
+    if source_root is None:
+        return None
+    p = Path(source_root) / "corpus_manifest.json"
+    if not p.is_file():
+        return None
+    return json.loads(p.read_text())

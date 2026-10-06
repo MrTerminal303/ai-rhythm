@@ -4,6 +4,8 @@
 Prereqs: Notebook A (corpus published), Notebook B (best_*.pt published).
 Enable GPU (sliding-window inference over 5 eval songs).
 Attach via Data → Add data: airhythm-corpus and airhythm-data.
+Runs on Kaggle OR Colab (review #9) — same notebook; Colab clones the
+repo in CELL 0 and reads checkpoints from Google Drive.
 
 Cells: 0 setup, 15 salience gate (EVL-03 report + EVL-04 pass/fail, D-03
 halt on fail). Fresh sessions seed the writable working copy from the
@@ -24,19 +26,39 @@ from pathlib import Path
 # review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
 # fail fast if the image drifts
 assert sys.version_info >= (3, 11), f"need Python 3.11+, got {sys.version}"
-_kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
-print(f"python {sys.version.split()[0]}, kaggle {(_kver.stdout or _kver.stderr).strip()}")
+# review #9: Colab image may lack the CLI (Kaggle ships it) — report, install below
+try:
+    _kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
+    _kver_s = (_kver.stdout or _kver.stderr).strip()
+except FileNotFoundError:
+    _kver_s = "not installed"
+print(f"python {sys.version.split()[0]}, kaggle {_kver_s}")
+
+# review #9: Colab has no /kaggle/input — clone repo, editable-install airhythm,
+# ensure kaggle CLI. Kaggle path unchanged (mount auto-find below still runs).
+if not Path("/kaggle/input").exists() and Path("/content").exists():
+    import importlib.util
+    if importlib.util.find_spec("airhythm") is None:
+        if not Path("/content/ai-rhythm").is_dir():
+            subprocess.run(["git", "clone", "https://github.com/MrTerminal303/ai-rhythm.git",
+                            "/content/ai-rhythm"], check=True)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-e", "/content/ai-rhythm"])
+    if importlib.util.find_spec("kaggle") is None:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "kaggle"])
 
 # Sanity-check numpy in a clean interpreter; force-reinstall only if broken
 # (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).
 if subprocess.run([sys.executable, "-c", "import numpy.char"], capture_output=True).returncode != 0:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps", "numpy"])
 
-# Find and install from bundled requirements.txt (skip numpy line)
-for _d in Path("/kaggle/input").rglob("requirements.txt"):
-    if "airhythm" in str(_d):
-        !grep -v "^numpy" {_d} | pip install -r /dev/stdin -q
-        break
+# Find and install from bundled requirements.txt (skip numpy line) —
+# Kaggle: mounted dataset; Colab: cloned repo
+_req = next((p for _r in (Path("/kaggle/input"), Path("/content/ai-rhythm"))
+             if _r.is_dir()
+             for p in _r.rglob("requirements.txt")
+             if "airhythm" in str(p) or "ai-rhythm" in str(p)), None)
+if _req:
+    !grep -v "^numpy" {_req} | pip install -r /dev/stdin -q
 else:
     !pip install mir_eval==0.8.2 librosa==0.11.0 -q
 
@@ -74,10 +96,12 @@ if airhythm_root is None:
     airhythm_root = Path.cwd()
 
 sys.path.insert(0, str(airhythm_root))
-WORKING = Path("/kaggle/working")
 
 from airhythm import config
+from airhythm.runtime import runtime
+WORKING = runtime.scratch   # review #9: Kaggle /kaggle/working, Colab /content/airhythm
 print(f"airhythm loaded from: {airhythm_root}")
+print(f"runtime: {runtime.name} scratch={WORKING}")
 
 # --- Version check (Kaggle compatibility) ---
 import torch, torchaudio, librosa, numpy as np
@@ -94,7 +118,7 @@ if torch.cuda.is_available():
 # CELL 15: Salience gate (Phase 8) — EVL-03 report + EVL-04 pass/fail (D-03 halt on fail)
 # =============================================================
 import json
-import os
+import time
 import librosa
 import numpy as np
 import torch
@@ -102,27 +126,36 @@ from pathlib import Path
 
 from airhythm import config
 from airhythm.audio_preproc import normalize_chunk
+from airhythm.checkpoint_store import CheckpointStore
 from airhythm.datasets import boundary_fraction, build_full_song_cache, proximity_binned_recall
 from airhythm.model import AIRhythmCRNN
 from airhythm.pin_baseline import load_song_audio_sr, reconstruct_ref_times
-from airhythm.kaggle_path import attach_corpus
+from airhythm.kaggle_path import ensure_corpus, read_corpus_manifest
+from airhythm.run_meta import verify_resume_compat
+from airhythm.runtime import runtime
 from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
                                     stitch_envelope)
 
 # standalone (A1): re-derive context when CELL 13 was not in this notebook
 if "WORKING" not in globals():
-    WORKING = Path(os.environ.get("KAGGLE_WORKING_DIR", config.EPHEMERAL_DIR))
+    WORKING = runtime.scratch   # review #9: replace hard-coded /kaggle/working
 if "DATA_ROOT" not in globals():
     # Read-only attached corpus: A publishes FLAT (Kaggle CLI --dir-mode skip
     # uploads no folders — review #7 P0), so attach_corpus rebuilds <sid>/<file>
     # as SYMLINKS (zero-copy) — caches land in working/full_cache only for the
-    # songs actually evaluated. AIRHYTHM_DATA still overrides.
-    _env_data = os.environ.get("AIRHYTHM_DATA")
-    if _env_data:
-        DATA_ROOT = Path(_env_data)
-    else:
-        DATA_ROOT = attach_corpus(Path("/kaggle/input") / config.CORPUS_HANDLE,
-                                  WORKING / "data" / "minimal_dataset")
+    # songs actually evaluated. Obtain order (review #9 B3): AIRHYTHM_DATA
+    # override > attached dataset > kaggle CLI download (Colab).
+    DATA_ROOT, _corpus_src = ensure_corpus(
+        WORKING / "data" / "minimal_dataset",
+        download_handle=config.CORPUS_HANDLE)
+    CORPUS_MANIFEST = read_corpus_manifest(_corpus_src)
+if "CORPUS_MANIFEST" not in globals():
+    CORPUS_MANIFEST = None   # DATA_ROOT pre-set without a manifest
+if CORPUS_MANIFEST:
+    print(f"corpus manifest: version={CORPUS_MANIFEST['corpus_version']} "
+          f"songs={CORPUS_MANIFEST['song_count']}")
+else:
+    print("corpus manifest: not found (pre-A5 corpus) — gate corpus check will skip")
 assert DATA_ROOT.is_dir(), f"corpus not attached: {DATA_ROOT}"
 print(f"DATA_ROOT = {DATA_ROOT}")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -143,13 +176,20 @@ _missing = sorted((set(EVAL_IDS) | SEARCH_IDS) - _present)
 assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 # 1) best-val checkpoint ONLY (D-04: gate-time only + final best-val) —
-# local working copy first, else the attached checkpoint dataset (fresh session)
-best = sorted((WORKING / config.CHECKPOINTS_DIR).glob("best_*.pt"))
-if not best:
-    _att_ckpt = Path("/kaggle/input") / config.DATASET_HANDLE
-    best = sorted(_att_ckpt.glob("best_*.pt")) if _att_ckpt.is_dir() else []
-assert best, "no best_*.pt — run Notebook B (or attach its checkpoint dataset)"
+# local working copy first, else Drive (Colab) / attached dataset (fresh session)
+if runtime.is_colab and runtime.drive_root:
+    from google.colab import drive
+    drive.mount("/content/drive")
+store = CheckpointStore(
+    WORKING / config.CHECKPOINTS_DIR,
+    attached_dir=Path("/kaggle/input") / config.DATASET_HANDLE,
+    drive_dir=runtime.drive_checkpoints,
+)
+best = store.glob("best_*.pt")
+assert best, "no best_*.pt — run Notebook B (or attach its checkpoint dataset / Drive)"
 ckpt = torch.load(best[-1], map_location=DEVICE, weights_only=False)
+# review #9 B9: corpus/schema mismatch FAILs loudly — never gate the wrong state
+verify_resume_compat(ckpt.get("meta"), CORPUS_MANIFEST, where="gate")
 model = AIRhythmCRNN().to(DEVICE)
 model.load_state_dict(ckpt["model"])
 model.eval()
@@ -238,3 +278,18 @@ if mean_frac > config.BOUNDARY_FRACTION_MAX:
         print("D-05: no edge degradation — mitigation not justified")
 else:
     print("boundary-fraction OK — no mitigation needed")
+
+# 5) machine-readable results (review #9 C6) — prints above stay the 08-07 evidence
+OUT_DIR = runtime.output / f"e{ckpt.get('epoch', 0)}-{time.strftime('%Y%m%d-%H%M%S')}"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+(OUT_DIR / "metrics.json").write_text(json.dumps({
+    "run_id": OUT_DIR.name,
+    "checkpoint": best[-1].name,
+    "gate": {k: gate[k] for k in ("pass", "mean_F_important", "bar", "wins",
+                                  "ci_95", "fragile")},
+    "boundary_mean": mean_frac,
+    "boundary_max": max(fracs.values()),
+    "eval_ids": EVAL_IDS,
+    "run_meta": ckpt.get("meta"),
+}, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+print(f"results: {OUT_DIR / 'metrics.json'}")

@@ -21,10 +21,12 @@ Uses kagglehub for Dataset upload:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from airhythm import config
@@ -38,6 +40,7 @@ __all__ = [
     "prune_old_checkpoints",
     "check_storage",
     "wait_dataset_ready",
+    "build_corpus_manifest",
 ]
 
 logger = logging.getLogger(__name__)
@@ -434,3 +437,36 @@ def wait_dataset_ready(slug: str, *, attempts: int = 12, delay_s: float = 15.0) 
     raise subprocess.CalledProcessError(
         1, ["kaggle", "datasets", "status", slug],
         output=f"not READY after {attempts} attempts; last status: {last}")
+
+
+def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None) -> dict:
+    """A5 corpus manifest (review #9): identity of the published corpus.
+
+    Notebook A writes this into the flat publish dir so it ships with the
+    dataset; B/C read it for RUN_META and resume validation (B9). corpus_version
+    is a content hash over song IDs — a different song set yields a different
+    version, so resume detects corpus swaps.
+    """
+    from airhythm.download_batch import is_complete_song_dir
+
+    root = Path(song_root)
+    song_dirs = [d for d in sorted(root.iterdir()) if d.is_dir() and d.name.isdigit()]
+    song_ids = [int(d.name) for d in song_dirs]
+    file_count = 0
+    complete = 0
+    for d in song_dirs:
+        file_count += sum(1 for f in d.rglob("*") if f.is_file())
+        if is_complete_song_dir(d):
+            complete += 1
+    digest = hashlib.sha1(",".join(str(i) for i in song_ids).encode()).hexdigest()[:12]
+    return {
+        "corpus_version": f"v1-{digest}",
+        "schema_version": 1,
+        "target_songs": target_songs,
+        "song_count": len(song_ids),
+        "song_ids": song_ids,
+        "file_count": file_count,
+        "complete_song_count": complete,
+        "pinned_song_count": len(pinned_ids or []),
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }

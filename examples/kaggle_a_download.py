@@ -222,7 +222,7 @@ if songs:
 # =============================================================
 import json, os, shutil, subprocess, time
 from airhythm import config
-from airhythm.kaggle_push import wait_dataset_ready
+from airhythm.kaggle_push import build_corpus_manifest, wait_dataset_ready
 
 # review #7 P0: Kaggle CLI default --dir-mode skip uploads NO folders, so the
 # corpus goes out FLAT as song_<sid>__<file>; B/C rebuild <sid>/<file> dirs
@@ -243,6 +243,17 @@ for song_dir in sorted(_src_root.iterdir()):
             except OSError:
                 shutil.copy2(f, dst)  # cross-fs fallback
 print(f"flat corpus staged: {n_files} files -> {CORPUS_ROOT}")
+
+# A5 corpus manifest (review #9): ships at the dataset root so B/C read it for
+# RUN_META + resume validation (B9). corpus_version = hash over song IDs.
+manifest = build_corpus_manifest(_src_root, target_songs=100,
+                                 pinned_ids=PINNED if "PINNED" in globals() else None)
+(CORPUS_ROOT / "corpus_manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True))
+print(f"manifest: version={manifest['corpus_version']} songs={manifest['song_count']} "
+      f"complete={manifest['complete_song_count']} pinned={manifest['pinned_song_count']}")
+assert manifest["complete_song_count"] == manifest["song_count"], (
+    f"incomplete songs in corpus: {manifest['song_count'] - manifest['complete_song_count']}")
 
 meta = CORPUS_ROOT / "dataset-metadata.json"
 if not meta.exists():

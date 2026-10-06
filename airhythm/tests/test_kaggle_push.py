@@ -331,3 +331,62 @@ class TestWaitDatasetReady:
         with pytest.raises(subprocess.CalledProcessError) as exc:
             wait_dataset_ready("user/airhythm-corpus", attempts=3, delay_s=0)
         assert "not READY after 3 attempts" in (exc.value.output or "")
+
+
+class TestBuildCorpusManifest:
+    """review #9 A5: identity of the published corpus (resume validation B9)."""
+
+    @staticmethod
+    def _make_song(root, sid, *, complete=True):
+        d = root / str(sid)
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text("{}")
+        (d / "original.audio").write_bytes(b"audio")
+        if complete:
+            (d / "0000.npy").write_bytes(b"spec")
+            (d / "0000_labels.npy").write_bytes(b"labels")
+        return d
+
+    def test_fields_and_counts(self, tmp_path):
+        from airhythm.kaggle_push import build_corpus_manifest
+
+        for sid in (100, 200, 300):
+            self._make_song(tmp_path, sid)
+        self._make_song(tmp_path, 400, complete=False)  # missing chunk+labels
+
+        m = build_corpus_manifest(tmp_path, target_songs=100, pinned_ids=[100, 200])
+        assert set(m) == {
+            "corpus_version", "schema_version", "target_songs", "song_count",
+            "song_ids", "file_count", "complete_song_count",
+            "pinned_song_count", "created_at",
+        }
+        assert m["schema_version"] == 1
+        assert m["target_songs"] == 100
+        assert m["song_count"] == 4
+        assert m["song_ids"] == [100, 200, 300, 400]
+        assert m["complete_song_count"] == 3
+        assert m["pinned_song_count"] == 2
+        assert m["file_count"] == 4 * 3 + 2  # complete: 4 files, incomplete: 2
+        assert m["corpus_version"].startswith("v1-")
+        assert "T" in m["created_at"]  # ISO-8601
+
+    def test_version_changes_with_song_set(self, tmp_path):
+        from airhythm.kaggle_push import build_corpus_manifest
+
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        self._make_song(a, 100)
+        self._make_song(a, 200)
+        self._make_song(b, 100)
+        self._make_song(b, 300)  # different set → different hash
+        ma = build_corpus_manifest(a)
+        mb = build_corpus_manifest(b)
+        assert ma["corpus_version"] != mb["corpus_version"]
+
+    def test_empty_root(self, tmp_path):
+        from airhythm.kaggle_push import build_corpus_manifest
+
+        m = build_corpus_manifest(tmp_path)
+        assert m["song_count"] == 0
+        assert m["complete_song_count"] == 0
+        assert m["song_ids"] == []

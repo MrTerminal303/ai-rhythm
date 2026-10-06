@@ -12,6 +12,13 @@ export default function Landing() {
       >
         Play solo
       </Link>
+      <Link
+        href="/calibrate"
+        className="rounded-[10px] border px-6 py-3 text-sm"
+        style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+      >
+        Calibrate
+      </Link>
       <p className="text-sm" style={{ color: "var(--text-dim)" }}>
         4-key rhythm game — D F J K
       </p>

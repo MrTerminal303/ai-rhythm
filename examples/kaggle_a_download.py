@@ -257,20 +257,33 @@ print(f"manifest: version={manifest['corpus_version']} songs={manifest['song_cou
 assert manifest["complete_song_count"] == manifest["song_count"], (
     f"incomplete songs in corpus: {manifest['song_count'] - manifest['complete_song_count']}")
 
+# review #10 follow-up: owner must never be empty — env first, then
+# ~/.kaggle/kaggle.json; empty KAGGLE_USERNAME produced
+# "Invalid dataset specification /airhythm-corpus" (08-07 observe)
+_user = os.environ.get("KAGGLE_USERNAME")
+if not _user:
+    try:
+        _user = json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text()).get("username")
+    except OSError:
+        _user = None
+assert _user, (
+    "no Kaggle credentials — set KAGGLE_USERNAME (kernel secret) or upload "
+    "~/.kaggle/kaggle.json; refusing to publish with empty owner")
+CORPUS_SLUG = f"{_user}/{config.CORPUS_HANDLE}"
+# always rewrite: a prior failed run left id="/airhythm-corpus" on disk
 meta = CORPUS_ROOT / "dataset-metadata.json"
-if not meta.exists():
-    meta.write_text(json.dumps({
-        "id": f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}",
-        "title": config.CORPUS_HANDLE,
-        "licenses": [{"name": "CC0-1.0"}],
-    }, indent=2))
+meta.write_text(json.dumps({
+    "id": CORPUS_SLUG,
+    "title": config.CORPUS_HANDLE,
+    "licenses": [{"name": "CC0-1.0"}],
+}, indent=2))
 msg = f"corpus {time.strftime('%Y-%m-%d %H:%M')}"
 r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CORPUS_ROOT), "-m", msg])
 if r.returncode != 0:  # first push: no dataset yet — slug comes from
     # dataset-metadata.json "id"; current CLI create has no -s (review #6)
     subprocess.run(["kaggle", "datasets", "create", "-p", str(CORPUS_ROOT)],
                    check=True)
-print(f"corpus published: {os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}"
+print(f"corpus published: {CORPUS_SLUG}"
       " — attach in Notebook B/C (Data → Add data)")
 # review #8 #1: upload may still process after version/create — poll until READY
-wait_dataset_ready(f"{os.environ.get('KAGGLE_USERNAME', '')}/{config.CORPUS_HANDLE}")
+wait_dataset_ready(CORPUS_SLUG)

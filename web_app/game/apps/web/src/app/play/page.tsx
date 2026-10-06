@@ -9,6 +9,7 @@ import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
 import { ClockPairKeeper } from "../../engine/clock-pair.js";
 import { createKeyHandler } from "../../engine/controller.js";
+import { SoloPauseController } from "../../engine/pause-controller.js";
 import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
@@ -16,8 +17,8 @@ import { Hud } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
 
-// Play phases: idle → loading → countdown → playing (pause lands in T10 — keep extensible)
-type Phase = "idle" | "loading" | "countdown" | "playing";
+// Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume)
+type Phase = "idle" | "loading" | "countdown" | "playing" | "paused";
 
 // debug hook for e2e (w2-sync) — set on mount, reads live refs
 declare global {
@@ -39,6 +40,7 @@ export default function PlayPage() {
   const [activeLanes, setActiveLanes] = useState<number[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdown, setCountdown] = useState(3);
+  const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
 
   // refs bridging the mount effect, the click-start flow, and cleanup
   const phaseRef = useRef<Phase>("idle");
@@ -53,10 +55,55 @@ export default function PlayPage() {
   const onKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const activeTimers = useRef(new Set<number>()); // key-flash timeout ids
   const mountedRef = useRef(true); // false after unmount — aborts startGame's await chain
+  const pauseCtlRef = useRef<SoloPauseController | null>(null);
+  if (pauseCtlRef.current === null) pauseCtlRef.current = new SoloPauseController();
 
   const applyPhase = (p: Phase): void => {
     phaseRef.current = p; // sync first — guards re-entry before React re-renders
     setPhase(p);
+  };
+
+  // 3-2-1 countdown (wall-clock, solo form) shared by start and resume — T8 mechanics
+  const runCountdown = (onDone: () => void): void => {
+    applyPhase("countdown");
+    setCountdown(3);
+    let remaining = 3;
+    const tick = (): void => {
+      if (!mountedRef.current) return; // timer fired after unmount — do nothing
+      remaining -= 1;
+      if (remaining > 0) {
+        setCountdown(remaining);
+        timerRef.current = window.setTimeout(tick, 1000);
+        return;
+      }
+      onDone();
+    };
+    timerRef.current = window.setTimeout(tick, 1000);
+  };
+
+  // blur / visibilitychange → hidden while playing: freeze clock, record position once, show overlay
+  const pauseGame = (): void => {
+    if (phaseRef.current !== "playing") return;
+    const clock = clockRef.current;
+    if (!clock) return;
+    clock.pause(); // T7: freezes chartTime/playbackPosition — never throws
+    const pausedAt = clock.chartTimeMs(); // frozen value, not a live reading
+    pauseCtlRef.current?.pause(pausedAt);
+    applyPhase("paused");
+  };
+
+  const resumeGame = (): void => {
+    if (phaseRef.current !== "paused") return;
+    const clock = clockRef.current;
+    if (!clock) return;
+    const at = pauseCtlRef.current?.pausedAtMs ?? 0;
+    setResuming(true);
+    runCountdown(() => {
+      clock.start(at);
+      pauseCtlRef.current?.clear();
+      setResuming(false);
+      applyPhase("playing");
+    });
   };
 
   // renderer + debug hook at mount: dataset.webglReady must be set BEFORE any click/await (B6 contract)
@@ -92,14 +139,22 @@ export default function PlayPage() {
     };
     const onResize = () => renderer.resize();
     window.addEventListener("resize", onResize);
+    window.addEventListener("blur", pauseGame); // tab/window blur while playing → pause (T10)
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") pauseGame();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       mountedRef.current = false; // abort startGame's in-flight awaits before tearing down
       cancelAnimationFrame(rafRef.current);
       if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
       if (onKeyRef.current) window.removeEventListener("keydown", onKeyRef.current);
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("blur", pauseGame);
+      document.removeEventListener("visibilitychange", onVisibility);
       for (const t of activeTimers.current) window.clearTimeout(t); // key-flash timers must not outlive the effect
       activeTimers.current.clear();
+      clockRef.current?.stop(); // teardown path — the only place stop() is used (T10)
       const audioCtx = audioCtxRef.current;
       audioCtxRef.current = null;
       if (audioCtx && audioCtx.state !== "closed") void audioCtx.close();
@@ -154,20 +209,10 @@ export default function PlayPage() {
       store.set(engine.snapshot()); // HUD shows 0s once the game is built
 
       // 3-2-1 countdown (wall-clock, solo form), then AudioClock.start(0)
-      applyPhase("countdown");
-      setCountdown(3);
-      let remaining = 3;
-      const tick = (): void => {
-        if (!mountedRef.current) return; // timer fired after unmount — do nothing
-        remaining -= 1;
-        if (remaining > 0) {
-          setCountdown(remaining);
-          timerRef.current = window.setTimeout(tick, 1000);
-          return;
-        }
+      runCountdown(() => {
         clock.start(0);
         applyPhase("playing");
-        const onKey = createKeyHandler({
+        const rawKey = createKeyHandler({
           inputChartTime: (ts) => clock.chartTimeAt(ts),
           engine: {
             // wrap judge: emit snapshot at keydown so HUD updates without waiting a frame (§2.3)
@@ -186,12 +231,21 @@ export default function PlayPage() {
             activeTimers.current.add(flashId);
           },
         });
+        const onKey = (e: KeyboardEvent): void => {
+          if (phaseRef.current !== "playing") return; // paused/countdown: no judging (T10); chartTimeAt would throw
+          rawKey(e);
+        };
         onKeyRef.current = onKey;
         window.addEventListener("keydown", onKey);
         let lastRaf: number | undefined;
         const frame = (rafMs: number) => {
           if (lastRaf !== undefined) perf.recordFrameInterval(rafMs - lastRaf);
           lastRaf = rafMs;
+          if (phaseRef.current !== "playing") {
+            // paused/resume-countdown: skip update + render (HUD frozen), keep the loop alive (T10)
+            rafRef.current = requestAnimationFrame(frame);
+            return;
+          }
           if (engine.isFrozen()) {
             const report = {
               p95RenderDurationMs: perf.p95RenderDurationMs(),
@@ -211,8 +265,7 @@ export default function PlayPage() {
           rafRef.current = requestAnimationFrame(frame);
         };
         rafRef.current = requestAnimationFrame(frame);
-      };
-      timerRef.current = window.setTimeout(tick, 1000);
+      });
     } catch (err) {
       console.error("[play] start failed:", err);
       const audioCtx = audioCtxRef.current;
@@ -230,7 +283,7 @@ export default function PlayPage() {
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}
-          data-testid="start-overlay"
+          data-testid={phase === "paused" ? "pause-overlay" : "start-overlay"}
         >
           {phase === "loading" && (
             <p style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>Preparing…</p>
@@ -243,21 +296,39 @@ export default function PlayPage() {
               {countdown}
             </p>
           )}
-          {/* button stays mounted through loading/countdown (removed at playing): a defensive
-              second click in e2e resolves against it and no-ops via the phase guard */}
-          <button
-            type="button"
-            onClick={() => void startGame()}
-            className="cursor-pointer rounded-[6px] border px-6 py-3 text-lg"
-            style={{
-              borderColor: "var(--line)",
-              background: "var(--surface)",
-              color: "var(--text)",
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            Click to start
-          </button>
+          {phase === "paused" && (
+            <button
+              type="button"
+              onClick={resumeGame}
+              className="cursor-pointer rounded-[6px] border px-6 py-3 text-lg"
+              style={{
+                borderColor: "var(--line)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              Paused — click to resume
+            </button>
+          )}
+          {/* start button stays mounted through loading/countdown (removed at playing): a defensive
+              second click in e2e resolves against it and no-ops via the phase guard; hidden during
+              the resume countdown so it never competes with the resume flow */}
+          {(phase === "idle" || phase === "loading" || (phase === "countdown" && !resuming)) && (
+            <button
+              type="button"
+              onClick={() => void startGame()}
+              className="cursor-pointer rounded-[6px] border px-6 py-3 text-lg"
+              style={{
+                borderColor: "var(--line)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              Click to start
+            </button>
+          )}
         </div>
       )}
     </main>

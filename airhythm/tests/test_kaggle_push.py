@@ -422,3 +422,52 @@ class TestBuildCorpusManifest:
         assert m["song_count"] == 0
         assert m["complete_song_count"] == 0
         assert m["song_ids"] == []
+
+
+class TestMergeManifestWithRemote:
+    """08-07 multi-session: publish remote ∪ local, never the local slice alone."""
+
+    @staticmethod
+    def _make_song(root, sid):
+        d = root / str(sid)
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text("{}")
+        (d / "original.audio").write_bytes(b"audio")
+        (d / "0000.npy").write_bytes(b"spec")
+        (d / "0000_labels.npy").write_bytes(b"labels")
+
+    @staticmethod
+    def _remote(ids, file_count, complete=None, pinned=6):
+        ids = sorted(ids)
+        return {"song_ids": ids, "song_count": len(ids), "file_count": file_count,
+                "complete_song_count": len(ids) if complete is None else complete,
+                "pinned_song_count": pinned}
+
+    def test_topup_session_unions_new_songs(self, tmp_path):
+        import hashlib
+
+        from airhythm.kaggle_push import build_corpus_manifest, merge_manifest_with_remote
+
+        for sid in (300, 400):  # local has ONLY new songs (no pull)
+            self._make_song(tmp_path, sid)
+        local = build_corpus_manifest(tmp_path, pinned_ids=[100, 200])
+        merged = merge_manifest_with_remote(local, self._remote([100, 200], 8), tmp_path)
+        assert merged["song_ids"] == [100, 200, 300, 400]
+        assert merged["song_count"] == 4
+        assert merged["complete_song_count"] == 4  # remote 2 + 2 local-only
+        assert merged["file_count"] == 8 + 8  # remote 8 + 2 songs x 4 files
+        assert merged["pinned_song_count"] == 6
+        expect = "v1-" + hashlib.sha1(
+            "\n".join(("100", "200", "300", "400")).encode()).hexdigest()[:12]
+        assert merged["corpus_version"] == expect
+
+    def test_overlap_not_double_counted(self, tmp_path):
+        from airhythm.kaggle_push import build_corpus_manifest, merge_manifest_with_remote
+
+        for sid in (100, 300):  # 100 also remote (pulled), 300 is new
+            self._make_song(tmp_path, sid)
+        local = build_corpus_manifest(tmp_path)
+        merged = merge_manifest_with_remote(local, self._remote([100, 200], 8), tmp_path)
+        assert merged["song_ids"] == [100, 200, 300]
+        assert merged["file_count"] == 8 + 4  # remote covers 100; only 300 adds files
+        assert merged["complete_song_count"] == 3  # remote 2 + local-only 1

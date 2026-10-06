@@ -2,8 +2,9 @@
 """NOTEBOOK A — download → preprocess → validate → publish Dataset.
 
 Paste each cell section into a Kaggle notebook (GPU not required).
-Cells: 0 setup, 2 storage, 3 download (pinned eval/search IDs first),
-4/5/8 validate, 16 publish corpus to the Kaggle dataset (CORPUS_HANDLE).
+Cells: 0 setup, 2 storage, 2.5 remote manifest probe (duplicate check),
+3 download (pinned eval/search IDs first), 4/5/8 validate, 16 publish corpus
+to the Kaggle dataset (CORPUS_HANDLE).
 
 Downstream: Notebook B attaches the corpus to train; Notebook C attaches
 corpus + checkpoint for the salience gate. Cell numbers are the historical
@@ -120,6 +121,54 @@ def show_storage(label: str, path: str):
 
 show_storage("Dataset (read-only)", str(airhythm_root))
 show_storage("Working disk", str(WORKING))
+
+
+# %% ============================================================
+# CELL 2.5: Probe published corpus manifest — duplicate check
+# =============================================================
+# Multi-session top-up (08-07): single-file download of the PUBLISHED
+# corpus_manifest.json (seconds — no 1.45GB pull), then compare against local
+# dirs before downloading. CELL 16 re-reads this probe file to publish the
+# UNION manifest, so a session that did not pull old songs still ships an
+# identity covering the whole dataset.
+import json, subprocess
+
+REMOTE_MANIFEST = None
+REMOTE_IDS = set()
+_user = os.environ.get("KAGGLE_USERNAME")
+if not _user:
+    try:
+        _user = json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text()).get("username")
+    except OSError:
+        _user = None
+
+_probe = WORKING / "data" / "remote_probe"
+_probe.mkdir(parents=True, exist_ok=True)
+_mf = _probe / "corpus_manifest.json"
+if _user:
+    _r = subprocess.run(
+        ["kaggle", "datasets", "download", f"{_user}/{config.CORPUS_HANDLE}",
+         "-f", "corpus_manifest.json", "-p", str(_probe), "--unzip"],
+        capture_output=True, text=True)
+    if _r.returncode == 0 and _mf.exists():
+        REMOTE_MANIFEST = json.loads(_mf.read_text())
+        REMOTE_IDS = {int(x) for x in REMOTE_MANIFEST["song_ids"]}
+        print(f"remote manifest: version={REMOTE_MANIFEST['corpus_version']} "
+              f"songs={REMOTE_MANIFEST['song_count']}")
+    else:
+        if _mf.exists():
+            _mf.unlink()  # stale from an earlier probe in this session
+        _err = ((_r.stderr or "") + (_r.stdout or "")).strip().splitlines()
+        print(f"remote probe: no published manifest yet "
+              f"({(_err[-1] if _err else 'no output')[:160]}) — first session?")
+else:
+    print("remote probe: no Kaggle credentials — skipping")
+
+DATA_ROOT_PROBE = WORKING / "data" / "minimal_dataset"
+have = ({int(p.name) for p in DATA_ROOT_PROBE.iterdir()
+         if p.is_dir() and p.name.isdigit()} if DATA_ROOT_PROBE.is_dir() else set())
+print(f"remote={len(REMOTE_IDS)} local={len(have)} overlap={len(REMOTE_IDS & have)} "
+      f"missing_here={len(REMOTE_IDS - have)} new_in_local={len(have - REMOTE_IDS)}")
 
 
 # %% ============================================================
@@ -242,7 +291,8 @@ if songs:
 # =============================================================
 import json, os, shutil, subprocess, time, zipfile
 from airhythm import config
-from airhythm.kaggle_push import build_corpus_manifest, wait_dataset_ready
+from airhythm.kaggle_push import (build_corpus_manifest, merge_manifest_with_remote,
+                                  wait_dataset_ready)
 
 # review #7 P0: staging stays FLAT as song_<sid>__<file>; B/C rebuild
 # <sid>/<file> dirs as symlinks via kaggle_path.attach_corpus.
@@ -267,6 +317,12 @@ print(f"flat corpus staged: {n_files} files -> {CORPUS_ROOT}")
 # RUN_META + resume validation (B9). corpus_version = hash over song IDs.
 manifest = build_corpus_manifest(_src_root, target_songs=100,
                                  pinned_ids=PINNED if "PINNED" in globals() else None)
+# multi-session union (CELL 2.5): a top-up session's manifest must describe
+# remote ∪ local — one corpus_manifest.json per publish, last writer consistent
+_probe_mf = WORKING / "data" / "remote_probe" / "corpus_manifest.json"
+if _probe_mf.exists():
+    manifest = merge_manifest_with_remote(
+        manifest, json.loads(_probe_mf.read_text()), _src_root)
 (CORPUS_ROOT / "corpus_manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True))
 print(f"manifest: version={manifest['corpus_version']} songs={manifest['song_count']} "

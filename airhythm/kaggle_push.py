@@ -41,6 +41,7 @@ __all__ = [
     "check_storage",
     "wait_dataset_ready",
     "build_corpus_manifest",
+    "merge_manifest_with_remote",
 ]
 
 logger = logging.getLogger(__name__)
@@ -481,3 +482,43 @@ def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None
         "pinned_song_count": len(pinned_ids or []),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+
+
+def merge_manifest_with_remote(manifest: dict, remote: dict, song_root) -> dict:
+    """Multi-session union (08-07): local view + already-published manifest.
+
+    A top-up session stages only its NEW songs; publishing a manifest over the
+    local slice alone would mis-describe the dataset (files from earlier
+    sessions still live there). corpus_version is re-hashed over the union —
+    a grown corpus is a NEW version, so old checkpoints fail resume loudly
+    (intended: never train on a corpus the ckpt was not built from).
+
+    ponytail: file_count = remote count + files of local-only songs; assumes
+    remote songs persist across versions (append semantics) OR the local tree
+    already contains them (full pull) — both give the same numbers here.
+    `kaggle datasets files` after the first top-up publish settles which.
+    complete_song_count = remote + complete local-only (both sides published
+    under the complete==song_count assert); pinned: the frozen set is a fixed
+    6 IDs, so either side already covering them is enough — max().
+    """
+    from airhythm.download_batch import is_complete_song_dir
+
+    root = Path(song_root)
+    local_ids = set(manifest["song_ids"])
+    union = sorted(local_ids | set(remote["song_ids"]))
+    added = sorted(local_ids - set(remote["song_ids"]))  # local-only songs
+    added_files = sum(
+        1 for sid in added for f in (root / str(sid)).rglob("*") if f.is_file())
+    added_complete = sum(
+        1 for sid in added if is_complete_song_dir(root / str(sid)))
+    digest = hashlib.sha1("\n".join(str(i) for i in union).encode()).hexdigest()[:12]
+    out = dict(manifest)
+    out["corpus_version"] = f"v1-{digest}"
+    out["song_ids"] = union
+    out["song_count"] = len(union)
+    out["file_count"] = int(remote["file_count"]) + added_files
+    out["complete_song_count"] = int(remote["complete_song_count"]) + added_complete
+    out["pinned_song_count"] = max(int(remote["pinned_song_count"]),
+                                   int(manifest["pinned_song_count"]))
+    out["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return out

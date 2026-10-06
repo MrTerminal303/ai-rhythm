@@ -29,19 +29,18 @@ test("tab blur pauses; resume after 3-2-1 continues from recorded position", asy
   await page.getByRole("button", { name: /click to start/i }).click();
   await page.waitForFunction(() => (window as any).__w2?.phase() === "playing");
   await page.waitForTimeout(1500);
-  // Snapshot live chart time into a browser-side ref right before the blur dispatch.
-  // The blur handler reads clock.chartTimeMs() at blur time — that value is frozen.
-  await page.evaluate(() => {
-    (window as any).__beforeChartTimeMs = (window as any).__w2.chartTimeMs();
-  });
-  await page.evaluate(() => window.dispatchEvent(new Event("blur"))); // no input tool expresses tab blur; synthetic event justified (report note)
-  await page.waitForFunction(() => (window as any).__w2.phase() === "paused");
-  await page.waitForTimeout(500);
-  const { frozen, before } = await page.evaluate(() => {
+  // Snapshot live chart time, dispatch blur, and re-read chart time all in ONE evaluate call:
+  // the blur handler runs synchronously during dispatchEvent, so the post-blur read is the
+  // frozen value from the same JS tick as the pre-blur read — no cross-call protocol gap.
+  const { before, frozen, paused } = await page.evaluate(() => {
+    const before = (window as any).__w2.chartTimeMs();
+    window.dispatchEvent(new Event("blur")); // no input tool expresses tab blur; synthetic event justified (report note)
     const frozen = (window as any).__w2.chartTimeMs();
-    return { frozen, before: (window as any).__beforeChartTimeMs as number };
+    return { before, frozen, paused: (window as any).__w2.phase() === "paused" };
   });
+  expect(paused).toBe(true); // blur while playing → phase "paused"
   expect(frozen - before).toBeLessThan(50); // chart time not advancing while paused
+  await page.waitForTimeout(500);
   await page.getByRole("button", { name: /click to resume/i }).click();
   await page.waitForFunction(() => (window as any).__w2.phase() === "playing", undefined, { timeout: 8000 }); // includes 3-2-1
   const after = await page.evaluate(() => (window as any).__w2.chartTimeMs());

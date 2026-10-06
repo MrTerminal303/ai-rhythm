@@ -199,8 +199,10 @@ if songs:
 
     oenv = librosa.onset.onset_strength(y=audio, sr=sr, hop_length=config.HOP_LENGTH, fmax=config.FMAX)
     important, filler, cut = bucket_refs_by_salience(ref_times, oenv)
-    fi = evaluate_onset_fscore(important, est_times)
-    ff = evaluate_onset_fscore(filler, est_times)
+    # review: bucket_refs_by_salience returns BOOL MASKS (pin_baseline.py:90) —
+    # index ref_times, never pass the mask as times (gave F=0.000 n=all)
+    fi = evaluate_onset_fscore(ref_times[important], est_times)
+    ff = evaluate_onset_fscore(ref_times[filler], est_times)
     print(f"  Important bucket: F={fi['f_measure']:.3f} (n={fi['n_ref']})")
     print(f"  Filler bucket:    F={ff['f_measure']:.3f} (n={ff['n_ref']})")
 else:

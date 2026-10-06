@@ -4,6 +4,14 @@ import { DEFAULT_ZIP_LIMITS, type ZipLimits } from "./zip-limits.js";
 export { DEFAULT_ZIP_LIMITS };
 export type { ZipLimits };
 
+/**
+ * Feed slice for streaming extraction. A single `push(bytes, true)` lets fflate's
+ * Inflate run to completion and materialize a lying entry's ENTIRE output before the
+ * first ondata fires (single-entry zip-bomb shape); 64 KiB slices bound the overshoot
+ * past a cap to roughly one slice's expansion.
+ */
+const FEED_SLICE = 64 * 1024;
+
 export function unsafeEntryName(name: string): boolean {
   if (name.includes("\\")) return true;
   if (/^[a-zA-Z]:/.test(name)) return true;
@@ -96,7 +104,12 @@ export function extractOsz(bytes: Uint8Array, limits: ZipLimits = DEFAULT_ZIP_LI
     file.start(); // decompression begins — subsequent ondata calls happen during push()
   });
   uz.register(UnzipInflate); // compression 0 (stored) is registered by default; 8 = deflate
-  uz.push(bytes, true);
+  // Feed in slices so the decoder emits output incrementally and the cap checks inside
+  // file.ondata fire mid-entry. Exactly one final=true: the last chunk, including the
+  // exact-multiple case (chunk ends exactly at bytes.length, remainder loop stops).
+  for (let i = 0; i < bytes.length; i += FEED_SLICE) {
+    uz.push(bytes.subarray(i, i + FEED_SLICE), i + FEED_SLICE >= bytes.length);
+  }
   return { entries };
 }
 

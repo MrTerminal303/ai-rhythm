@@ -34,18 +34,23 @@ except FileNotFoundError:
     _kver_s = "not installed"
 print(f"python {sys.version.split()[0]}, kaggle {_kver_s}")
 
-# 08-07: some kernels ship no KAGGLE_USERNAME/KAGGLE_KEY env and no
-# ~/.kaggle/kaggle.json — pull from Kaggle Secrets (Add-ons → Secrets) when
-# present; needed for the Colab ensure_corpus CLI download path
+# 08-07: Kaggle Secrets UI snippet (Add-ons → Secrets) — read each label
+# separately so a miss prints WHICH one failed;
+# needed for the Colab ensure_corpus CLI download path
 if not os.environ.get("KAGGLE_USERNAME"):
     try:
         from kaggle_secrets import UserSecretsClient
-        _s = UserSecretsClient()
-        os.environ["KAGGLE_USERNAME"] = _s.get_secret("KAGGLE_USERNAME")
-        os.environ["KAGGLE_KEY"] = _s.get_secret("KAGGLE_KEY")
-        print("kaggle credentials: loaded from Kaggle Secrets")
+        user_secrets = UserSecretsClient()
     except Exception as e:
-        print(f"kaggle credentials: not found ({e}) — CLI use will fail loudly")
+        user_secrets = None
+        print(f"kaggle credentials: UserSecretsClient unavailable ({e})")
+    if user_secrets is not None:
+        for _name in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
+            try:
+                os.environ[_name] = user_secrets.get_secret(_name)
+                print(f"kaggle credentials: {_name} loaded")
+            except Exception as e:
+                print(f"kaggle credentials: {_name} FAILED ({e})")
 
 # review #9: Colab has no /kaggle/input — clone repo, editable-install airhythm,
 # ensure kaggle CLI. Kaggle path unchanged (mount auto-find below still runs).

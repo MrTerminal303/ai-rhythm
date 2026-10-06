@@ -20,7 +20,7 @@ single-notebook numbering (08-07 plan references CELL 15).
 # numpy: do NOT pin <2.0 — downgrading over the image's numpy corrupts dist-packages
 # (ModuleNotFoundError: numpy.char, observed 2026-10-01). Only repair if already broken.
 
-import sys, subprocess
+import sys, os, subprocess
 from pathlib import Path
 
 # review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
@@ -33,6 +33,19 @@ try:
 except FileNotFoundError:
     _kver_s = "not installed"
 print(f"python {sys.version.split()[0]}, kaggle {_kver_s}")
+
+# 08-07: some kernels ship no KAGGLE_USERNAME/KAGGLE_KEY env and no
+# ~/.kaggle/kaggle.json — pull from Kaggle Secrets (Add-ons → Secrets) when
+# present; needed for the Colab ensure_corpus CLI download path
+if not os.environ.get("KAGGLE_USERNAME"):
+    try:
+        from kaggle_secrets import UserSecretsClient
+        _s = UserSecretsClient()
+        os.environ["KAGGLE_USERNAME"] = _s.get_secret("KAGGLE_USERNAME")
+        os.environ["KAGGLE_KEY"] = _s.get_secret("KAGGLE_KEY")
+        print("kaggle credentials: loaded from Kaggle Secrets")
+    except Exception as e:
+        print(f"kaggle credentials: not found ({e}) — CLI use will fail loudly")
 
 # review #9: Colab has no /kaggle/input — clone repo, editable-install airhythm,
 # ensure kaggle CLI. Kaggle path unchanged (mount auto-find below still runs).

@@ -16,7 +16,7 @@ single-notebook numbering (08-07 plan references CELL 0/3/4/13/15).
 # numpy: do NOT pin <2.0 — downgrading over the image's numpy corrupts dist-packages
 # (ModuleNotFoundError: numpy.char, observed 2026-10-01). Only repair if already broken.
 
-import sys, subprocess
+import sys, os, subprocess
 from pathlib import Path
 
 # review #7: current Kaggle documents Python 3.11+ and ships the kaggle CLI —
@@ -24,6 +24,19 @@ from pathlib import Path
 assert sys.version_info >= (3, 11), f"need Python 3.11+, got {sys.version}"
 _kver = subprocess.run(["kaggle", "--version"], capture_output=True, text=True)
 print(f"python {sys.version.split()[0]}, kaggle {(_kver.stdout or _kver.stderr).strip()}")
+
+# 08-07: this kernel has no KAGGLE_USERNAME/KAGGLE_KEY env and no
+# ~/.kaggle/kaggle.json — pull from Kaggle Secrets (Add-ons → Secrets) when
+# present; CELL 16's assert fails loudly if still missing
+if not os.environ.get("KAGGLE_USERNAME"):
+    try:
+        from kaggle_secrets import UserSecretsClient
+        _s = UserSecretsClient()
+        os.environ["KAGGLE_USERNAME"] = _s.get_secret("KAGGLE_USERNAME")
+        os.environ["KAGGLE_KEY"] = _s.get_secret("KAGGLE_KEY")
+        print("kaggle credentials: loaded from Kaggle Secrets")
+    except Exception as e:
+        print(f"kaggle credentials: not found ({e}) — publish will fail loudly")
 
 # Sanity-check numpy in a clean interpreter; force-reinstall only if broken
 # (a prior session's <2.0 pin leaves mixed files that fail numpy's sanity check).

@@ -10,7 +10,7 @@ export const JUDGE_WINDOWS = {
 export const SCORE_WEIGHTS: Record<Grade, number> = {
   perfect: 1,
   great: 0.75,
-  good: 0.5,
+  good: 0.4, // PLAN §7.3 (D16 supersedes W1 spec's 0.5; resolves D2)
   miss: 0,
 };
 

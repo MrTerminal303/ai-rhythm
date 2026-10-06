@@ -23,6 +23,7 @@ export class GameEngine {
   private readonly perf?: PerfMonitor;
   private sumWeights = 0;
   private combo = 0;
+  private maxCombo = 0;
   private frozen = false;
   private current: GameSnapshot;
   private prev: GameSnapshot;
@@ -65,6 +66,7 @@ export class GameEngine {
       const g = grade(dt);
       this.states[bestIdx] = "hit";
       this.combo += 1;
+      if (this.combo > this.maxCombo) this.maxCombo = this.combo;
       this.sumWeights += SCORE_WEIGHTS[g];
       events.push({ type: "hit", grade: g, lane, dt, noteId: note.id });
     }
@@ -121,7 +123,7 @@ export class GameEngine {
   protected emit(chartTime: number, events: JudgementEvent[]): GameSnapshot {
     return {
       chartTimeMs: chartTime,
-      score: scoreFromWeights(this.sumWeights, this.totalTargets),
+      score: scoreFromWeights(this.sumWeights, this.totalTargets, this.maxCombo),
       combo: this.combo,
       accuracy: accuracyFraction(this.sumWeights, this.totalTargets),
       frozen: this.frozen,

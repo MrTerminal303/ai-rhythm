@@ -55,7 +55,7 @@ describe("engine.judge (§2.3)", () => {
     expect(snap.noteStates[0]).toBe("hit");
     expect(snap.events).toEqual([{ type: "hit", grade: "good", lane: 0, dt: 110, noteId: 0 }]);
     expect(snap.combo).toBe(1);
-    expect(snap.score).toBe(Math.floor((1_000_000 * 0.5) / 1)); // good weight 0.5 (D2)
+    expect(snap.score).toBe(Math.floor(1_000_000 * 0.4 * 1.05)); // good 0.40, combo 1/1 → +5% (D16)
   });
 
   it("two taps same t on different lanes both judged", () => {
@@ -68,7 +68,7 @@ describe("engine.judge (§2.3)", () => {
     const snap = engine.snapshot();
     expect(snap.noteStates).toEqual(["hit", "hit"]);
     expect(snap.combo).toBe(2);
-    expect(snap.score).toBe(1_000_000);
+    expect(snap.score).toBe(1_050_000); // both perfect, maxCombo 2/2 → +5% (D16)
   });
 
   it("picks nearest pending tap by |dt|; drops |dt| > 110", () => {
@@ -104,9 +104,21 @@ describe("engine.judge (§2.3)", () => {
     engine.judge(0, 4000); // id2 expired during judge (4000 > 3110) → miss
     const snap = engine.snapshot();
     expect(snap.combo).toBe(0);
-    // sumWeights = 1 + 0.75 + 0 = 1.75; total = 3 → floor(1e6*1.75/3) = 583333
-    expect(snap.score).toBe(583_333);
+    // sumWeights = 1 + 0.75 + 0 = 1.75; total = 3; maxCombo = 2 →
+    // base 583333.33 × (1 + 0.05×2/3) = 602777.77… → 602777 (D16)
+    expect(snap.score).toBe(602_777);
     expect(snap.accuracy).toBeCloseTo(1.75 / 3, 6);
+  });
+
+  it("engine passes maxCombo into score (bonus grows with combo)", () => {
+    const { engine } = setup([
+      { id: 0, t: 1000, lane: 0, type: "tap" },
+      { id: 1, t: 2000, lane: 0, type: "tap" },
+    ]);
+    engine.judge(0, 1000); // perfect
+    engine.judge(0, 2000); // perfect
+    // 2-note chart, both Perfect: totalTargets=2, maxCombo=2 → floor(1e6 * 1.0 * 1.05) = 1_050_000
+    expect(engine.snapshot().score).toBe(1_050_000);
   });
 
   it("render-loop sweep and input expiry agree; no duplicate miss events", () => {

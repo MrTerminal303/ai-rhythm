@@ -176,7 +176,9 @@ _missing = sorted((set(EVAL_IDS) | SEARCH_IDS) - _present)
 assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 # 1) best-val checkpoint ONLY (D-04: gate-time only + final best-val) —
-# local working copy first, else Drive (Colab) / attached dataset (fresh session)
+# review #10: store collects local+Drive+attached and orders by metadata, so
+# best[-1] is the highest-global_step best ckpt (RUN_ID checkpoint), never a
+# stale local file or an arbitrary "latest *.pt"
 if runtime.is_colab and runtime.drive_root:
     from google.colab import drive
     drive.mount("/content/drive")

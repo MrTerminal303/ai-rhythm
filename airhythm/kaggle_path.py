@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from airhythm import config
@@ -78,31 +79,98 @@ def attach_corpus(flat_root, dest_root) -> Path:
     return dest_root
 
 
-def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None) -> tuple[Path, Path | None]:
-    """Obtain the corpus for B/C (review #9 B3).
+def _verify_corpus_manifest(manifest, *, where, expect=None) -> dict:
+    """review #10 P0-2: identity, not existence — structural validation plus
+    optional expect={field: value} matches (e.g. corpus_version from a ckpt).
+
+    Raises ValueError with the offending source; callers reject the source
+    and download the correct corpus when possible.
+    """
+    required = ("corpus_version", "schema_version", "song_count", "song_ids",
+                "file_count", "complete_song_count", "pinned_song_count")
+    if not isinstance(manifest, dict):
+        raise ValueError(
+            f"corpus_manifest.json missing/invalid at {where} "
+            "(review #10: identity check, not existence)")
+    missing = [k for k in required if k not in manifest]
+    if missing:
+        raise ValueError(f"corpus manifest at {where} missing fields: {missing}")
+    if manifest["schema_version"] != 1:
+        raise ValueError(
+            f"corpus manifest at {where}: schema_version "
+            f"{manifest['schema_version']} != 1")
+    if manifest["song_count"] != len(manifest["song_ids"]):
+        raise ValueError(
+            f"corpus manifest at {where}: song_count {manifest['song_count']} "
+            f"!= len(song_ids) {len(manifest['song_ids'])}")
+    if (manifest["complete_song_count"] > manifest["song_count"]
+            or manifest["pinned_song_count"] > manifest["song_count"]):
+        raise ValueError(f"corpus manifest at {where}: counts exceed song_count")
+    if manifest["song_count"] > 0 and manifest["file_count"] <= 0:
+        raise ValueError(
+            f"corpus manifest at {where}: file_count {manifest['file_count']} "
+            "with songs present")
+    for k, v in (expect or {}).items():
+        if manifest.get(k) != v:
+            raise ValueError(
+                f"corpus manifest at {where}: {k}={manifest.get(k)!r} "
+                f"!= expected {v!r}")
+    return manifest
+
+
+def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None,
+                  expect=None) -> tuple[Path, Path | None]:
+    """Obtain the corpus for B/C (review #9 B3, review #10 P0-2).
 
     Order: AIRHYTHM_DATA env (local override) > attached Kaggle Dataset >
-    CLI download (Colab) > loud failure. Returns (attached_dest, source_root);
-    source_root is where corpus_manifest.json lives (A5) — callers pass it to
-    read_corpus_manifest(). Never re-downloads: skips the kaggle CLI when
-    corpus_dl/ already holds flat corpus files.
+    CLI download (Colab) > loud failure. Every source's corpus_manifest.json
+    is VERIFIED (structure + optional expect field matches) before use — an
+    invalid source is rejected; with download_handle the correct corpus is
+    downloaded instead and any dest tree built from the rejected source is
+    rebuilt. Returns (attached_dest, source_root); source_root is where
+    corpus_manifest.json lives (A5). Never re-downloads a verified corpus_dl/.
+    ponytail: a persisted corpus_dl/ can be structurally valid but stale —
+    detect that via expect (ckpt corpus_version) or delete corpus_dl/ and
+    re-run; a remote-version poll would need a Kaggle API round-trip.
     """
     env = os.environ.get("AIRHYTHM_DATA")
     if env:
-        return Path(env), Path(env)
+        root = Path(env)
+        _verify_corpus_manifest(read_corpus_manifest(root), where=root, expect=expect)
+        return root, root
     attached = Path(input_root) / config.CORPUS_HANDLE
     if attached.is_dir():
+        try:
+            _verify_corpus_manifest(read_corpus_manifest(attached),
+                                    where=attached, expect=expect)
+        except ValueError:
+            if not download_handle:
+                raise
+            print(f"attached corpus rejected: {attached} — downloading correct corpus")
+            dl = _obtain_dl(dest_root, download_handle)
+            _verify_corpus_manifest(read_corpus_manifest(dl), where=dl, expect=expect)
+            # dest symlinks may point at the rejected source — rebuild
+            shutil.rmtree(dest_root, ignore_errors=True)
+            return attach_corpus(dl, dest_root), dl
         return attach_corpus(attached, dest_root), attached
     if download_handle:
-        dl = Path(dest_root).parent / "corpus_dl"
-        if not any(dl.glob("song_*__*")):
-            _download_corpus_dataset(download_handle, dl)
+        dl = _obtain_dl(dest_root, download_handle)
+        _verify_corpus_manifest(read_corpus_manifest(dl), where=dl, expect=expect)
         return attach_corpus(dl, dest_root), dl
     raise FileNotFoundError(
         "corpus not found: no AIRHYTHM_DATA env, no "
         f"{attached} mount, no download_handle — attach the corpus dataset "
         f"({config.CORPUS_HANDLE}) or set AIRHYTHM_DATA"
     )
+
+
+def _obtain_dl(dest_root, handle: str) -> Path:
+    """Download dir for the CLI branch; skips the kaggle CLI when corpus_dl/
+    already holds flat corpus files (review #9 B3)."""
+    dl = Path(dest_root).parent / "corpus_dl"
+    if not any(dl.glob("song_*__*")):
+        _download_corpus_dataset(handle, dl)
+    return dl
 
 
 def _download_corpus_dataset(handle: str, dest) -> None:

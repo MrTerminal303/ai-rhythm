@@ -374,6 +374,9 @@ STORE = CheckpointStore(
 )
 
 start_epoch, global_step, resume_val = 0, 0, None
+# review #10 P0: glob returns candidates across local/Drive/attached ordered by
+# metadata — [-1] is highest global_step regardless of location, never a stale
+# local copy shadowing a newer Drive checkpoint
 resume_candidates = STORE.glob("latest_*.pt")
 if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 assert)
     ckpt = load_checkpoint(str(resume_candidates[-1]), model=model, optimizer=optimizer,
@@ -399,12 +402,19 @@ else:
 PUSH_INTERVAL_S = 1800  # PLAN.md default ~30min
 _last_push = {"t": time.time()}
 
-def push_now():
+def push_now(require_kaggle: bool = False):
+    """review #10 P0-3: publish result is explicit — never a silent skip.
+    require_kaggle=True makes missing credentials a HARD failure (use when
+    the ckpt must become portable off this platform, e.g. Colab → Kaggle);
+    ordinary training passes False — Drive alone is enough, skip is allowed
+    but printed as PORTABLE STATE: NO."""
     prune_old_checkpoints(str(CKPT_DIR), keep_latest=1, keep_best=1)  # D-09: 1 latest + 1 best
     # review #9 B4: Colab safety net — copies latest_/best_ to Drive (0 off Colab)
     _n = STORE.sync_to_drive()
-    if _n:
-        print(f"drive sync: {_n} checkpoints")
+    if runtime.is_colab:
+        print(f"drive sync: OK ({_n} checkpoints)")
+    else:
+        print("drive sync: SKIPPED (not Colab)")
     # CLI needs credentials: Kaggle kernels always have KAGGLE_USERNAME; Colab
     # only when the user mounted ~/.kaggle/kaggle.json
     _user = os.environ.get("KAGGLE_USERNAME")
@@ -414,7 +424,12 @@ def push_now():
         except OSError:
             _user = None
     if not _user:
-        print("push skipped: no Kaggle credentials — Drive sync only (review #9)")
+        if require_kaggle:
+            raise RuntimeError(
+                "kaggle publish REQUIRED (require_kaggle=True) but no "
+                "credentials — PORTABLE STATE: NO")
+        print("kaggle publish: SKIPPED (credentials unavailable)")
+        print("PORTABLE STATE: NO")
         return
     # CLI needs -p <dir with dataset-metadata.json> + visible failures (review P0).
     meta = CKPT_DIR / "dataset-metadata.json"
@@ -436,6 +451,8 @@ def push_now():
     # is still processing (raises CalledProcessError: maybe_push catches it
     # mid-run, session-end push fails the cell visibly)
     wait_dataset_ready(f"{_user}/{config.DATASET_HANDLE}")
+    print(f"kaggle publish: OK ({_user}/{config.DATASET_HANDLE})")
+    print("PORTABLE STATE: YES")
 
 def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
     if time.time() - _last_push["t"] >= PUSH_INTERVAL_S:

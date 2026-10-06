@@ -450,15 +450,17 @@ def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None
     from airhythm.download_batch import is_complete_song_dir
 
     root = Path(song_root)
-    song_dirs = [d for d in sorted(root.iterdir()) if d.is_dir() and d.name.isdigit()]
-    song_ids = [int(d.name) for d in song_dirs]
+    # review #10: numerically sorted IDs before hashing — enumeration order
+    # (lexicographic dir listing) must not change corpus_version
+    song_ids = sorted(int(d.name) for d in root.iterdir() if d.is_dir() and d.name.isdigit())
+    song_dirs = [root / str(i) for i in song_ids]
     file_count = 0
     complete = 0
     for d in song_dirs:
         file_count += sum(1 for f in d.rglob("*") if f.is_file())
         if is_complete_song_dir(d):
             complete += 1
-    digest = hashlib.sha1(",".join(str(i) for i in song_ids).encode()).hexdigest()[:12]
+    digest = hashlib.sha1("\n".join(str(i) for i in song_ids).encode()).hexdigest()[:12]
     return {
         "corpus_version": f"v1-{digest}",
         "schema_version": 1,

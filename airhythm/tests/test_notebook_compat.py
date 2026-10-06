@@ -197,16 +197,53 @@ class TestKagglePathModule:
 
 
 class TestEnsureCorpus:
-    """review #9 B3: env override > attached > CLI download > loud failure."""
+    """review #9 B3 + review #10 P0-2: env override > attached > CLI download
+    > loud failure — every source VERIFIED via corpus_manifest.json first."""
 
-    def test_env_override(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _write_manifest(root, *, version="v1-abc", song_count=1):
+        import json
+
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "corpus_manifest.json").write_text(json.dumps({
+            "corpus_version": version, "schema_version": 1, "target_songs": 100,
+            "song_count": song_count, "song_ids": list(range(7, 7 + song_count)),
+            "file_count": song_count * 3, "complete_song_count": song_count,
+            "pinned_song_count": 0, "created_at": "2026-10-06T00:00:00+00:00",
+        }))
+
+    @staticmethod
+    def _write_flat(root):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "song_7__0000.npy").write_bytes(b"x")
+
+    def test_env_override_verified(self, tmp_path, monkeypatch):
         from airhythm.kaggle_path import ensure_corpus
 
-        monkeypatch.setenv("AIRHYTHM_DATA", str(tmp_path / "env_corpus"))
-        (tmp_path / "env_corpus" / "7").mkdir(parents=True)
+        env_dir = tmp_path / "env_corpus"
+        (env_dir / "7").mkdir(parents=True)
+        self._write_manifest(env_dir)
+        monkeypatch.setenv("AIRHYTHM_DATA", str(env_dir))
         dest, src = ensure_corpus(tmp_path / "dest")
-        assert dest == tmp_path / "env_corpus"
-        assert src == tmp_path / "env_corpus"
+        assert dest == env_dir
+        assert src == env_dir
+
+    def test_env_without_manifest_rejected(self, tmp_path, monkeypatch):
+        from airhythm.kaggle_path import ensure_corpus
+
+        (tmp_path / "env_corpus" / "7").mkdir(parents=True)
+        monkeypatch.setenv("AIRHYTHM_DATA", str(tmp_path / "env_corpus"))
+        with pytest.raises(ValueError, match="corpus_manifest"):
+            ensure_corpus(tmp_path / "dest")
+
+    def test_expect_mismatch_rejected(self, tmp_path, monkeypatch):
+        from airhythm.kaggle_path import ensure_corpus
+
+        env_dir = tmp_path / "env_corpus"
+        self._write_manifest(env_dir, version="v1-old")
+        monkeypatch.setenv("AIRHYTHM_DATA", str(env_dir))
+        with pytest.raises(ValueError, match="!= expected"):
+            ensure_corpus(tmp_path / "dest", expect={"corpus_version": "v1-new"})
 
     def test_attached_passthrough(self, tmp_path, monkeypatch):
         from airhythm import config
@@ -215,11 +252,43 @@ class TestEnsureCorpus:
         monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
         input_root = tmp_path / "input"
         flat = input_root / config.CORPUS_HANDLE
-        flat.mkdir(parents=True)
-        (flat / "song_7__0000.npy").write_bytes(b"x")
+        self._write_flat(flat)
+        self._write_manifest(flat)
         dest, src = ensure_corpus(tmp_path / "dest", input_root=str(input_root))
         assert (dest / "7" / "0000.npy").is_symlink()
         assert src == flat
+
+    def test_attached_invalid_no_handle_rejected(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm.kaggle_path import ensure_corpus
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        self._write_flat(flat)  # files but no manifest — review #10: reject
+        with pytest.raises(ValueError, match="corpus_manifest"):
+            ensure_corpus(tmp_path / "dest", input_root=str(tmp_path / "input"))
+
+    def test_attached_invalid_falls_back_to_download(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        self._write_flat(flat)  # no manifest → rejected
+        calls = []
+
+        def fake_download(handle, dest):
+            calls.append(handle)
+            self._write_flat(dest)
+            self._write_manifest(dest)
+
+        monkeypatch.setattr(kaggle_path, "_download_corpus_dataset", fake_download)
+        dest, src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "input"),
+            download_handle=config.CORPUS_HANDLE)
+        assert calls == [config.CORPUS_HANDLE]
+        assert src == tmp_path / "corpus_dl"
+        assert (dest / "7" / "0000.npy").read_bytes() == b"x"
 
     def test_download_branch_invoked(self, tmp_path, monkeypatch):
         from airhythm import config
@@ -230,8 +299,8 @@ class TestEnsureCorpus:
 
         def fake_download(handle, dest):
             calls.append(handle)
-            dest.mkdir(parents=True, exist_ok=True)
-            (dest / "song_7__0000.npy").write_bytes(b"x")
+            self._write_flat(dest)
+            self._write_manifest(dest)
 
         monkeypatch.setattr(kaggle_path, "_download_corpus_dataset", fake_download)
         dest, src = kaggle_path.ensure_corpus(
@@ -240,7 +309,7 @@ class TestEnsureCorpus:
         assert calls == [config.CORPUS_HANDLE]
         assert (dest / "7" / "0000.npy").is_symlink()
         assert src == tmp_path / "corpus_dl"
-        # second call: files already present — no re-download
+        # second call: files already present — no re-download, still verified
         kaggle_path.ensure_corpus(
             tmp_path / "dest2", input_root=str(tmp_path / "empty_input"),
             download_handle=config.CORPUS_HANDLE)

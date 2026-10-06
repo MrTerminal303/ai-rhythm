@@ -42,40 +42,101 @@ class TestRuntime:
 
 
 class TestCheckpointStore:
-    def test_local_wins_no_copy(self, tmp_path):
+    """review #10 P0/P1: selection by metadata across locations, atomic
+    copies, partial files never discovered."""
+
+    @staticmethod
+    def _ckpt(path, step, epoch=0):
+        import torch
+
+        torch.save({"global_step": step, "epoch": epoch}, path)
+
+    @staticmethod
+    def _step(path):
+        import torch
+
+        return torch.load(path, map_location="cpu", weights_only=False)["global_step"]
+
+    def test_higher_step_wins_across_locations(self, tmp_path):
+        """P0: stale local (40k) must lose to newer Drive (60k) — not local-first."""
+        from airhythm.checkpoint_store import CheckpointStore
+
+        local, drive = tmp_path / "local", tmp_path / "drive"
+        local.mkdir(); drive.mkdir()
+        self._ckpt(local / "latest_40.pt", 40_000, epoch=4)
+        self._ckpt(drive / "latest_60.pt", 60_000, epoch=6)
+        store = CheckpointStore(local, drive_dir=drive)
+        hits = store.glob("latest_*.pt")
+        assert hits[-1].parent == local          # winner copy-in'd
+        assert hits[-1].name == "latest_60.pt"
+        assert self._step(hits[-1]) == 60_000
+        assert len(hits) == 2                    # both candidates returned
+
+    def test_local_wins_when_it_is_newest(self, tmp_path):
         from airhythm.checkpoint_store import CheckpointStore
 
         local, att = tmp_path / "local", tmp_path / "att"
         local.mkdir(); att.mkdir()
-        (local / "best_a.pt").write_text("L")
-        (att / "best_b.pt").write_text("A")
+        self._ckpt(local / "best_a.pt", 90, epoch=9)
+        self._ckpt(att / "best_b.pt", 50, epoch=5)
         store = CheckpointStore(local, attached_dir=att)
+        hits = store.glob("best_*.pt")
+        assert hits[-1] == local / "best_a.pt"
+        assert not (local / "best_b.pt").exists()  # loser not copied
+
+    def test_same_name_higher_step_overwrites_local(self, tmp_path):
+        from airhythm.checkpoint_store import CheckpointStore
+
+        local, drive = tmp_path / "local", tmp_path / "drive"
+        local.mkdir(); drive.mkdir()
+        self._ckpt(local / "latest_x.pt", 40)
+        self._ckpt(drive / "latest_x.pt", 60)
+        store = CheckpointStore(local, drive_dir=drive)
+        hits = store.glob("latest_*.pt")
+        assert self._step(hits[-1]) == 60        # stale local overwritten
+
+    def test_corrupt_candidate_discarded(self, tmp_path):
+        from airhythm.checkpoint_store import CheckpointStore
+
+        local, drive = tmp_path / "local", tmp_path / "drive"
+        local.mkdir(); drive.mkdir()
+        (local / "best_z.pt").write_text("not a checkpoint")
+        self._ckpt(drive / "best_a.pt", 7, epoch=1)
+        store = CheckpointStore(local, drive_dir=drive)
         hits = store.glob("best_*.pt")
         assert [h.name for h in hits] == ["best_a.pt"]
-        assert not (local / "best_b.pt").exists()
 
-    def test_attached_copy_in(self, tmp_path):
-        from airhythm.checkpoint_store import CheckpointStore
-
-        local, att = tmp_path / "local", tmp_path / "att"
-        local.mkdir(); att.mkdir()
-        (att / "best_b.pt").write_text("A")
-        store = CheckpointStore(local, attached_dir=att)
-        hits = store.glob("best_*.pt")
-        assert [h.name for h in hits] == ["best_b.pt"]
-        assert (local / "best_b.pt").read_text() == "A"
-
-    def test_drive_wins_over_attached(self, tmp_path):
+    def test_partial_files_never_returned(self, tmp_path):
+        """P1: .tmp/.partial discovered by a loose pattern still excluded."""
         from airhythm.checkpoint_store import CheckpointStore
 
         local = tmp_path / "local"; local.mkdir()
-        drive = tmp_path / "drive"; drive.mkdir()
-        att = tmp_path / "att"; att.mkdir()
-        (drive / "latest_x.pt").write_text("D")
-        (att / "latest_x.pt").write_text("A")
-        store = CheckpointStore(local, attached_dir=att, drive_dir=drive)
-        hits = store.glob("latest_*.pt")
-        assert hits[0].read_text() == "D"
+        self._ckpt(local / "latest_a.pt", 1)
+        (local / "latest_b.pt.tmp").write_text("partial copy")
+        (local / "latest_c.pt.partial").write_text("partial copy")
+        store = CheckpointStore(local)
+        hits = store.glob("latest_*")   # loose pattern would match the partials
+        assert [h.name for h in hits] == ["latest_a.pt"]
+
+    def test_tie_break_deterministic(self, tmp_path):
+        """Same (step, epoch): name decides; full tie: local location decides."""
+        from airhythm.checkpoint_store import CheckpointStore
+
+        local, drive = tmp_path / "local", tmp_path / "drive"
+        local.mkdir(); drive.mkdir()
+        self._ckpt(local / "best_a.pt", 5, epoch=1)
+        self._ckpt(drive / "best_b.pt", 5, epoch=1)
+        store = CheckpointStore(local, drive_dir=drive)
+        hits = store.glob("best_*.pt")
+        assert hits[-1].name == "best_b.pt"      # name: b > a
+        # full tie (same name/step/epoch) → local preferred, no pointless copy
+        local2, drive2 = tmp_path / "l2", tmp_path / "d2"
+        local2.mkdir(); drive2.mkdir()
+        self._ckpt(local2 / "best_a.pt", 5, epoch=1)
+        self._ckpt(drive2 / "best_a.pt", 5, epoch=1)
+        store2 = CheckpointStore(local2, drive_dir=drive2)
+        hits2 = store2.glob("best_*.pt")
+        assert hits2[-1].parent == local2
 
     def test_empty_returns_empty(self, tmp_path):
         from airhythm.checkpoint_store import CheckpointStore

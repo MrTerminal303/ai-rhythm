@@ -370,6 +370,21 @@ class TestBuildCorpusManifest:
         assert m["corpus_version"].startswith("v1-")
         assert "T" in m["created_at"]  # ISO-8601
 
+    def test_ids_sorted_numerically_before_hashing(self, tmp_path):
+        """review #10: lexicographic dir order ("10" < "2") must not leak into
+        song_ids or the corpus_version hash — sha1 over sorted numeric ids."""
+        import hashlib
+
+        from airhythm.kaggle_push import build_corpus_manifest
+
+        for sid in (100, 2, 10):  # unsorted creation order
+            self._make_song(tmp_path, sid)
+        m = build_corpus_manifest(tmp_path)
+        assert m["song_ids"] == [2, 10, 100]
+        expect = "v1-" + hashlib.sha1(
+            "\n".join(str(i) for i in (2, 10, 100)).encode()).hexdigest()[:12]
+        assert m["corpus_version"] == expect
+
     def test_version_changes_with_song_set(self, tmp_path):
         from airhythm.kaggle_push import build_corpus_manifest
 

@@ -2,9 +2,9 @@
 """NOTEBOOK A — download → preprocess → validate → publish Dataset.
 
 Paste each cell section into a Kaggle notebook (GPU not required).
-Cells: 0 setup, 2 storage, 2.5 remote manifest probe (duplicate check),
-3 download (pinned eval/search IDs first), 4/5/8 validate, 16 publish corpus
-to the Kaggle dataset (CORPUS_HANDLE).
+Cells: 0 setup, 2 storage, 2.5 remote manifest probe (duplicate check +
+gap-fill local from published versions), 3 download (pinned eval/search IDs
+first), 4/5/8 validate, 16 publish corpus to the Kaggle dataset (CORPUS_HANDLE).
 
 Downstream: Notebook B attaches the corpus to train; Notebook C attaches
 corpus + checkpoint for the salience gate. Cell numbers are the historical
@@ -169,6 +169,48 @@ have = ({int(p.name) for p in DATA_ROOT_PROBE.iterdir()
          if p.is_dir() and p.name.isdigit()} if DATA_ROOT_PROBE.is_dir() else set())
 print(f"remote={len(REMOTE_IDS)} local={len(have)} overlap={len(REMOTE_IDS & have)} "
       f"missing_here={len(REMOTE_IDS - have)} new_in_local={len(have - REMOTE_IDS)}")
+
+# 08-07 OBSERVED: a publish REPLACES the dataset file set (versions do not
+# merge) — if published songs are absent locally, CELL 16 drops them from the
+# current version. Gap-fill BEFORE anything else: latest archive first (one
+# zip), then old versions for songs a later publish replaced (versions are
+# kept, only latest is served).
+# ponytail: stop at the first version that adds nothing — fine for the
+# sequential 1..N layout; revisit if version contents ever interleave.
+missing = REMOTE_IDS - have
+if _user and missing:
+    from airhythm.kaggle_path import attach_corpus, ensure_corpus
+
+    print(f"gap: {len(missing)} published songs absent locally — pulling latest archive")
+    ensure_corpus(DATA_ROOT_PROBE, download_handle=config.CORPUS_HANDLE)
+    have = {int(p.name) for p in DATA_ROOT_PROBE.iterdir()
+            if p.is_dir() and p.name.isdigit()}
+    missing = REMOTE_IDS - have
+    if missing:
+        import kagglehub
+
+        for _v in range(1, 10):
+            if not missing:
+                break
+            print(f"gap still {len(missing)} — pulling dataset version {_v}")
+            try:
+                _old = Path(kagglehub.dataset_download(
+                    f"{_user}/{config.CORPUS_HANDLE}/versions/{_v}"))
+            except Exception as e:
+                print(f"version {_v} unavailable ({e}) — stopping")
+                break
+            _before = len(missing)
+            attach_corpus(_old, DATA_ROOT_PROBE)
+            have = {int(p.name) for p in DATA_ROOT_PROBE.iterdir()
+                    if p.is_dir() and p.name.isdigit()}
+            missing = REMOTE_IDS - have
+            if len(missing) == _before:
+                print(f"version {_v} added nothing new — stopping")
+                break
+if missing:
+    print(f"WARNING: {len(missing)} published songs still absent locally "
+          f"(e.g. {sorted(missing)[:5]}) — CELL 16 would drop them")
+print(f"after gap-fill: local={len(have)} still_missing={len(REMOTE_IDS - have)}")
 
 
 # %% ============================================================

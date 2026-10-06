@@ -1,5 +1,3 @@
-import type { GameClock } from "./clock.js";
-
 export const KEY_TO_LANE: Record<string, number> = { d: 0, f: 1, j: 2, k: 3 };
 
 export function laneForKey(key: string): number | undefined {
@@ -7,9 +5,9 @@ export function laneForKey(key: string): number | undefined {
 }
 
 export interface KeyHandlerDeps {
-  clock: GameClock;
+  inputChartTime: (timeStampMs: number) => number;
   engine: {
-    judge(lane: number, chartTimeMs: number): void;
+    judge(lane: number, inputMs: number): void;
     isFrozen(): boolean;
   };
   onAccepted?: (lane: number) => void;
@@ -22,7 +20,7 @@ export function createKeyHandler(deps: KeyHandlerDeps): (event: KeyboardEvent) =
     if (lane === undefined) return; // Review Focus #1
     event.preventDefault(); // accepted gameplay key only
     if (deps.engine.isFrozen()) return; // frozen engine ignores gameplay input
-    deps.engine.judge(lane, deps.clock.chartTimeMs()); // judged at keydown, not next frame
+    deps.engine.judge(lane, deps.inputChartTime(event.timeStamp)); // input time, never clock.chartTimeMs()
     deps.onAccepted?.(lane);
   };
 }

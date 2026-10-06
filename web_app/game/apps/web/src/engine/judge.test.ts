@@ -21,10 +21,10 @@ class FakeTime {
 }
 const noopRenderer: Renderer = { render: () => {}, dispose: () => {} };
 
-function setup(notes: Beatmap["notes"]) {
+function setup(notes: Beatmap["notes"], deviceCalibrationOffsetMs?: number) {
   const src = new FakeTime();
   const clock = new PerformanceClock(src);
-  const engine = new GameEngine({ chart: mk(notes), clock, renderer: noopRenderer });
+  const engine = new GameEngine({ chart: mk(notes), clock, renderer: noopRenderer, deviceCalibrationOffsetMs });
   clock.start(0);
   return { src, clock, engine };
 }
@@ -127,6 +127,31 @@ describe("engine.judge (§2.3)", () => {
     expect(engine.update().noteStates[0]).toBe("missed");
     // engine is now frozen (chartTime > endTimeMs); further update() throws
     expect(engine.isFrozen()).toBe(true);
+    expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
+  });
+});
+
+describe("deviceCalibrationOffsetMs (W2 T9)", () => {
+  it("applies deviceCalibrationOffsetMs to dt (positive = late input)", () => {
+    // note at t=1000, inputMs=1050: calib=50 → dt=0 (Perfect); calib=0 → dt=50 (Great)
+    const { engine: calibrated } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 50);
+    calibrated.judge(0, 1050);
+    expect(calibrated.snapshot().events[0]).toMatchObject({ type: "hit", grade: "perfect", dt: 0 });
+
+    const { engine: uncalibrated } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
+    uncalibrated.judge(0, 1050);
+    expect(uncalibrated.snapshot().events[0]).toMatchObject({ type: "hit", grade: "great", dt: 50 });
+  });
+
+  it("auto-miss expiry uses render chartTime, NOT calibration", () => {
+    // calib=100: if expiry wrongly subtracted calibration, 1111-100=1011 would never exceed t+110
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 100);
+    src.t = 1110;
+    engine.update(); // exactly t+110: still judgeable (boundary unchanged)
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    src.t = 1111;
+    engine.update(); // past t+110: missed, same as calib=0
+    expect(engine.snapshot().noteStates[0]).toBe("missed");
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
   });
 });

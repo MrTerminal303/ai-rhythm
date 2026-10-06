@@ -1,6 +1,7 @@
 import type { Beatmap } from "@airhythm/shared";
 import { accuracyFraction, scoreFromWeights, grade, SCORE_WEIGHTS, JUDGE_WINDOWS } from "@airhythm/shared";
 import type { GameClock } from "./clock.js";
+import { judgeDt } from "./time-math.js";
 import type { GameSnapshot, JudgementEvent, NoteState, Renderer } from "./types.js";
 import type { PerfMonitor } from "./perf.js";
 
@@ -11,6 +12,7 @@ export interface GameEngineOptions {
   clock: GameClock;
   renderer: Renderer;
   perf?: PerfMonitor;
+  deviceCalibrationOffsetMs?: number; // input-path only (W2 T9); auto-miss stays on render chartTime
 }
 
 export class GameEngine {
@@ -21,6 +23,7 @@ export class GameEngine {
   private readonly totalTargets: number;
   private readonly endTimeMs: number;
   private readonly perf?: PerfMonitor;
+  private readonly deviceCalibrationOffsetMs: number;
   private sumWeights = 0;
   private combo = 0;
   private maxCombo = 0;
@@ -33,6 +36,7 @@ export class GameEngine {
     this.clock = opts.clock;
     this.renderer = opts.renderer;
     this.perf = opts.perf;
+    this.deviceCalibrationOffsetMs = opts.deviceCalibrationOffsetMs ?? 0;
     this.states = opts.chart.notes.map(() => "pending");
     this.totalTargets = opts.chart.notes.length;
     this.endTimeMs =
@@ -62,7 +66,7 @@ export class GameEngine {
 
     if (bestIdx !== -1) {
       const note = this.chart.notes[bestIdx]!;
-      const dt = chartTimeMs - note.t;
+      const dt = judgeDt(chartTimeMs, this.deviceCalibrationOffsetMs, note.t); // calibration: INPUT path only
       const g = grade(dt);
       this.states[bestIdx] = "hit";
       this.combo += 1;

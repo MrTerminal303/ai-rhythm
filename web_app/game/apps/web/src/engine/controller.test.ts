@@ -1,7 +1,6 @@
 // @vitest-environment jsdom // KeyboardEvent + defaultPrevented need a DOM (config default is node)
 import { describe, expect, it, vi } from "vitest";
 import { createKeyHandler, laneForKey } from "./controller.js";
-import { PerformanceClock } from "./clock.js";
 
 function keyEvent(init: Partial<KeyboardEvent> & { key: string }): KeyboardEvent {
   return new KeyboardEvent("keydown", { cancelable: true, ...init });
@@ -21,21 +20,50 @@ describe("laneForKey", () => {
 describe("createKeyHandler (§2.3 input filtering)", () => {
   const mk = (frozen = false) => {
     const judge = vi.fn();
-    let t = 0; // start wall clock at 0 so setTime(1000) advances chartTime to 1000 (brief had t=1000 → setTime no-op, judge got 0)
-    const src = { nowMs: () => t };
-    const clock = new PerformanceClock(src);
-    clock.start(0);
-    const handler = createKeyHandler({ clock, engine: { judge, isFrozen: () => frozen } });
-    return { judge, handler, setTime: (v: number) => { t = v; } };
+    const handler = createKeyHandler({
+      inputChartTime: (ts) => ts, // identity — provenance test below pins the raw value
+      engine: { judge, isFrozen: () => frozen },
+    });
+    return { judge, handler };
   };
 
-  it("accepted key: preventDefault + judge(lane, chartTimeMs) at keydown time", () => {
-    const { judge, handler, setTime } = mk();
-    setTime(1000);
+  it("judges with the value mapped from event.timeStamp (Review Focus 1)", () => {
+    const seen: number[] = [];
+    const handler = createKeyHandler({
+      inputChartTime: (ts) => {
+        seen.push(ts);
+        return 999;
+      },
+      engine: {
+        judge: (lane, ms) => {
+          expect(ms).toBe(999);
+        },
+        isFrozen: () => false,
+      },
+    });
+    handler({ key: "d", repeat: false, timeStamp: 12_345, preventDefault() {} } as KeyboardEvent);
+    expect(seen).toEqual([12_345]); // provenance: the raw timeStamp, not clock.chartTimeMs()
+  });
+
+  it("accepted key: preventDefault + judge(lane, inputChartTime(timeStamp)) at keydown", () => {
+    const { judge, handler } = mk();
     const ev = keyEvent({ key: "d" });
     handler(ev);
     expect(ev.defaultPrevented).toBe(true);
-    expect(judge).toHaveBeenCalledWith(0, 1000);
+    expect(judge).toHaveBeenCalledWith(0, ev.timeStamp);
+  });
+
+  it("onAccepted fires only for accepted lane keys", () => {
+    const onAccepted = vi.fn();
+    const handler = createKeyHandler({
+      inputChartTime: (ts) => ts,
+      engine: { judge: vi.fn(), isFrozen: () => false },
+      onAccepted,
+    });
+    handler(keyEvent({ key: "j" }));
+    expect(onAccepted).toHaveBeenCalledWith(2);
+    handler(keyEvent({ key: "a" }));
+    expect(onAccepted).toHaveBeenCalledTimes(1);
   });
 
   it("Review Focus #1: repeat events ignored (no judge, no preventDefault)", () => {

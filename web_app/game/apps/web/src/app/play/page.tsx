@@ -9,6 +9,7 @@ import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
 import { ClockPairKeeper } from "../../engine/clock-pair.js";
 import { createKeyHandler } from "../../engine/controller.js";
+import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { Hud } from "../../ui/hud.js";
@@ -142,7 +143,14 @@ export default function PlayPage() {
       const clock = new AudioClock(audioCtx, pairKeeper);
       clock.load(buffer, chart.song.audioOffsetMs);
       clockRef.current = clock;
-      const engine = new GameEngine({ chart, clock, renderer, perf });
+      // outputLatency → first-run default guess (spec §4.5); stored calibration wins inside loadCalibration
+      const engine = new GameEngine({
+        chart,
+        clock,
+        renderer,
+        perf,
+        deviceCalibrationOffsetMs: loadCalibration(audioCtx.outputLatency),
+      });
       store.set(engine.snapshot()); // HUD shows 0s once the game is built
 
       // 3-2-1 countdown (wall-clock, solo form), then AudioClock.start(0)
@@ -160,7 +168,7 @@ export default function PlayPage() {
         clock.start(0);
         applyPhase("playing");
         const onKey = createKeyHandler({
-          clock,
+          inputChartTime: (ts) => clock.chartTimeAt(ts),
           engine: {
             // wrap judge: emit snapshot at keydown so HUD updates without waiting a frame (§2.3)
             isFrozen: () => engine.isFrozen(),

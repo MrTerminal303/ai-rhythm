@@ -324,6 +324,106 @@ class TestEnsureCorpus:
             ensure_corpus(tmp_path / "dest", input_root=str(tmp_path / "empty"))
 
 
+class TestVersionFill:
+    """08-07 version-shard: attached/latest is only one Kaggle version —
+    ensure_corpus fills remaining versions via kagglehub, else fails loud
+    rather than train on a subset that claims to be the full corpus."""
+
+    @staticmethod
+    def _fake_kagglehub(monkeypatch, responses, calls):
+        import sys
+        import types
+
+        mod = types.ModuleType("kagglehub")
+
+        def dataset_download(handle):
+            calls.append(handle)
+            v = int(handle.rsplit("/", 1)[1])
+            if v not in responses:
+                raise RuntimeError(f"404: no version {v}")
+            return str(responses[v])
+
+        mod.dataset_download = dataset_download
+        monkeypatch.setitem(sys.modules, "kagglehub", mod)
+
+    def test_fill_pulls_versions_until_covered(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        monkeypatch.setenv("KAGGLE_USERNAME", "user")
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        (flat / "song_7__0000.npy").write_bytes(b"x")  # latest version's shard only
+        TestEnsureCorpus._write_manifest(flat, song_count=2)  # union = songs 7, 8
+        v1 = tmp_path / "v1"
+        v1.mkdir()
+        (v1 / "song_8__0000.npy").write_bytes(b"y")  # older version holds the rest
+        calls = []
+        self._fake_kagglehub(monkeypatch, {1: v1}, calls)
+
+        dest, _src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "input"),
+            download_handle=config.CORPUS_HANDLE)
+
+        assert (dest / "7" / "0000.npy").read_bytes() == b"x"
+        assert (dest / "8" / "0000.npy").read_bytes() == b"y"
+        assert calls == [f"user/{config.CORPUS_HANDLE}/versions/1"]  # stops at target
+
+    def test_fill_raises_when_versions_exhausted(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        monkeypatch.setenv("KAGGLE_USERNAME", "user")
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        (flat / "song_7__0000.npy").write_bytes(b"x")
+        TestEnsureCorpus._write_manifest(flat, song_count=2)  # wants 2, has 1
+        calls = []
+        self._fake_kagglehub(monkeypatch, {}, calls)  # every version 404s
+
+        with pytest.raises(RuntimeError, match="corpus incomplete"):
+            kaggle_path.ensure_corpus(
+                tmp_path / "dest", input_root=str(tmp_path / "input"),
+                download_handle=config.CORPUS_HANDLE)
+
+    def test_no_fill_when_attached_covers_manifest(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        TestEnsureCorpus._write_flat(flat)  # song_count defaults to 1
+        TestEnsureCorpus._write_manifest(flat)
+        calls = []
+        self._fake_kagglehub(monkeypatch, {}, calls)
+
+        dest, _src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "input"),
+            download_handle=config.CORPUS_HANDLE)
+
+        assert (dest / "7" / "0000.npy").is_symlink()
+        assert calls == []  # covered — kagglehub never touched
+
+    def test_env_override_skips_fill(self, tmp_path, monkeypatch):
+        """AIRHYTHM_DATA = operator's own tree — partial local trees are a
+        valid dev setup; fill must not demand Kaggle versions there."""
+        from airhythm import kaggle_path
+
+        env_dir = tmp_path / "env"
+        (env_dir / "7").mkdir(parents=True)
+        TestEnsureCorpus._write_manifest(env_dir, song_count=2)  # under-filled
+        monkeypatch.setenv("AIRHYTHM_DATA", str(env_dir))
+        calls = []
+        self._fake_kagglehub(monkeypatch, {}, calls)
+
+        _dest, src = kaggle_path.ensure_corpus(tmp_path / "dest")
+
+        assert src == env_dir
+        assert calls == []
+
+
 class TestReadCorpusManifest:
     def test_reads_json(self, tmp_path):
         from airhythm.kaggle_path import read_corpus_manifest

@@ -118,6 +118,69 @@ def _verify_corpus_manifest(manifest, *, where, expect=None) -> dict:
     return manifest
 
 
+def _expand_handle(handle: str) -> str:
+    """Bare handle -> owner/handle via KAGGLE_USERNAME or ~/.kaggle/kaggle.json."""
+    if "/" in handle:
+        return handle
+    owner = os.environ.get("KAGGLE_USERNAME")
+    if not owner:
+        try:
+            with open(Path.home() / ".kaggle" / "kaggle.json") as f:
+                owner = json.load(f).get("username")
+        except (OSError, ValueError):
+            owner = None
+    if not owner:
+        raise ValueError(
+            f"cannot expand bare handle {handle!r}: set KAGGLE_USERNAME "
+            "or provide ~/.kaggle/kaggle.json"
+        )
+    return f"{owner}/{handle}"
+
+
+def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
+    """Version-shard corpus (08-07): each Kaggle version holds ONE batch of
+    new songs + the union manifest — an attached/CLI source is only the
+    LATEST shard, so cover the rest via kagglehub owner/handle/versions/N
+    (shared resource cache inside Kaggle notebooks = zero VM disk; ~/.cache
+    elsewhere). Fills dest symlinks until song dirs meet manifest song_count;
+    raises if versions run out first — an under-filled tree would silently
+    train on a subset while claiming the full corpus.
+    ponytail: sequential scan stopping at first missing version — versions
+    are immutable/append-only; revisit if a version is ever deleted."""
+    def _have() -> int:
+        try:
+            return sum(1 for p in Path(dest_root).iterdir()
+                       if p.is_dir() and p.name.isdigit())
+        except FileNotFoundError:
+            return 0
+
+    target = int(manifest["song_count"])
+    have = _have()
+    if have >= target:
+        return
+    try:
+        import kagglehub
+    except ImportError as e:
+        raise RuntimeError(
+            f"corpus incomplete ({have}/{target}) and kagglehub unavailable "
+            f"for version fill — pip install kagglehub ({e})") from e
+    full = _expand_handle(handle)
+    for v in range(1, 10_000):
+        if have >= target:
+            break
+        try:
+            root = Path(kagglehub.dataset_download(f"{full}/versions/{v}"))
+            attach_corpus(root, dest_root)
+        except Exception as e:
+            print(f"corpus fill: version {v} unavailable ({e}) — stopping")
+            break
+        have = _have()
+    if have < target:
+        raise RuntimeError(
+            f"corpus incomplete after version fill: {have}/{target} song dirs "
+            f"({target - have} missing) — refusing to train/eval on a subset")
+
+
 def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None,
                   expect=None) -> tuple[Path, Path | None]:
     """Obtain the corpus for B/C (review #9 B3, review #10 P0-2).
@@ -129,34 +192,46 @@ def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None
     downloaded instead and any dest tree built from the rejected source is
     rebuilt. Returns (attached_dest, source_root); source_root is where
     corpus_manifest.json lives (A5). Never re-downloads a verified corpus_dl/.
+    Version-shard (08-07): attached/latest covers only one Kaggle version —
+    _fill_missing_versions pulls the remaining versions via kagglehub.
     ponytail: a persisted corpus_dl/ can be structurally valid but stale —
     detect that via expect (ckpt corpus_version) or delete corpus_dl/ and
     re-run; a remote-version poll would need a Kaggle API round-trip.
     """
     env = os.environ.get("AIRHYTHM_DATA")
     if env:
+        # ponytail: env = operator's own tree — version fill does not apply
+        # (local partial trees are a valid dev setup); verify only.
         root = Path(env)
         _verify_corpus_manifest(read_corpus_manifest(root), where=root, expect=expect)
         return root, root
     attached = Path(input_root) / config.CORPUS_HANDLE
     if attached.is_dir():
         try:
-            _verify_corpus_manifest(read_corpus_manifest(attached),
-                                    where=attached, expect=expect)
+            manifest = _verify_corpus_manifest(read_corpus_manifest(attached),
+                                               where=attached, expect=expect)
         except ValueError:
             if not download_handle:
                 raise
             print(f"attached corpus rejected: {attached} — downloading correct corpus")
             dl = _obtain_dl(dest_root, download_handle)
-            _verify_corpus_manifest(read_corpus_manifest(dl), where=dl, expect=expect)
+            manifest = _verify_corpus_manifest(read_corpus_manifest(dl),
+                                               where=dl, expect=expect)
             # dest symlinks may point at the rejected source — rebuild
             shutil.rmtree(dest_root, ignore_errors=True)
-            return attach_corpus(dl, dest_root), dl
-        return attach_corpus(attached, dest_root), attached
+            dest = attach_corpus(dl, dest_root)
+            _fill_missing_versions(dest, download_handle, manifest)
+            return dest, dl
+        dest = attach_corpus(attached, dest_root)
+        _fill_missing_versions(dest, download_handle or config.CORPUS_HANDLE, manifest)
+        return dest, attached
     if download_handle:
         dl = _obtain_dl(dest_root, download_handle)
-        _verify_corpus_manifest(read_corpus_manifest(dl), where=dl, expect=expect)
-        return attach_corpus(dl, dest_root), dl
+        manifest = _verify_corpus_manifest(read_corpus_manifest(dl),
+                                           where=dl, expect=expect)
+        dest = attach_corpus(dl, dest_root)
+        _fill_missing_versions(dest, download_handle, manifest)
+        return dest, dl
     raise FileNotFoundError(
         "corpus not found: no AIRHYTHM_DATA env, no "
         f"{attached} mount, no download_handle — attach the corpus dataset "
@@ -174,22 +249,9 @@ def _obtain_dl(dest_root, handle: str) -> Path:
 
 
 def _download_corpus_dataset(handle: str, dest) -> None:
-    """kaggle CLI download for Colab (review #9 B3). Bare handle is expanded
-    with the owner from KAGGLE_USERNAME or ~/.kaggle/kaggle.json."""
-    if "/" not in handle:
-        owner = os.environ.get("KAGGLE_USERNAME")
-        if not owner:
-            try:
-                with open(Path.home() / ".kaggle" / "kaggle.json") as f:
-                    owner = json.load(f).get("username")
-            except (OSError, ValueError):
-                owner = None
-        if not owner:
-            raise ValueError(
-                f"cannot expand bare handle {handle!r}: set KAGGLE_USERNAME "
-                "or provide ~/.kaggle/kaggle.json"
-            )
-        handle = f"{owner}/{handle}"
+    """kaggle CLI download for Colab (review #9 B3). Bare handle expanded
+    via _expand_handle (owner from env or ~/.kaggle/kaggle.json)."""
+    handle = _expand_handle(handle)
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     import subprocess

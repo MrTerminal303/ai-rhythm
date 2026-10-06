@@ -10,6 +10,7 @@ import { AudioClock } from "../../engine/audio-clock.js";
 import { ClockPairKeeper } from "../../engine/clock-pair.js";
 import { createKeyHandler } from "../../engine/controller.js";
 import { SoloPauseController } from "../../engine/pause-controller.js";
+import { DeviceChangeDetector } from "../../engine/device-change.js";
 import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
@@ -41,6 +42,7 @@ export default function PlayPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdown, setCountdown] = useState(3);
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
+  const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
 
   // refs bridging the mount effect, the click-start flow, and cleanup
   const phaseRef = useRef<Phase>("idle");
@@ -168,6 +170,26 @@ export default function PlayPage() {
     };
   }, [store]);
 
+  // output-device change (spec §4.7): poll observe() every 2 s while playing; sinkchange
+  // (best-effort, Chromium) marks dirty so the next poll fires even without a latency shift.
+  // Polling runs only while playing — paused sessions don't poll (minimal choice, T12).
+  useEffect(() => {
+    if (phase !== "playing") return;
+    const audioCtx = audioCtxRef.current;
+    if (!audioCtx) return;
+    const detector = new DeviceChangeDetector(() => audioCtx.outputLatency);
+    const onSink = (): void => detector.markDirty();
+    audioCtx.addEventListener?.("sinkchange", onSink);
+    const id = window.setInterval(() => {
+      if (detector.observe()) setDeviceToast(true);
+    }, 2000);
+    return () => {
+      window.clearInterval(id);
+      audioCtx.removeEventListener?.("sinkchange", onSink);
+      setDeviceToast(false); // clear the toast on cleanup
+    };
+  }, [phase]);
+
   // click-to-start: AudioContext is created INSIDE this handler (autoplay policy)
   const startGame = async (): Promise<void> => {
     if (phaseRef.current !== "idle") return; // defensive second clicks (e2e) are no-ops
@@ -279,6 +301,21 @@ export default function PlayPage() {
     <main className="fixed inset-0" style={{ background: "var(--bg)" }}>
       <canvas ref={canvasRef} className="h-full w-full" data-testid="highway" />
       <Hud snapshot={snapshot} activeLanes={activeLanes} />
+      {deviceToast && (
+        <div
+          role="status"
+          data-testid="device-toast"
+          className="absolute top-4 left-1/2 -translate-x-1/2 rounded-[6px] border px-4 py-2 text-center"
+          style={{
+            borderColor: "var(--line)",
+            background: "var(--surface)",
+            color: "var(--text)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          Output device changed — <a href="/calibrate">recalibrate</a>
+        </div>
+      )}
       {phase !== "playing" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"

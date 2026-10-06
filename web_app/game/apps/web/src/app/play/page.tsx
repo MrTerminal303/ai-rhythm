@@ -51,6 +51,7 @@ export default function PlayPage() {
   const timerRef = useRef<number | undefined>(undefined); // countdown chain
   const onKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const activeTimers = useRef(new Set<number>()); // key-flash timeout ids
+  const mountedRef = useRef(true); // false after unmount — aborts startGame's await chain
 
   const applyPhase = (p: Phase): void => {
     phaseRef.current = p; // sync first — guards re-entry before React re-renders
@@ -61,6 +62,7 @@ export default function PlayPage() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    mountedRef.current = true; // re-arm on (Strict Mode) remount
     const benchmark = new URLSearchParams(window.location.search).get("chart") === "benchmark";
     const chart = parseBeatmap(benchmark ? benchChart : w1Chart);
     const renderer = new WebGLRenderer(canvas, chart);
@@ -90,6 +92,7 @@ export default function PlayPage() {
     const onResize = () => renderer.resize();
     window.addEventListener("resize", onResize);
     return () => {
+      mountedRef.current = false; // abort startGame's in-flight awaits before tearing down
       cancelAnimationFrame(rafRef.current);
       if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
       if (onKeyRef.current) window.removeEventListener("keydown", onKeyRef.current);
@@ -99,6 +102,11 @@ export default function PlayPage() {
       const audioCtx = audioCtxRef.current;
       audioCtxRef.current = null;
       if (audioCtx && audioCtx.state !== "closed") void audioCtx.close();
+      // null the init-chain refs so a continuation that slips past mountedRef fails the init guard
+      clockRef.current = null;
+      rendererRef.current = null;
+      chartRef.current = null;
+      perfRef.current = null;
       delete window.__w2;
       renderer.dispose(); // release GL program/buffer (Strict Mode double-mount would leak them)
     };
@@ -112,8 +120,12 @@ export default function PlayPage() {
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
       await audioCtx.resume(); // user gesture from the click unlocks playback
+      if (!mountedRef.current) return; // unmounted mid-await: cleanup already closed the ctx
       const res = await fetch("/audio/click-track.wav");
-      const buffer = await audioCtx.decodeAudioData(await res.arrayBuffer()); // "Preparing…" while decoding
+      const audioData = await res.arrayBuffer();
+      if (!mountedRef.current) return;
+      const buffer = await audioCtx.decodeAudioData(audioData); // "Preparing…" while decoding
+      if (!mountedRef.current) return; // never schedule the countdown on a dead page
       const chart = chartRef.current;
       const renderer = rendererRef.current;
       const perf = perfRef.current;
@@ -138,6 +150,7 @@ export default function PlayPage() {
       setCountdown(3);
       let remaining = 3;
       const tick = (): void => {
+        if (!mountedRef.current) return; // timer fired after unmount — do nothing
         remaining -= 1;
         if (remaining > 0) {
           setCountdown(remaining);

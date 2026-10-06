@@ -12,3 +12,4 @@ playwright-report/
 test-results/
 evidence/
 e2e/screenshots/
+apps/web/public/audio/click-track.wav

@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "../../e2e", // apps/web → web_app/game/e2e (NOT "../e2e", which would resolve to apps/e2e)
+  globalSetup: "../../e2e/global-setup.ts", // regenerate gitignored click-track.wav if missing (resolved from config dir, same as testDir)
   timeout: 60_000,
   retries: 0,
   use: {

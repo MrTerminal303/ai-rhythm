@@ -8,6 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "gen:audio": "node scripts/gen-audio-fixture.mjs",
     "e2e": "playwright test"
   },
   "dependencies": {

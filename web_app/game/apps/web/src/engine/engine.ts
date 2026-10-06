@@ -47,36 +47,39 @@ export class GameEngine {
     this.prev = this.current;
   }
 
-  judge(lane: number, chartTimeMs: number): void {
+  judge(lane: number, inputMs: number): void {
     if (this.frozen) throw new Error("engine frozen"); // contract defined here; unreachable until B5 activates freeze (tested in B5)
-    const events = this.markExpiredPendingNotes(chartTimeMs);
+    const calibratedInputMs = inputMs - this.deviceCalibrationOffsetMs;
+    const events = this.markExpiredPendingNotes(inputMs, calibratedInputMs);
 
     let bestIdx = -1;
+    let bestDt = 0;
     let bestAbs = Infinity;
     for (const [i, note] of this.chart.notes.entries()) {
       if (note.lane !== lane || this.states[i] !== "pending") continue;
-      const abs = Math.abs(chartTimeMs - note.t);
+      const dt = judgeDt(inputMs, this.deviceCalibrationOffsetMs, note.t); // selection + grading share the calibrated domain (spec §7.1)
+      const abs = Math.abs(dt);
       if (abs > JUDGE_WINDOWS.good) continue; // same bound as AUTO_MISS_MS — both derive from JUDGE_WINDOWS.good
       const tie = bestIdx !== -1 && note.id < this.chart.notes[bestIdx]!.id;
       if (abs < bestAbs || (abs === bestAbs && tie)) {
         bestAbs = abs;
         bestIdx = i;
+        bestDt = dt;
       }
     }
 
     if (bestIdx !== -1) {
       const note = this.chart.notes[bestIdx]!;
-      const dt = judgeDt(chartTimeMs, this.deviceCalibrationOffsetMs, note.t); // calibration: INPUT path only
-      const g = grade(dt);
+      const g = grade(bestDt); // |bestDt| ≤ good → can never be "miss" (controller ruling, W2 T9)
       this.states[bestIdx] = "hit";
       this.combo += 1;
       if (this.combo > this.maxCombo) this.maxCombo = this.combo;
       this.sumWeights += SCORE_WEIGHTS[g];
-      events.push({ type: "hit", grade: g, lane, dt, noteId: note.id });
+      events.push({ type: "hit", grade: g, lane, dt: bestDt, noteId: note.id });
     }
 
     // emit immediately at keydown: rotation prev ← current ← new
-    const next = this.emit(chartTimeMs, events);
+    const next = this.emit(inputMs, events);
     this.prev = this.current;
     this.current = next;
   }
@@ -111,11 +114,16 @@ export class GameEngine {
     return this.frozen;
   }
 
-  protected markExpiredPendingNotes(chartTime: number): JudgementEvent[] {
+  /**
+   * `calibratedChartTime` (input path only; defaults to `chartTime` for the render path):
+   * miss only when overdue in BOTH domains — calibration must not pre-empt a still-valid
+   * calibrated hit (W2 T9 review), and render expiry stays raw/uncalibrated (brief).
+   */
+  protected markExpiredPendingNotes(chartTime: number, calibratedChartTime = chartTime): JudgementEvent[] {
     const events: JudgementEvent[] = [];
     for (const [i, note] of this.chart.notes.entries()) {
       if (this.states[i] !== "pending") continue;
-      if (chartTime > note.t + AUTO_MISS_MS) {
+      if (chartTime > note.t + AUTO_MISS_MS && calibratedChartTime > note.t + AUTO_MISS_MS) {
         this.states[i] = "missed";
         this.combo = 0;
         events.push({ type: "miss", lane: note.lane, chartTime });

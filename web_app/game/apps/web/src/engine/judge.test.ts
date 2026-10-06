@@ -154,4 +154,25 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     expect(engine.snapshot().noteStates[0]).toBe("missed");
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
   });
+
+  it("judges a calibrated-perfect tap beyond the raw window (selection uses judgeDt)", () => {
+    // raw distance 150 > 110: a raw pre-filter would drop this tap and auto-miss the note
+    const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
+    engine.judge(0, 1150);
+    const snap = engine.snapshot();
+    expect(snap.noteStates[0]).toBe("hit");
+    expect(snap.events[0]).toMatchObject({ type: "hit", grade: "perfect", dt: 0 });
+    expect(snap.events.some((e) => e.type === "miss")).toBe(false);
+  });
+
+  it("raw-coincident tap with negative calibration is NOT forced to a hit", () => {
+    // raw distance 0 passes a raw pre-filter, but calibrated time = t+150 puts dt outside
+    // the window: no hit event, no score, note stays pending (render expiry later handles it)
+    const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], -150);
+    engine.judge(0, 1000);
+    const snap = engine.snapshot();
+    expect(snap.noteStates[0]).toBe("pending");
+    expect(snap.events.some((e) => e.type === "hit")).toBe(false);
+    expect(snap.score).toBe(0);
+  });
 });

@@ -197,10 +197,16 @@ else:
 
 _dl_srcs = [s for s in SOURCES if SOURCES[s].get("download")]
 import time
+# 08-07: pinned already on the published dataset need no mirror re-fetch —
+# a fresh top-up session only pins what is neither local nor in the manifest
+_remote = REMOTE_IDS if "REMOTE_IDS" in globals() else set()
 for bid in PINNED:
     song_dir = Path(DATA_DIR) / str(bid)
     if song_dir.is_dir() and is_complete_song_dir(song_dir):  # review #5: full artifact set, not any-json
         print(f"pinned {bid}: already complete")
+        continue
+    if bid in _remote:
+        print(f"pinned {bid}: published (manifest) — mirror fetch skipped")
         continue
     osz = None
     for src in _dl_srcs:
@@ -223,8 +229,9 @@ saved = download_main(
     exclude_ids=REMOTE_IDS if "REMOTE_IDS" in globals() else None)
 print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
 
-# P0: all frozen eval/search songs must exist after CELL 3
-_missing = [b for b in PINNED if not is_complete_song_dir(Path(DATA_DIR) / str(b))]
+# P0: every frozen eval/search song must exist local OR published (manifest)
+_missing = [b for b in PINNED
+            if b not in _remote and not is_complete_song_dir(Path(DATA_DIR) / str(b))]
 assert not _missing, f"Missing frozen eval/search songs: {_missing}"
 
 
@@ -242,7 +249,11 @@ for d in sorted(data_path.iterdir()):
 
 print(f"Found {len(songs)} songs:")
 for s in songs:
-    audio, sr = load_song_audio_sr(s)
+    try:
+        audio, sr = load_song_audio_sr(s)
+    except Exception as e:  # one bad original.audio must not kill the listing (08-07)
+        print(f"  {s.name}/  - UNREADABLE ({type(e).__name__}: {e})")
+        continue
     print(f"  {s.name}/  - {len(audio)/sr:.1f}s")
 
 

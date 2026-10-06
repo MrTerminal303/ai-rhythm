@@ -306,3 +306,15 @@ class TestCompleteSongDir:
         (d / "0000_labels.npy").write_bytes(b"")
         assert is_complete_song_dir(d)
         assert not is_complete_song_dir(tmp_path / "missing")
+
+    def test_empty_original_audio_is_incomplete(self, tmp_path):
+        """08-07: b'' original.audio was accepted as complete, CELL 4 crashed."""
+        d = tmp_path / "8"
+        d.mkdir()
+        (d / "0000.json").write_text("{}")
+        (d / "original.audio").write_bytes(b"")
+        (d / "0000.npy").write_bytes(b"")
+        (d / "0000_labels.npy").write_bytes(b"")
+        assert not is_complete_song_dir(d)
+        (d / "original.audio").write_bytes(b"audio")
+        assert is_complete_song_dir(d)

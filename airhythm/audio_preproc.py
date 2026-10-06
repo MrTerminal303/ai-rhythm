@@ -378,10 +378,21 @@ def preprocess_osz(
         if not chunks:
             continue
 
-        # Save original audio bytes for debug/playback (not the model input)
+        # Save original audio bytes for debug/playback (not the model input).
+        # find returning None after a successful decode wrote b"" — existence
+        # check accepted the empty file and CELL 4 died on it (08-07):
+        # skip the song instead of leaving a fake-complete dir
+        audio_bytes = find_audio_file(osz_bytes, audio_filename)
+        if not audio_bytes:
+            logger.warning(
+                "audio bytes not extractable for %d (%s) — skipping",
+                beatmapset_id,
+                audio_filename,
+            )
+            continue
         try:
             with open(os.path.join(output_dir, "original.audio"), "wb") as af:
-                af.write(find_audio_file(osz_bytes, audio_filename) or b"")
+                af.write(audio_bytes)
         except OSError as exc:
             logger.warning("Failed to save original audio for %d: %s", beatmapset_id, exc)
 

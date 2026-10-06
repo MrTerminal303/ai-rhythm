@@ -327,6 +327,18 @@ def find_audio_file(osz_bytes: bytes, audio_filename: str) -> Optional[bytes]:
                 if os.path.basename(name) == basename:
                     return zf.read(name)
 
+            # Case-insensitive match — load_audio_from_osz decodes via a
+            # lowercased namelist, and find must mirror it or "Audio.OGG"
+            # decodes fine while find reports missing, writing original.audio
+            # as b"" (fake-complete dir, CELL 4 LibsndfileError 08-07)
+            namelist_lower = {n.lower(): n for n in zf.namelist()}
+            hit = namelist_lower.get(audio_filename.lower())
+            if hit is None:
+                hit = next((n for low, n in namelist_lower.items()
+                            if os.path.basename(low) == basename.lower()), None)
+            if hit is not None:
+                return zf.read(hit)
+
             # Try common extension variations
             root, _ = os.path.splitext(audio_filename)
             for ext in [".mp3", ".ogg", ".wav", ".m4a", ".flac"]:

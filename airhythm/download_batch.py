@@ -42,12 +42,21 @@ def is_complete_song_dir(path) -> bool:
     One shared definition for _prune_incomplete and Notebook A's pinned-skip
     check — any-json alone can accept a half-processed dir (review #5)."""
     try:
-        names = {f.name for f in os.scandir(path)}
+        entries = list(os.scandir(path))
     except (FileNotFoundError, NotADirectoryError):
+        return False
+    names = {e.name for e in entries}
+    # 08-07: original.audio was written b"" when find-audio missed —
+    # existence alone accepted fake-complete dirs (CELL 4 crash); empties
+    # now prune like any other partial
+    try:
+        audio_ok = any(e.name == "original.audio" and e.stat().st_size > 0
+                       for e in entries)
+    except OSError:
         return False
     return (
         any(n.endswith(".json") for n in names)
-        and "original.audio" in names
+        and audio_ok
         and "0000.npy" in names
         and "0000_labels.npy" in names
     )

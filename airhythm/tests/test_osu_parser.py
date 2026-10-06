@@ -316,6 +316,18 @@ class TestFindAudioFile:
         result = find_audio_file(osz_bytes, "audio.mp3")
         assert result == b"fake_audio_data"
 
+    def test_find_audio_case_insensitive_flat_name(self):
+        """08-07: loader decodes case-insensitively — find must too, else
+        original.audio was written b"" while chunks succeeded."""
+        osz_bytes = self._make_osz_with_audio("Audio.OGG")
+        result = find_audio_file(osz_bytes, "audio.ogg")
+        assert result == b"fake_audio_data"
+
+    def test_find_audio_case_insensitive_subdir_basename(self):
+        osz_bytes = self._make_osz_with_audio("subdir/Audio.MP3")
+        result = find_audio_file(osz_bytes, "audio.mp3")
+        assert result == b"fake_audio_data"
+
     def test_find_audio_not_found_returns_none(self):
         osz_bytes = self._make_osz_with_audio("audio.mp3")
         result = find_audio_file(osz_bytes, "nonexistent.wav")

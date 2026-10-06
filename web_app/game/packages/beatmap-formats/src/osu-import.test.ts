@@ -57,6 +57,34 @@ describe("parseOsu", () => {
     expect(p.notes).toHaveLength(1); // unsupported object dropped, hold kept
   });
 
+  it("unsupported type bits co-occurring with tap bit (flags=3) → warning, note still parses", () => {
+    const text = fix("basic-4k.osu").replace("64,192,1000,1,0,", "64,192,1000,3,0,");
+    const p = parseOsu(text);
+    expect(p.warnings.some((w) => w.code === "feature-dropped" && w.message.includes("unsupported type bits") && w.message.includes("(3)"))).toBe(true);
+    expect(p.notes).toEqual([
+      { id: 0, t: 1000, lane: 0, type: "tap" }, // unsupported bit stripped, object kept
+      { id: 1, t: 1500, lane: 3, type: "hold", d: 500 },
+    ]);
+  });
+
+  it("flags=129 (tap|hold, all core bits) → no warning, hold parses", () => {
+    const text = fix("basic-4k.osu").replace("448,192,1500,128,0,2000:0:0:0:0:", "448,192,1500,129,0,2000:0:0:0:0:");
+    const p = parseOsu(text);
+    expect(p.warnings).toEqual([]);
+    expect(p.notes).toHaveLength(2);
+    expect(p.notes[1]).toEqual({ id: 1, t: 1500, lane: 3, type: "hold", d: 500 });
+  });
+
+  it("unsupported type bits co-occurring with hold bit (flags=130) → warning, hold still parses with d", () => {
+    const text = fix("basic-4k.osu").replace("448,192,1500,128,0,2000:0:0:0:0:", "448,192,1500,130,0,2000:0:0:0:0:");
+    const p = parseOsu(text);
+    expect(p.warnings.some((w) => w.code === "feature-dropped" && w.message.includes("unsupported type bits") && w.message.includes("(130)"))).toBe(true);
+    expect(p.notes).toEqual([
+      { id: 0, t: 1000, lane: 0, type: "tap" },
+      { id: 1, t: 1500, lane: 3, type: "hold", d: 500 }, // hold kept, unsupported bit stripped
+    ]);
+  });
+
   it("hold with endTime <= t → invalid-hold warning, object dropped", () => {
     const text = fix("basic-4k.osu").replace("448,192,1500,128,0,2000:0:0:0:0:", "448,192,1500,128,0,1500:0:0:0:0:");
     const p = parseOsu(text);

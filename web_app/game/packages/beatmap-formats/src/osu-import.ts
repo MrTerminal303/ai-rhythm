@@ -14,6 +14,9 @@ export interface ParsedOsu {
   circleSize: number;
 }
 
+/** Core mania type bits: 1 = tap, 128 = hold. Spec §5.2: any other bit must warn. */
+const CORE_TYPE_BITS = 0x1 | 0x80;
+
 /** osu!mania Mode = 3 (0=osu!, 1=taiko, 2=catch, 3=mania) — Spec §5.2's "Mode: 4" is a recorded typo. */
 export function parseOsu(text: string): ParsedOsu {
   const warnings: ImportWarning[] = [];
@@ -86,6 +89,12 @@ export function parseOsu(text: string): ParsedOsu {
       warnings.push({ code: "feature-dropped", message: `hitsound data at ${t} ms dropped` });
     }
     const isHold = (typeFlags & 128) !== 0;
+    const isTap = (typeFlags & 1) !== 0;
+    // Spec §5.2 warning contract: unsupported type bits warn even when co-occurring
+    // with core bits (flags 3/130); flags 1/128/129 are valid and warn nothing.
+    if ((typeFlags & ~CORE_TYPE_BITS) !== 0) {
+      warnings.push({ code: "feature-dropped", message: `unsupported type bits (${typeFlags}) at ${t} ms dropped` });
+    }
     // hitSample check: taps → payload fields 0..2; holds → payload is endTime:sample, fields 1..3
     const payload = parts[5] ?? "";
     const sampleFields = (isHold ? payload.split(":").slice(1, 4) : payload.split(":").slice(0, 3)).map(Number);
@@ -100,7 +109,7 @@ export function parseOsu(text: string): ParsedOsu {
         continue;
       }
       notes.push({ id: id++, t, lane, type: "hold", d: end - t });
-    } else if ((typeFlags & 1) !== 0) {
+    } else if (isTap) {
       notes.push({ id: id++, t, lane, type: "tap" });
     } else {
       warnings.push({ code: "feature-dropped", message: `unsupported hit object flags (${typeFlags}) at ${t} ms dropped` });

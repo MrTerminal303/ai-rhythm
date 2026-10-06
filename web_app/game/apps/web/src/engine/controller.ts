@@ -24,3 +24,20 @@ export function createKeyHandler(deps: KeyHandlerDeps): (event: KeyboardEvent) =
     deps.onAccepted?.(lane);
   };
 }
+
+// W2 T17: defined in release.ts (Files list); re-exported here per brief Interfaces
+export { createReleaseHandler } from "./release.js";
+
+/**
+ * Review Focus 4 (W2 T17): release held lanes BEFORE pause records position.
+ * Releases run over a copy, then the set is cleared, then pause — order asserted by test.
+ */
+export function flushHeldLanesBeforePause(deps: {
+  heldLanes: Set<number>;
+  releaseAt: (lane: number) => void;
+  pause: () => void;
+}): void {
+  for (const lane of [...deps.heldLanes]) deps.releaseAt(lane);
+  deps.heldLanes.clear();
+  deps.pause();
+}

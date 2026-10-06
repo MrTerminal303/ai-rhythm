@@ -8,7 +8,7 @@ import { PerfMonitor, RENDER_BUDGET_MS } from "../../engine/perf.js";
 import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
 import { ClockPairKeeper } from "../../engine/clock-pair.js";
-import { createKeyHandler } from "../../engine/controller.js";
+import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, laneForKey } from "../../engine/controller.js";
 import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
 import { loadCalibration } from "../../calibration-store.js";
@@ -55,6 +55,9 @@ export default function PlayPage() {
   const rafRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined); // countdown chain
   const onKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+  const onKeyUpRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+  const engineRef = useRef<GameEngine | null>(null);
+  const heldLanesRef = useRef<Set<number>>(new Set()); // W2 T17: lanes with key down; blur flushes releases
   const activeTimers = useRef(new Set<number>()); // key-flash timeout ids
   const mountedRef = useRef(true); // false after unmount — aborts startGame's await chain
   const pauseCtlRef = useRef<SoloPauseController | null>(null);
@@ -83,15 +86,27 @@ export default function PlayPage() {
     timerRef.current = window.setTimeout(tick, 1000);
   };
 
-  // blur / visibilitychange → hidden while playing: freeze clock, record position once, show overlay
+  // blur / visibilitychange → hidden while playing: flush held-lane releases FIRST,
+  // then freeze clock, record position once, show overlay (Review Focus 4, W2 T17)
   const pauseGame = (): void => {
     if (phaseRef.current !== "playing") return;
     const clock = clockRef.current;
+    const engine = engineRef.current;
     if (!clock) return;
-    clock.pause(); // T7: freezes chartTime/playbackPosition — never throws
-    const pausedAt = clock.chartTimeMs(); // frozen value, not a live reading
-    pauseCtlRef.current?.pause(pausedAt);
-    applyPhase("paused");
+    flushHeldLanesBeforePause({
+      heldLanes: heldLanesRef.current,
+      releaseAt: (lane) => {
+        if (!engine || engine.isFrozen()) return;
+        engine.release(lane, clock.chartTimeAt(performance.now())); // input-domain time, pre-pause
+        store.set(engine.snapshot());
+      },
+      pause: () => {
+        clock.pause(); // T7: freezes chartTime/playbackPosition — never throws
+        const pausedAt = clock.chartTimeMs(); // frozen value, not a live reading
+        pauseCtlRef.current?.pause(pausedAt);
+        applyPhase("paused");
+      },
+    });
   };
 
   const resumeGame = (): void => {
@@ -151,6 +166,7 @@ export default function PlayPage() {
       cancelAnimationFrame(rafRef.current);
       if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
       if (onKeyRef.current) window.removeEventListener("keydown", onKeyRef.current);
+      if (onKeyUpRef.current) window.removeEventListener("keyup", onKeyUpRef.current);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("blur", pauseGame);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -165,6 +181,8 @@ export default function PlayPage() {
       rendererRef.current = null;
       chartRef.current = null;
       perfRef.current = null;
+      engineRef.current = null;
+      heldLanesRef.current = new Set();
       delete window.__w2;
       renderer.dispose(); // release GL program/buffer (Strict Mode double-mount would leak them)
     };
@@ -229,6 +247,8 @@ export default function PlayPage() {
         deviceCalibrationOffsetMs: loadCalibration(audioCtx.outputLatency),
       });
       store.set(engine.snapshot()); // HUD shows 0s once the game is built
+      engineRef.current = engine;
+      heldLanesRef.current = new Set();
 
       // 3-2-1 countdown (wall-clock, solo form), then AudioClock.start(0)
       runCountdown(() => {
@@ -245,6 +265,7 @@ export default function PlayPage() {
             },
           },
           onAccepted: (lane) => {
+            heldLanesRef.current.add(lane); // W2 T17: track held lanes for blur flush
             setActiveLanes((cur) => (cur.includes(lane) ? cur : [...cur, lane]));
             const flashId = window.setTimeout(() => {
               activeTimers.current.delete(flashId); // fired timers leave the set — only pending ids accumulate (cleanup only needs those)
@@ -253,12 +274,31 @@ export default function PlayPage() {
             activeTimers.current.add(flashId);
           },
         });
+        // W2 T17: keyup → engine.release via inputChartTime (never render chartTimeMs)
+        const rawRelease = createReleaseHandler({
+          inputChartTime: (ts) => clock.chartTimeAt(ts),
+          engine: {
+            isFrozen: () => engine.isFrozen(),
+            release: (lane, time) => {
+              engine.release(lane, time);
+              store.set(engine.snapshot()); // HUD updates at keyup, same as keydown
+            },
+          },
+        });
         const onKey = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return; // paused/countdown: no judging (T10); chartTimeAt would throw
           rawKey(e);
         };
+        const onKeyUp = (e: KeyboardEvent): void => {
+          if (phaseRef.current !== "playing") return;
+          const lane = laneForKey(e.key);
+          if (lane !== undefined) heldLanesRef.current.delete(lane);
+          rawRelease(e);
+        };
         onKeyRef.current = onKey;
+        onKeyUpRef.current = onKeyUp;
         window.addEventListener("keydown", onKey);
+        window.addEventListener("keyup", onKeyUp);
         let lastRaf: number | undefined;
         const frame = (rafMs: number) => {
           if (lastRaf !== undefined) perf.recordFrameInterval(rafMs - lastRaf);

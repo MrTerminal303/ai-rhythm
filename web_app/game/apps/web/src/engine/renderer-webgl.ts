@@ -91,6 +91,15 @@ export class WebGLRenderer implements Renderer {
       if (y < -40 || y > this.height + 40) continue;
       const x = this.laneX[note.lane]!;
       const c = this.noteColor;
+      if (note.type === "hold" && note.d !== undefined) {
+        // hold body (W2 T17): rect from head y to tail y at 35% opacity (§6.2)
+        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+        const top = Math.min(y, yTail);
+        const h = Math.abs(yTail - y);
+        if (top < this.height + 40 && top + h > -40) {
+          this.quad(x + 4, top, this.laneW - 8, Math.max(h, 2), c[0], c[1], c[2], 0.35);
+        }
+      }
       this.quad(x + 4, y - 14, this.laneW - 8, 28, c[0], c[1], c[2], 1);
     }
 

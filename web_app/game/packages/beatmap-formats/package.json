@@ -11,7 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@airhythm/shared": "workspace:*"
+    "@airhythm/shared": "workspace:*",
+    "fflate": "0.8.3"
   },
   "devDependencies": {
     "typescript": "7.0.2",

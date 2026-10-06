@@ -150,6 +150,31 @@ class TestMainBatch:
         assert saved == 0
         mock_dl.assert_not_called()
 
+    def test_exclude_ids_skips_manifest_songs(self, tmp_path):
+        """08-07: top-up session downloads only songs NOT in the remote manifest."""
+        output = tmp_path / "ds"
+        candidates = [
+            {"beatmapset_id": 10, "title": "published", "artist": "a", "bpm": 1.0, "cs": 4},
+            {"beatmapset_id": 30, "title": "new", "artist": "a", "bpm": 1.0, "cs": 4},
+        ]
+
+        def fake_preprocess(osz, bid, outdir):
+            with open(os.path.join(outdir, "0000.json"), "w") as f:
+                f.write("{}")
+            return [{"file_type": "metadata"}]
+
+        with (
+            patch("airhythm.scraper.search_all_sources", return_value=candidates),
+            patch("airhythm.scraper.download_osz", return_value=b"osz-bytes"),
+            patch("airhythm.audio_preproc.preprocess_osz", side_effect=fake_preprocess),
+            patch("airhythm.download_batch.time.sleep"),
+        ):
+            saved = main(output=str(output), n_songs=10, exclude_ids={10})
+
+        assert saved == 1
+        assert not (output / "10").exists()  # in manifest — never fetched
+        assert (output / "30" / "0000.json").exists()
+
 
 class TestCs4Contract:
     """Review #2: preprocess_osz must never process a non-4K difficulty,

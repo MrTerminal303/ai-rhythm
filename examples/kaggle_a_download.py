@@ -215,8 +215,12 @@ for bid in PINNED:
     print(f"pinned {bid}: {len(files)} files")
 
 # n_songs = TOTAL target: resumes to 100 across reruns, prunes partial dirs;
-# the 6 pinned songs already complete count toward the target
-saved = download_main(output=DATA_DIR, n_songs=100)
+# the 6 pinned songs already complete count toward the target.
+# 08-07: exclude_ids = published manifest songs (CELL 2.5 probe) — a top-up
+# session downloads only what is NOT on the dataset yet; raise n_songs to grow
+saved = download_main(
+    output=DATA_DIR, n_songs=100,
+    exclude_ids=REMOTE_IDS if "REMOTE_IDS" in globals() else None)
 print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
 
 # P0: all frozen eval/search songs must exist after CELL 3

@@ -80,6 +80,7 @@ def main(
     n_songs: int = 500,
     status=None,
     max_pages: int | None = None,
+    exclude_ids=None,
 ) -> int:
     """Search all mirrors and download + preprocess until ``n_songs`` total.
 
@@ -89,6 +90,8 @@ def main(
             it) — rerunning an interrupted 500-run resumes to 500, not 1000.
         status: Beatmap status filter. None = source defaults (ranked).
         max_pages: Search pages per source. None = scaled to n_songs.
+        exclude_ids: beatmapset IDs to never download (08-07: remote manifest
+            songs — a top-up session fetches only what is NOT published yet).
 
     Returns:
         Number of NEW songs saved this run.
@@ -113,10 +116,14 @@ def main(
     if already >= n_songs:
         print(f"Already {already} complete songs (target {n_songs}) — done.")
         return 0
-    available = [c for c in candidates if c["beatmapset_id"] not in complete]
+    exclude = set(exclude_ids or ())
+    available = [c for c in candidates
+                 if c["beatmapset_id"] not in complete
+                 and c["beatmapset_id"] not in exclude]
     print(
         f"{len(candidates)} unique 4K candidates, "
-        f"{already} already complete, {len(available)} to try"
+        f"{already} already complete, {len(exclude)} excluded, "
+        f"{len(available)} to try"
     )
     if not available:
         print("Nothing to download.")

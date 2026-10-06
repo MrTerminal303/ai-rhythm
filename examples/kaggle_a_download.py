@@ -240,13 +240,12 @@ if songs:
 # %% ============================================================
 # CELL 16: Publish corpus dataset (Notebook A end — B/C attach CORPUS_HANDLE)
 # =============================================================
-import json, os, shutil, subprocess, time
+import json, os, shutil, subprocess, time, zipfile
 from airhythm import config
 from airhythm.kaggle_push import build_corpus_manifest, wait_dataset_ready
 
-# review #7 P0: Kaggle CLI default --dir-mode skip uploads NO folders, so the
-# corpus goes out FLAT as song_<sid>__<file>; B/C rebuild <sid>/<file> dirs
-# as symlinks via kaggle_path.attach_corpus.
+# review #7 P0: staging stays FLAT as song_<sid>__<file>; B/C rebuild
+# <sid>/<file> dirs as symlinks via kaggle_path.attach_corpus.
 CORPUS_ROOT = WORKING / "data" / "corpus_publish"
 CORPUS_ROOT.mkdir(exist_ok=True)
 _src_root = WORKING / "data" / "minimal_dataset"
@@ -275,6 +274,20 @@ print(f"manifest: version={manifest['corpus_version']} songs={manifest['song_cou
 assert manifest["complete_song_count"] == manifest["song_count"], (
     f"incomplete songs in corpus: {manifest['song_count'] - manifest['complete_song_count']}")
 
+# 08-07: ONE upload request — the CLI sends files serially (10660 files took
+# ~1h at 100 songs; 5000 songs = days). Kaggle auto-extracts archives
+# server-side (kaggle.com/docs/datasets), so B/C still see flat song_* files
+# + corpus_manifest.json at the dataset root.
+UPLOAD_ROOT = WORKING / "data" / "corpus_upload"
+UPLOAD_ROOT.mkdir(exist_ok=True)
+_zip = UPLOAD_ROOT / "corpus.zip"
+with zipfile.ZipFile(_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+    for f in sorted(CORPUS_ROOT.iterdir()):
+        if f.is_file() and f.name != "dataset-metadata.json":  # stale id from failed runs
+            zf.write(f, f.name)
+print(f"packed corpus.zip: {_zip.stat().st_size / 1e9:.2f} GB "
+      f"({n_files} files -> 1 upload)")
+
 # review #10 follow-up: owner must never be empty — env first, then
 # ~/.kaggle/kaggle.json; empty KAGGLE_USERNAME produced
 # "Invalid dataset specification /airhythm-corpus" (08-07 observe)
@@ -289,17 +302,17 @@ assert _user, (
     "~/.kaggle/kaggle.json; refusing to publish with empty owner")
 CORPUS_SLUG = f"{_user}/{config.CORPUS_HANDLE}"
 # always rewrite: a prior failed run left id="/airhythm-corpus" on disk
-meta = CORPUS_ROOT / "dataset-metadata.json"
+meta = UPLOAD_ROOT / "dataset-metadata.json"
 meta.write_text(json.dumps({
     "id": CORPUS_SLUG,
     "title": config.CORPUS_HANDLE,
     "licenses": [{"name": "CC0-1.0"}],
 }, indent=2))
 msg = f"corpus {time.strftime('%Y-%m-%d %H:%M')}"
-r = subprocess.run(["kaggle", "datasets", "version", "-p", str(CORPUS_ROOT), "-m", msg])
+r = subprocess.run(["kaggle", "datasets", "version", "-p", str(UPLOAD_ROOT), "-m", msg])
 if r.returncode != 0:  # first push: no dataset yet — slug comes from
     # dataset-metadata.json "id"; current CLI create has no -s (review #6)
-    subprocess.run(["kaggle", "datasets", "create", "-p", str(CORPUS_ROOT)],
+    subprocess.run(["kaggle", "datasets", "create", "-p", str(UPLOAD_ROOT)],
                    check=True)
 print(f"corpus published: {CORPUS_SLUG}"
       " — attach in Notebook B/C (Data → Add data)")

@@ -87,11 +87,13 @@ export class GameEngine {
   update(): GameSnapshot {
     if (this.frozen) throw new Error("engine frozen");
     const chartTime = this.clock.chartTimeMs();
-    const events = this.markExpiredPendingNotes(chartTime);
+    const events = this.markExpiredPendingNotes(chartTime, chartTime - this.deviceCalibrationOffsetMs);
     const renderStart = performance.now();
     this.renderer.render(chartTime, this.states);
     this.perf?.recordRenderDuration(performance.now() - renderStart);
-    if (chartTime > this.endTimeMs) this.freeze();
+    // calibrated deadline rule (W2 T9 review): freeze only when past endTimeMs in BOTH
+    // domains — equivalently chartTime > endTimeMs + max(calib, 0)
+    if (chartTime > this.endTimeMs && chartTime - this.deviceCalibrationOffsetMs > this.endTimeMs) this.freeze();
     const next = this.emit(chartTime, events);
     this.prev = this.current;
     this.current = next;
@@ -115,9 +117,10 @@ export class GameEngine {
   }
 
   /**
-   * `calibratedChartTime` (input path only; defaults to `chartTime` for the render path):
-   * miss only when overdue in BOTH domains — calibration must not pre-empt a still-valid
-   * calibrated hit (W2 T9 review), and render expiry stays raw/uncalibrated (brief).
+   * Miss only when overdue in BOTH domains (W2 T9 review): raw AND calibrated past
+   * `target + AUTO_MISS_MS` ⇔ deadline `target + AUTO_MISS_MS + max(calib, 0)` — positive
+   * calibration never pre-ents a still-valid calibrated input; negative never expires early.
+   * `calibratedChartTime` defaults to `chartTime` (raw) for single-domain callers.
    */
   protected markExpiredPendingNotes(chartTime: number, calibratedChartTime = chartTime): JudgementEvent[] {
     const events: JudgementEvent[] = [];

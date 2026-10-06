@@ -143,21 +143,73 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     expect(uncalibrated.snapshot().events[0]).toMatchObject({ type: "hit", grade: "great", dt: 50 });
   });
 
-  it("auto-miss expiry uses render chartTime, NOT calibration", () => {
-    // calib=100: if expiry wrongly subtracted calibration, 1111-100=1011 would never exceed t+110
+  it("render expiry deadline extends by calibration: calib=100 → pending at t+111, missed at t+211", () => {
+    // superseded brief text ("expiry stays uncalibrated"): a raw-only sweep at t+111 would
+    // pre-empt the calibrated-perfect input (t+110+max(calib,0) = t+210 is the deadline)
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 100);
-    src.t = 1110;
-    engine.update(); // exactly t+110: still judgeable (boundary unchanged)
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
     src.t = 1111;
-    engine.update(); // past t+110: missed, same as calib=0
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    src.t = 1211; // past t+210
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1211 }]);
+  });
+
+  it("render expiry: calib=150 → pending at t+111 and t+200, missed by t+261", () => {
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
+    src.t = 1111;
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.isFrozen()).toBe(false);
+    src.t = 1200;
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.isFrozen()).toBe(false);
+    src.t = 1261; // past t+110+150 = t+260
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.isFrozen()).toBe(true);
+  });
+
+  it("render expiry: calib=0 → miss at t+111 exactly as before (bit-identical)", () => {
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
+    src.t = 1111;
+    engine.update();
     expect(engine.snapshot().noteStates[0]).toBe("missed");
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
   });
 
+  it("render expiry: calib=−150 → raw governs, no early expiry; missed by t+111", () => {
+    // calibrated-only expiry would miss at chartTime ≥ t−40 (before the note's time)
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], -150);
+    src.t = 1000;
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    src.t = 1111;
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("missed");
+  });
+
+  it("freeze gate extends by calibration: calib=150 does not freeze before t+260", () => {
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
+    src.t = 1250; // raw past endTimeMs (t+110) but calibrated not
+    engine.update();
+    expect(engine.isFrozen()).toBe(false);
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    src.t = 1261;
+    engine.update();
+    expect(engine.isFrozen()).toBe(true);
+    expect(engine.snapshot().noteStates[0]).toBe("missed");
+  });
+
   it("judges a calibrated-perfect tap beyond the raw window (selection uses judgeDt)", () => {
-    // raw distance 150 > 110: a raw pre-filter would drop this tap and auto-miss the note
-    const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
+    // raw distance 150 > 110: a raw pre-filter would drop this tap and auto-miss the note.
+    // Real-play order: the render sweep runs first and must NOT expire the note pre-judge.
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
+    src.t = 1149;
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
     engine.judge(0, 1150);
     const snap = engine.snapshot();
     expect(snap.noteStates[0]).toBe("hit");
@@ -167,12 +219,14 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
 
   it("raw-coincident tap with negative calibration is NOT forced to a hit", () => {
     // raw distance 0 passes a raw pre-filter, but calibrated time = t+150 puts dt outside
-    // the window: no hit event, no score, note stays pending (render expiry later handles it)
-    const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], -150);
+    // the window: no hit event, no score, note stays pending; render sweep then misses it
+    const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], -150);
     engine.judge(0, 1000);
-    const snap = engine.snapshot();
-    expect(snap.noteStates[0]).toBe("pending");
-    expect(snap.events.some((e) => e.type === "hit")).toBe(false);
-    expect(snap.score).toBe(0);
+    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.snapshot().events.some((e) => e.type === "hit")).toBe(false);
+    expect(engine.snapshot().score).toBe(0);
+    src.t = 1111;
+    engine.update();
+    expect(engine.snapshot().noteStates[0]).toBe("missed");
   });
 });

@@ -1,0 +1,61 @@
+{
+  "input": {
+    "version": 1,
+    "meta": {
+      "title": "Defaults",
+      "artist": "A",
+      "creator": "C",
+      "difficulty": "Easy",
+      "tags": [
+        "demo"
+      ],
+      "previewMs": 1000
+    },
+    "song": {
+      "songKey": "file:missing-audio",
+      "durationMs": 60000,
+      "audioOffsetMs": 0
+    },
+    "timing": [
+      {
+        "t": 0,
+        "bpm": 120,
+        "meter": 4
+      }
+    ],
+    "keys": 4,
+    "notes": [
+      {
+        "id": 3,
+        "t": 2000,
+        "lane": 2,
+        "type": "tap"
+      },
+      {
+        "id": 1,
+        "t": 1000,
+        "lane": 0,
+        "type": "tap"
+      },
+      {
+        "id": 2,
+        "t": 1500,
+        "lane": 1,
+        "type": "hold",
+        "d": 500
+      }
+    ],
+    "pulses": [
+      {
+        "t": 0,
+        "s": 1
+      }
+    ],
+    "gen": {
+      "source": "import",
+      "importedFrom": "osu",
+      "timingSource": "imported"
+    }
+  },
+  "expected": "{\"gen\":{\"importedFrom\":\"osu\",\"source\":\"import\",\"timingSource\":\"imported\"},\"keys\":4,\"meta\":{\"artist\":\"A\",\"creator\":\"C\",\"difficulty\":\"Easy\",\"previewMs\":1000,\"tags\":[\"demo\"],\"title\":\"Defaults\"},\"notes\":[{\"id\":0,\"lane\":0,\"t\":1000,\"tier\":\"primary\",\"type\":\"tap\"},{\"d\":500,\"id\":1,\"lane\":1,\"t\":1500,\"tier\":\"primary\",\"type\":\"hold\"},{\"id\":2,\"lane\":2,\"t\":2000,\"tier\":\"primary\",\"type\":\"tap\"}],\"pulses\":[{\"durationMs\":80,\"s\":1,\"t\":0}],\"song\":{\"audioOffsetMs\":0,\"durationMs\":60000,\"songKey\":\"file:missing-audio\"},\"timing\":[{\"bpm\":120,\"meter\":4,\"t\":0}],\"version\":1}"
+}

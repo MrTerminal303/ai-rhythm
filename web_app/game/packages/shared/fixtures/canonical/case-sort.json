@@ -1,0 +1,73 @@
+{
+  "input": {
+    "version": 1,
+    "meta": {
+      "title": "Sort",
+      "artist": "A",
+      "creator": "C",
+      "difficulty": "Hard",
+      "tags": [],
+      "previewMs": 0
+    },
+    "song": {
+      "songKey": "file:missing-audio",
+      "durationMs": 60000,
+      "audioOffsetMs": 0
+    },
+    "timing": [
+      {
+        "t": 0,
+        "bpm": 128,
+        "meter": 4
+      }
+    ],
+    "keys": 4,
+    "notes": [
+      {
+        "id": 5,
+        "t": 1000,
+        "lane": 2,
+        "type": "tap",
+        "tier": "secondary"
+      },
+      {
+        "id": 9,
+        "t": 999,
+        "lane": 0,
+        "type": "tap"
+      },
+      {
+        "id": 4,
+        "t": 1000,
+        "lane": 2,
+        "type": "tap"
+      },
+      {
+        "id": 7,
+        "t": 1000,
+        "lane": 1,
+        "type": "tap"
+      },
+      {
+        "id": 6,
+        "t": 999,
+        "lane": 0,
+        "type": "tap"
+      },
+      {
+        "id": 8,
+        "t": 1000,
+        "lane": 2,
+        "type": "hold",
+        "d": 100
+      }
+    ],
+    "pulses": [],
+    "gen": {
+      "source": "import",
+      "importedFrom": "osu",
+      "timingSource": "imported"
+    }
+  },
+  "expected": "{\"gen\":{\"importedFrom\":\"osu\",\"source\":\"import\",\"timingSource\":\"imported\"},\"keys\":4,\"meta\":{\"artist\":\"A\",\"creator\":\"C\",\"difficulty\":\"Hard\",\"previewMs\":0,\"tags\":[],\"title\":\"Sort\"},\"notes\":[{\"id\":0,\"lane\":0,\"t\":999,\"tier\":\"primary\",\"type\":\"tap\"},{\"id\":1,\"lane\":0,\"t\":999,\"tier\":\"primary\",\"type\":\"tap\"},{\"id\":2,\"lane\":1,\"t\":1000,\"tier\":\"primary\",\"type\":\"tap\"},{\"d\":100,\"id\":3,\"lane\":2,\"t\":1000,\"tier\":\"primary\",\"type\":\"hold\"},{\"id\":4,\"lane\":2,\"t\":1000,\"tier\":\"primary\",\"type\":\"tap\"},{\"id\":5,\"lane\":2,\"t\":1000,\"tier\":\"secondary\",\"type\":\"tap\"}],\"pulses\":[],\"song\":{\"audioOffsetMs\":0,\"durationMs\":60000,\"songKey\":\"file:missing-audio\"},\"timing\":[{\"bpm\":128,\"meter\":4,\"t\":0}],\"version\":1}"
+}

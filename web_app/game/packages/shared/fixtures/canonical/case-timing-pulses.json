@@ -1,0 +1,63 @@
+{
+  "input": {
+    "version": 1,
+    "meta": {
+      "title": "Timing",
+      "artist": "A",
+      "creator": "C",
+      "difficulty": "Normal",
+      "tags": [],
+      "previewMs": 0
+    },
+    "song": {
+      "songKey": "file:missing-audio",
+      "durationMs": 60000,
+      "audioOffsetMs": 0
+    },
+    "timing": [
+      {
+        "t": 500,
+        "bpm": 140,
+        "meter": 4
+      },
+      {
+        "t": 0,
+        "bpm": 120,
+        "meter": 4
+      },
+      {
+        "t": 0,
+        "bpm": 120,
+        "meter": 3
+      }
+    ],
+    "keys": 4,
+    "notes": [],
+    "pulses": [
+      {
+        "t": 10,
+        "s": 0.5,
+        "k": "apple"
+      },
+      {
+        "t": 0,
+        "s": 1,
+        "k": "Zebra"
+      },
+      {
+        "t": 0,
+        "s": 1
+      },
+      {
+        "t": 0,
+        "s": 1,
+        "k": "apple"
+      }
+    ],
+    "gen": {
+      "source": "manual",
+      "timingSource": "manual"
+    }
+  },
+  "expected": "{\"gen\":{\"source\":\"manual\",\"timingSource\":\"manual\"},\"keys\":4,\"meta\":{\"artist\":\"A\",\"creator\":\"C\",\"difficulty\":\"Normal\",\"previewMs\":0,\"tags\":[],\"title\":\"Timing\"},\"notes\":[],\"pulses\":[{\"durationMs\":80,\"s\":1,\"t\":0},{\"durationMs\":80,\"k\":\"Zebra\",\"s\":1,\"t\":0},{\"durationMs\":80,\"k\":\"apple\",\"s\":1,\"t\":0},{\"durationMs\":80,\"k\":\"apple\",\"s\":0.5,\"t\":10}],\"song\":{\"audioOffsetMs\":0,\"durationMs\":60000,\"songKey\":\"file:missing-audio\"},\"timing\":[{\"bpm\":120,\"meter\":3,\"t\":0},{\"bpm\":120,\"meter\":4,\"t\":0},{\"bpm\":140,\"meter\":4,\"t\":500}],\"version\":1}"
+}

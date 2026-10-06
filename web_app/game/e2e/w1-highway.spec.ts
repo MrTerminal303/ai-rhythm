@@ -25,10 +25,13 @@ test("WebGL2 context exists, page is alive, then screenshot the highway", async 
   expect(hasWebgl2, `WebGL2 pre-flight failed: ${hasWebgl2}`).toBe("ok");
   expect(pageErrors, `uncaught page errors on /play: ${pageErrors.join(" | ")}`).toEqual([]);
 
-  // HUD mounted and engine pushed its initial snapshot (score 0 before any judgement)
+  // HUD mounted and shows 0 before any judgement (snapshot-less default too)
   await expect(page.getByTestId("score")).toHaveText("0");
 
-  // let the clock run so notes are mid-highway (~2.5 s after load)
+  // W2 T8: play starts behind a click-to-start gesture (autoplay policy) — start it,
+  // then let the audio clock run so notes are mid-highway (~2.5 s after playing)
+  await page.getByRole("button", { name: /click to start/i }).click();
+  await page.waitForFunction(() => (window as any).__w2?.phase() === "playing");
   await page.waitForTimeout(2500);
   await expect(page.getByTestId("highway")).toBeVisible();
 

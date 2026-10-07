@@ -111,6 +111,31 @@ describe("parseOsu", () => {
     expect(p.timing).toEqual([{ t: 0, bpm: 120, meter: 4 }]);
   });
 
+  // I1 (round-2 sweep): fabricated default timing must never be silent —
+  // never-silent contract (spec §5.2), same class as the ba15a98 malformed-line warnings.
+  const noTimingBody = (section: string) =>
+    `[General]\nMode: 3\n[Difficulty]\nCircleSize: 4\n${section}\n[HitObjects]\n64,192,1000,1,0,`;
+
+  it("absent [TimingPoints] section → parse succeeds, one warning that 120 BPM timing was synthesized", () => {
+    const p = parseOsu(noTimingBody(""));
+    expect(p.timing).toEqual([{ t: 0, bpm: 120, meter: 4 }]);
+    expect(p.warnings).toHaveLength(1);
+    expect(p.warnings[0]!.code).toBe("feature-dropped");
+    expect(p.warnings[0]!.message).toMatch(/120/);
+    expect(p.warnings[0]!.message).toMatch(/TimingPoints/);
+    expect(p.warnings[0]!.message).toMatch(/absent|empty/);
+  });
+
+  it("empty [TimingPoints] section → parse succeeds, one warning that 120 BPM timing was synthesized", () => {
+    const p = parseOsu(noTimingBody("[TimingPoints]"));
+    expect(p.timing).toEqual([{ t: 0, bpm: 120, meter: 4 }]);
+    expect(p.warnings).toHaveLength(1);
+    expect(p.warnings[0]!.code).toBe("feature-dropped");
+    expect(p.warnings[0]!.message).toMatch(/120/);
+    expect(p.warnings[0]!.message).toMatch(/TimingPoints/);
+    expect(p.warnings[0]!.message).toMatch(/absent|empty/);
+  });
+
   it("rejects non-4K with clear error", () => {
     expect(() => parseOsu(fix("reject-non4k.osu"))).toThrow(/only 4K \(CircleSize 4\)/);
   });

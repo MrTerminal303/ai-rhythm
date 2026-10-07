@@ -99,7 +99,14 @@ export function parseOsu(text: string): ParsedOsu {
     timing.push({ t, bpm, meter: Number(meterStr) || 4 });
     if (timing.length > MAX_TIMING_POINTS) throw new Error(`osu: too many timing points (limit ${MAX_TIMING_POINTS})`);
   }
-  if (timing.length === 0) timing.push({ t: 0, bpm: 120, meter: 4 });
+  if (timing.length === 0) {
+    // I1 (round-2 sweep): fabricated default must never be silent — never-silent contract
+    warnings.push({
+      code: "feature-dropped",
+      message: "no usable timing points in [TimingPoints] (absent or empty) — default 120 BPM timing synthesized",
+    });
+    timing.push({ t: 0, bpm: 120, meter: 4 });
+  }
 
   // hit objects — mania: x,y,time,type,hitSound,endTime:hitSample (hold payload is parts[5])
   const notes: ParsedOsu["notes"] = [];

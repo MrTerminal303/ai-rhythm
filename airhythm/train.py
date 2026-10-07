@@ -338,10 +338,12 @@ def load_checkpoint(path, *, model, optimizer, scheduler, device="cpu") -> dict:
     model.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
-    torch.set_rng_state(ckpt["torch_rng"])
+    # map_location=device remaps these tensors to GPU — set_rng_state
+    # requires CPU ByteTensor ("RNG state must be a torch.ByteTensor")
+    torch.set_rng_state(ckpt["torch_rng"].cpu())
     random.setstate(ckpt["random_rng"])
     if "cuda_rng" in ckpt and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(ckpt["cuda_rng"])
+        torch.cuda.set_rng_state_all([s.cpu() for s in ckpt["cuda_rng"]])
     print(f"resume: epoch={ckpt['epoch']} global_step={ckpt['global_step']}")
     assert ckpt["epoch"] >= 0 and ckpt["global_step"] >= 0
     return ckpt
@@ -430,14 +432,14 @@ def _smoke_impl(pre_epoch4_hook=None, *, device="cpu", tolerance: float = 1e-6,
         o2.load_state_dict(ckpt["optimizer"])
         s2.load_state_dict(ckpt["scheduler"])
         if not _skip_rng_restore:
-            torch.set_rng_state(ckpt["torch_rng"])
+            torch.set_rng_state(ckpt["torch_rng"].cpu())
             random.setstate(ckpt["random_rng"])
         else:
             # Mutant: keep the post-build RNG state — simulates a resume that
             # restored weights/optimizer/scheduler but forgot the RNG keys.
             pass
         if "cuda_rng" in ckpt and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(ckpt["cuda_rng"])
+            torch.cuda.set_rng_state_all([s.cpu() for s in ckpt["cuda_rng"]])
         print(f"resume: epoch={ckpt['epoch']} global_step={ckpt['global_step']}")
         if pre_epoch4_hook is not None:
             pre_epoch4_hook()

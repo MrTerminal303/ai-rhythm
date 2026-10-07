@@ -1,6 +1,13 @@
 // scripts/check-assets.mjs — PLAN §6.5.4 license gate
 //
-// Walks <root>/assets and <root>/public; every file must have a row in
+// Walks three roots under <root> (spec Interfaces: every file under
+// `public/` + `assets/` needs a row):
+//   <root>/assets            — asset zips/trees/picks + ASSETS.csv itself
+//   <root>/public            — layout-neutral public dir (fixture roots use it;
+//                              matches the plan's walk line verbatim)
+//   <root>/apps/web/public   — the real Next.js public dir relative to the
+//                              workspace root (atlas output lands here in T21)
+// every file must have a row in
 // <root>/assets/ASSETS.csv whose license is in the allow-list:
 //   CC0, CC-BY-4.0, CC-BY-3.0, ISC, MIT, OFL, owned
 // and any CC-BY* row must carry non-empty attribution_text.
@@ -48,7 +55,7 @@ for (const line of readFileSync(csvPath, "utf8").split(/\r?\n/).slice(1)) {
   rows.set(file, { license: (license ?? "").trim(), attribution: (attribution ?? "").trim() });
 }
 
-const files = [...walk(join(root, "assets")), ...walk(join(root, "public"))];
+const files = [...walk(join(root, "assets")), ...walk(join(root, "public")), ...walk(join(root, "apps/web/public"))];
 const offenders = [];
 for (const abs of files) {
   const rel = relative(root, abs).split(sep).join("/");

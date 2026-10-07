@@ -1716,3 +1716,4 @@ assets/src/ui-pack/Visit Patreon.url,https://kenney.nl/assets/ui-pack,Kenney,CC0
 assets/src/ui/button_rectangle_flat.png,https://kenney.nl/assets/ui-pack,Kenney,CC0,2026-10-07,,n
 assets/src/ui/input_rectangle.png,https://kenney.nl/assets/ui-pack,Kenney,CC0,2026-10-07,,n
 assets/src/ui/slide_horizontal_grey_section_wide.png,https://kenney.nl/assets/ui-pack,Kenney,CC0,2026-10-07,,n
+apps/web/public/audio/click-track.wav,generated:apps/web/scripts/gen-audio-fixture.mjs,AIRhythm,owned,2026-10-07,,y

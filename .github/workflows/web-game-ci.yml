@@ -25,6 +25,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       - run: pnpm -r test
+      - name: Asset license check
+        run: node scripts/check-assets.mjs
   e2e:
     runs-on: ubuntu-latest
     defaults:

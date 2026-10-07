@@ -195,11 +195,6 @@ assets/src/particle-pack/PNG (Transparent)/window_03.png,https://kenney.nl/asset
 assets/src/particle-pack/PNG (Transparent)/window_04.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
 assets/src/particle-pack/Preview.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
 assets/src/particle-pack/Unity samples/particlePack_samples.unitypackage,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
-assets/src/particles/circle_01.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
-assets/src/particles/flare_01.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
-assets/src/particles/smoke_01.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
-assets/src/particles/spark_01.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
-assets/src/particles/star_01.png,https://kenney.nl/assets/particle-pack,Kenney,CC0,2026-10-07,,n
 assets/src/pattern-pack-lines.zip,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
 assets/src/pattern-pack-lines/License.txt,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
 assets/src/pattern-pack-lines/PNG/Thick/Default (256px)/pattern_0000.png,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
@@ -393,6 +388,7 @@ assets/src/pattern-pack-lines/Vector/Thin/pattern_0028.svg,https://kenney.nl/ass
 assets/src/pattern-pack-lines/Vector/Thin/pattern_0029.svg,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
 assets/src/pattern-pack-lines/Visit Kenney.url,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
 assets/src/pattern-pack-lines/Visit Patreon.url,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
+assets/src/particles/.gitkeep,,,owned,,n
 assets/src/patterns/Thick/Default (256px)/pattern_0000.png,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
 assets/src/patterns/Thick/Default (256px)/pattern_0007.png,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
 assets/src/patterns/Thin/Default (256px)/pattern_0000.png,https://kenney.nl/assets/pattern-pack-lines,Kenney,CC0,2026-10-07,,n
@@ -1718,11 +1714,6 @@ assets/src/ui/input_rectangle.png,https://kenney.nl/assets/ui-pack,Kenney,CC0,20
 assets/src/ui/slide_horizontal_grey_section_wide.png,https://kenney.nl/assets/ui-pack,Kenney,CC0,2026-10-07,,n
 apps/web/public/audio/click-track.wav,generated:apps/web/scripts/gen-audio-fixture.mjs,AIRhythm,owned,2026-10-07,,y
 apps/web/public/atlas/atlas.json,generated from assets/src,Kenney,CC0,2026-10-07,,y
-apps/web/public/atlas/frames/particles/circle_01.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
-apps/web/public/atlas/frames/particles/flare_01.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
-apps/web/public/atlas/frames/particles/smoke_01.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
-apps/web/public/atlas/frames/particles/spark_01.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
-apps/web/public/atlas/frames/particles/star_01.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
 apps/web/public/atlas/frames/patterns/Thick/Default (256px)/pattern_0000.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
 apps/web/public/atlas/frames/patterns/Thick/Default (256px)/pattern_0007.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
 apps/web/public/atlas/frames/patterns/Thin/Default (256px)/pattern_0000.png,generated from assets/src,Kenney,CC0,2026-10-07,,y

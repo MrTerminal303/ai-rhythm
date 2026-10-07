@@ -22,6 +22,7 @@ export default function CalibratePage() {
   const [validPairs, setValidPairs] = useState(0);
   const [result, setResult] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null); // start failure surfaced near the Start button
 
   const phaseRef = useRef<Phase>("idle");
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -87,6 +88,7 @@ export default function CalibratePage() {
     setResult(null);
     setSaved(false);
     setFlash(false);
+    setStartError(null); // clear any prior failure before this attempt
     applyPhase("running");
     try {
       const audioCtx = new AudioContext();
@@ -137,6 +139,7 @@ export default function CalibratePage() {
       rafRef.current = requestAnimationFrame(frame);
     } catch (err) {
       console.error("[calibrate] start failed:", err);
+      setStartError(err instanceof Error ? err.message : String(err)); // user-facing — not console-only
       const audioCtx = audioCtxRef.current;
       audioCtxRef.current = null;
       if (audioCtx && audioCtx.state !== "closed") void audioCtx.close();
@@ -195,6 +198,16 @@ export default function CalibratePage() {
             Only {validPairs} valid taps — need {TARGET_PAIRS}. Retake?
           </p>
         </div>
+      )}
+
+      {phase !== "running" && startError && (
+        <p
+          role="alert"
+          data-testid="start-error"
+          style={{ color: "var(--warn)", fontFamily: "var(--font-mono)", textAlign: "center" }}
+        >
+          {startError}
+        </p>
       )}
 
       {phase !== "running" && (

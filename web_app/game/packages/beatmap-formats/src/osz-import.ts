@@ -9,6 +9,11 @@ export type { ZipLimits };
  * Inflate run to completion and materialize a lying entry's ENTIRE output before the
  * first ondata fires (single-entry zip-bomb shape); 64 KiB slices bound the overshoot
  * past a cap to roughly one slice's expansion.
+ *
+ * Accepted bound (review ruling): the cap check inside file.ondata runs per emitted
+ * chunk, so a slice can overshoot an entry cap by AT MOST one slice — max overshoot =
+ * FEED_SLICE (64 KiB) past the cap, by design. The next ondata check throws and
+ * aborts the run; the overshoot never grows beyond that one slice.
  */
 const FEED_SLICE = 64 * 1024;
 

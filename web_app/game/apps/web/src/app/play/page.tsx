@@ -50,6 +50,7 @@ export default function PlayPage() {
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
   const [importError, setImportError] = useState(false); // W2 T18: ?import= present but w2-import unusable
+  const [startError, setStartError] = useState<string | null>(null); // startGame failure surfaced in the start overlay
 
   // refs bridging the mount effect, the click-start flow, and cleanup
   const phaseRef = useRef<Phase>("idle");
@@ -246,6 +247,7 @@ export default function PlayPage() {
   // click-to-start: AudioContext is created INSIDE this handler (autoplay policy)
   const startGame = async (): Promise<void> => {
     if (phaseRef.current !== "idle") return; // defensive second clicks (e2e) are no-ops
+    setStartError(null); // clear any prior failure before this attempt
     applyPhase("loading");
     try {
       const audioCtx = new AudioContext();
@@ -253,6 +255,7 @@ export default function PlayPage() {
       await audioCtx.resume(); // user gesture from the click unlocks playback
       if (!mountedRef.current) return; // unmounted mid-await: cleanup already closed the ctx
       const res = await fetch("/audio/click-track.wav");
+      if (!res.ok) throw new Error(`Could not load the click track (HTTP ${res.status})`);
       const audioData = await res.arrayBuffer();
       if (!mountedRef.current) return;
       const buffer = await audioCtx.decodeAudioData(audioData); // "Preparing…" while decoding
@@ -365,6 +368,7 @@ export default function PlayPage() {
       });
     } catch (err) {
       console.error("[play] start failed:", err);
+      setStartError(err instanceof Error ? err.message : String(err)); // user-facing — not console-only
       const audioCtx = audioCtxRef.current;
       audioCtxRef.current = null;
       if (audioCtx && audioCtx.state !== "closed") void audioCtx.close();
@@ -440,6 +444,15 @@ export default function PlayPage() {
             >
               Paused — click to resume
             </button>
+          )}
+          {startError && (
+            <p
+              role="alert"
+              data-testid="start-error"
+              style={{ color: "var(--warn)", fontFamily: "var(--font-mono)", textAlign: "center" }}
+            >
+              {startError}
+            </p>
           )}
           {/* start button stays mounted through loading/countdown (removed at playing): a defensive
               second click in e2e resolves against it and no-ops via the phase guard; hidden during

@@ -78,10 +78,13 @@ export function parseOsu(text: string): ParsedOsu {
 
   // timing: fields are time,beatLength,meter,sampleSet,sampleIndex,volume,uninherited,effects
   const timing: ParsedOsu["timing"] = [];
-  for (const line of sections.TimingPoints ?? []) {
+  for (const [i, line] of (sections.TimingPoints ?? []).entries()) {
     const [msStr, beatMsStr, meterStr, , , , uninheritedStr] = line.split(",");
     const t = Math.round(Number(msStr));
-    if (!Number.isFinite(t)) continue;
+    if (!Number.isFinite(t)) {
+      warnings.push({ code: "invalid-line", message: `malformed timing point at [TimingPoints] line ${i + 1} dropped` });
+      continue;
+    }
     if (Number(uninheritedStr) !== 1) {
       // 7TH field (index 6) — NOT index 5 (that is volume)
       warnings.push({ code: "sv-dropped", message: `inherited timing point at ${t} ms dropped (scroll-velocity changes unsupported)` });
@@ -89,7 +92,10 @@ export function parseOsu(text: string): ParsedOsu {
     }
     const bpm = 60_000 / Number(beatMsStr); // full float precision — no 2-decimal quantization (T16 round-trip)
     // reject beatLength 0/negative/NaN — non-finite bpm would hang pulse derivation
-    if (!Number.isFinite(bpm) || bpm <= 0) continue;
+    if (!Number.isFinite(bpm) || bpm <= 0) {
+      warnings.push({ code: "invalid-line", message: `invalid beatLength at [TimingPoints] line ${i + 1} dropped` });
+      continue;
+    }
     timing.push({ t, bpm, meter: Number(meterStr) || 4 });
     if (timing.length > MAX_TIMING_POINTS) throw new Error(`osu: too many timing points (limit ${MAX_TIMING_POINTS})`);
   }
@@ -98,13 +104,16 @@ export function parseOsu(text: string): ParsedOsu {
   // hit objects — mania: x,y,time,type,hitSound,endTime:hitSample (hold payload is parts[5])
   const notes: ParsedOsu["notes"] = [];
   let id = 0;
-  for (const line of sections.HitObjects ?? []) {
+  for (const [i, line] of (sections.HitObjects ?? []).entries()) {
     const parts = line.split(",");
     const x = Number(parts[0]);
     const t = Math.round(Number(parts[2]));
     const typeFlags = Number(parts[3]);
     const hitSound = Number(parts[4] ?? 0);
-    if (!Number.isFinite(x) || !Number.isFinite(t)) continue;
+    if (!Number.isFinite(x) || !Number.isFinite(t)) {
+      warnings.push({ code: "invalid-line", message: `malformed hit object at [HitObjects] line ${i + 1} dropped` });
+      continue;
+    }
     if (hitSound !== 0) {
       warnings.push({ code: "feature-dropped", message: `hitsound data at ${t} ms dropped` });
     }

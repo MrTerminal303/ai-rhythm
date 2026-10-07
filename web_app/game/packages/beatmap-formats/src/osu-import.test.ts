@@ -92,6 +92,19 @@ describe("parseOsu", () => {
     expect(p.notes).toHaveLength(1); // tap kept, broken hold dropped
   });
 
+  it("malformed timing + hit-object lines → parse succeeds, one invalid-line warning per dropped line", () => {
+    const text = fix("basic-4k.osu")
+      .replace("0,500,4,2,0,60,1,0", "garbage,500,4,2,0,60,1,0")
+      .replace("64,192,1000,1,0,", "not-a-number,192,1000,1,0,");
+    const p = parseOsu(text);
+    const skipped = p.warnings.filter((w) => w.code === "invalid-line");
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0]!.message).toMatch(/\[TimingPoints\] line \d+/);
+    expect(skipped[1]!.message).toMatch(/\[HitObjects\] line \d+/);
+    expect(p.notes).toHaveLength(1); // corrupted tap dropped, hold kept
+    expect(p.timing).toEqual([{ t: 0, bpm: 120, meter: 4 }]); // corrupted timing dropped → fallback
+  });
+
   it("no usable timing points → fallback { t: 0, bpm: 120, meter: 4 }", () => {
     const text = fix("basic-4k.osu").replace("0,500,4,2,0,60,1,0", "");
     const p = parseOsu(text);

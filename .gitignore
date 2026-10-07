@@ -16,3 +16,4 @@ download_minimal.py
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+publish_code.py

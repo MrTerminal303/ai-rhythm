@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import w1Chart from "../../../fixtures/w1-chart.json";
 import benchChart from "../../../fixtures/w1-benchmark-chart.json";
 import { parseBeatmap, type Beatmap } from "@airhythm/shared";
@@ -28,6 +29,7 @@ declare global {
       chartTimeMs(): number;
       playbackPositionMs(): number;
       phase(): string;
+      noteCount(): number;
     };
   }
 }
@@ -43,6 +45,7 @@ export default function PlayPage() {
   const [countdown, setCountdown] = useState(3);
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
+  const [importError, setImportError] = useState(false); // W2 T18: ?import= present but w2-import unusable
 
   // refs bridging the mount effect, the click-start flow, and cleanup
   const phaseRef = useRef<Phase>("idle");
@@ -128,8 +131,24 @@ export default function PlayPage() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     mountedRef.current = true; // re-arm on (Strict Mode) remount
-    const benchmark = new URLSearchParams(window.location.search).get("chart") === "benchmark";
-    const chart = parseBeatmap(benchmark ? benchChart : w1Chart);
+    const params = new URLSearchParams(window.location.search);
+    const benchmark = params.get("chart") === "benchmark";
+    // W2 T18: truthy ?import= → resolve chart from sessionStorage before fixture selection;
+    // missing/invalid → inline error + link to /import (no renderer, no start overlay)
+    let chart: Beatmap;
+    if (!benchmark && params.get("import")) {
+      try {
+        const raw = sessionStorage.getItem("w2-import");
+        if (!raw) throw new Error("w2-import missing from sessionStorage");
+        chart = parseBeatmap(JSON.parse(raw));
+      } catch (err) {
+        console.error("[play] imported chart failed to load:", err);
+        setImportError(true);
+        return; // mount effect exits without renderer / __w2 / listeners
+      }
+    } else {
+      chart = parseBeatmap(benchmark ? benchChart : w1Chart);
+    }
     const renderer = new WebGLRenderer(canvas, chart);
     // signal ONLY after the renderer's constructor succeeded (it throws if WebGL2 is
     // unavailable) — the B6 e2e waits on this attribute instead of calling getContext()
@@ -153,6 +172,7 @@ export default function PlayPage() {
         return clockRef.current.playbackPositionMs();
       },
       phase: () => phaseRef.current,
+      noteCount: () => chart.notes.length,
     };
     const onResize = () => renderer.resize();
     window.addEventListener("resize", onResize);
@@ -356,7 +376,25 @@ export default function PlayPage() {
           Output device changed — <a href="/calibrate">recalibrate</a>
         </div>
       )}
-      {phase !== "playing" && (
+      {importError && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+          style={{ background: "var(--bg)" }}
+          data-testid="import-error"
+        >
+          <p role="alert" style={{ color: "var(--warn)", fontFamily: "var(--font-mono)" }}>
+            Could not load the imported chart.
+          </p>
+          <Link
+            href="/import"
+            className="rounded-[10px] border px-6 py-3 text-sm"
+            style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+          >
+            Import a chart
+          </Link>
+        </div>
+      )}
+      {!importError && phase !== "playing" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}

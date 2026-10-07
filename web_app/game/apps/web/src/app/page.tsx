@@ -19,6 +19,13 @@ export default function Landing() {
       >
         Calibrate
       </Link>
+      <Link
+        href="/import"
+        className="rounded-[10px] border px-6 py-3 text-sm"
+        style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+      >
+        Import
+      </Link>
       <p className="text-sm" style={{ color: "var(--text-dim)" }}>
         4-key rhythm game — D F J K
       </p>

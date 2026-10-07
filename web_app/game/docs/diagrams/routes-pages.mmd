@@ -1,0 +1,12 @@
+graph LR
+    HOME["/ landing (server component)"] -->|"Play solo"| PLAY["/play (client)"]
+    HOME -->|"Import"| IMPORT["/import (client)"]
+    HOME -->|"Calibrate"| CAL["/calibrate (client)"]
+
+    IMPORT -->|"setItem w2-import = canonicalJson"| SS[("sessionStorage: w2-import")]
+    IMPORT -->|"router.push /play?import=1"| PLAY
+    PLAY -->|"?import=1: getItem, size ≤ 10MB chars, parseBeatmap"| SS
+    PLAY -->|"missing/invalid → import-error + link /import"| IMPORT
+
+    PLAY -->|"default"| FIX["fixtures/w1-chart.json"]
+    PLAY -->|"?chart=benchmark"| BENCH["fixtures/w1-benchmark-chart.json"]

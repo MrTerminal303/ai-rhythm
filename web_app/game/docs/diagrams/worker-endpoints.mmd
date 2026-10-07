@@ -1,0 +1,19 @@
+graph TD
+    REQ["request → airhythm-worker (apps/worker/src/index.ts)"] --> H["/health"]
+    REQ --> E["/echo"]
+    REQ --> WS["/ws"]
+    REQ --> N["anything else → 404 JSON not found"]
+
+    H --> HC{"healthCache fresh (60s)?"}
+    HC -->|"yes"| H1["{ok:true, cached:true}"]
+    HC -->|"?db=1"| H2["COUNTER DO /health-db → SELECT 1"]
+    HC -->|"expired"| H1
+
+    E --> OG["sameHostOrigin guard → 403 origin not allowed"]
+    OG --> M{"msg param?"}
+    M -->|"missing"| M4["400 msg required"]
+    M -->|"ok"| M2["{msg} · Content-Type application/json; charset=utf-8"]
+
+    WS --> OG2["sameHostOrigin guard → 403"]
+    OG2 --> DO["COUNTER DO idFromName(smoke) — welcome {count}, ping→pong"]
+    DO --> SQL["CounterDO SQLite: counter table, value+1 on connect"]

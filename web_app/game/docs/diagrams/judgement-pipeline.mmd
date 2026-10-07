@@ -1,0 +1,17 @@
+graph TD
+    K["keydown D/F/J/K (phase must be playing)"] --> G1{"repeat · wrong key · frozen engine?"}
+    G1 -->|"reject"| IGN["ignore (accepted key still preventDefault)"]
+    G1 -->|"ok"| ICH["inputChartTime(event.timeStamp) — never clock.chartTimeMs()"]
+
+    ICH --> SW["markExpiredPendingNotes FIRST — dual-domain: chartTime past expiry AND calibrated past expiry"]
+    SW -->|"expired target"| MIS["state missed · combo = 0 · emit miss"]
+
+    SW --> SEL["candidate select: same lane · pending · kind tap|head"]
+    SEL --> DT["dt = judgeDt (calibrated) · reject |dt| over 110 · nearest |dt|, tie → lower noteId"]
+    DT -->|"found"| GR["grade(dt): 35/70/110 → perfect/great/good"]
+    DT -->|"none"| NOP["nothing marked — update() expiry owns it"]
+    GR --> SC["hit: combo+1 · maxCombo · sumWeights += SCORE_WEIGHTS · score floor(1e6×w/total × comboBonus)"]
+    SC --> EM["emit hit event → HUD snapshot"]
+    MIS --> EM
+
+    UPD["rAF update(): sweep(render chartTime + calibrated) → render → freeze check"] --> SW

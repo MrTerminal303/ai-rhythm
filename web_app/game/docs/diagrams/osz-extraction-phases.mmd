@@ -1,0 +1,9 @@
+graph TD
+    IN["zip bytes — maxCompressedBytes 100MB"] --> P1["Phase 1: readCentralDirectory (EOCD sig 0x504b0506)"]
+    P1 --> G1{"pre-inflation checks: entries ≤ 1000 · safe names (no .. / abs / drive) · entry ≤ 50MB · declared total ≤ 300MB"}
+    G1 -->|"fail"| A1["throw — nothing inflated"]
+    G1 -->|"ok"| P2["Phase 2: fflate Unzip, push 64KiB slices (FEED_SLICE)"]
+    P2 --> CNT["ondata counts ACTUAL decompressed bytes"]
+    CNT --> G2{"mid-stream: actual ≤ 300MB · entry ≤ 50MB · seen ≤ 1000 (CD can lie)"}
+    G2 -->|"fail"| A2["abort mid-push — slice-feed overshoot ≤ 64KiB"]
+    G2 -->|"ok"| OUT["entries → listOsuDifficulties → parseOsu"]

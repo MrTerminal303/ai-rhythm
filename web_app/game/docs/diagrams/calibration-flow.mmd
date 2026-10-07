@@ -1,0 +1,11 @@
+graph TD
+    START["click Start on /calibrate"] --> CTX["own AudioContext + ClockPairKeeper"]
+    CTX --> BEAT["schedule 20 clicks · 500ms interval · 1s lead-in"]
+    BEAT --> TAP["keydown d/f/j/k (no repeat) → audioClockSeconds(e.timeStamp, pair)"]
+    TAP --> ASSOC["associateTaps (nearest unconsumed beat, window 250ms)"]
+    ASSOC --> Q{"pairs ≥ 16 (TARGET_PAIRS)?"}
+    Q -->|"no"| RETAKE["retake prompt"]
+    Q -->|"yes"| MED["computeCalibration — median(inputMs − beatMs)"]
+    MED --> SAVE["saveCalibration → localStorage deviceCalibrationOffsetMs (valid ±500ms)"]
+    SAVE --> LOAD["play mount: loadCalibration(outputLatency) — stored wins, else latency, else 0"]
+    LOAD --> ENG["new GameEngine({ deviceCalibrationOffsetMs }) → judgeDt = inputChartTime − offset − note.t"]

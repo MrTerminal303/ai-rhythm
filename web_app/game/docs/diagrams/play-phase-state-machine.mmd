@@ -1,0 +1,15 @@
+stateDiagram-v2
+    [*] --> idle
+    idle --> loading: click-to-start (startGame, AudioContext resume)
+    loading --> countdown: decode ok · clock.load(buffer, audioOffsetMs)
+    loading --> idle: error → retry
+    countdown --> playing: 3-2-1 ticks done · clock.start(0) · attach keys + rAF
+    playing --> paused: blur / visibility hidden → flush held-lane releases FIRST → clock.pause + record pausedAt
+    paused --> countdown: resume click → runCountdown → clock.start(pausedAt)
+    countdown --> playing: (same resume countdown completes)
+
+    state playing {
+        [*] --> running
+        running --> frozenChart: all targets resolved or chartTime past endTimeMs
+        frozenChart: engine frozen — phase stays "playing"
+    }

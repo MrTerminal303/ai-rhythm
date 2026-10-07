@@ -1,0 +1,11 @@
+graph TD
+    SRC["assets/src/{ui,particles,patterns}/*.png"] -->|"pnpm build:atlas — combined ≤400KB (sprites.png+atlas.json), frame ≤32KB"| OUT["apps/web/public/atlas/ (sprites.png, atlas.json, frames/)"]
+
+    CTOR["new WebGLRenderer(canvas, chart) — sync (builds programs+buffers)"] --> READY["canvas.dataset.webglReady = true (B6 contract)"]
+    READY --> INIT["initAtlas() fire-and-forget — .catch(() => {}), idempotent"]
+    INIT --> LOAD["fetch /atlas/atlas.json then /atlas/sprites.png"]
+    OUT -.-> LOAD
+    LOAD --> NEED{"required frames present: TAP ui/button_rectangle_flat, HOLD ui/slide_horizontal_grey_section_wide, meta.size"}
+    NEED -->|"yes"| TEX["atlasMode: 9-slice textured (texturedSlice, margins 25%)"]
+    NEED -->|"fetch/parse fail"| FALL["permanent code-drawn fallback — resolves false, never rejects"]
+    TEX -->|"rect < 3px"| FALL

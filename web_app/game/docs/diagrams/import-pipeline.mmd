@@ -1,0 +1,22 @@
+graph TD
+    FILE["file input accept=.osu,.osz,.dbm.json"] --> GATE{"size gate (before read)"}
+    GATE -->|"non-.osz exceeds 10MB"| ERR["import-error"]
+    GATE -->|".osz exceeds 100MB"| ERR
+    GATE --> EXT{"extension dispatch"}
+
+    EXT -->|.dbm.json| DBM["JSON.parse → canonicalizeBeatmap"]
+    EXT -->|.osz| OSZ["extractOsz → listOsuDifficulties (dynamic import)"]
+    EXT -->|.osu| OSU["parseOsu (Mode=3 mania, CircleSize=4) → warnings"]
+    EXT -->|other| ERR
+
+    OSZ -->|"1 difficulty"| OSU
+    OSZ -->|"2+ difficulties"| PICK["difficulty select"]
+    OSZ -->|"0 difficulties"| ERR
+    PICK --> OSU
+
+    OSU --> KEY["songKey = file:sha256(audio) | file:missing-audio"]
+    KEY --> CANON["canonicalizeBeatmap (sort, re-id, canonical JSON)"]
+    CANON --> HASH["SHA-256 of canonical bytes"]
+    HASH --> SS["sessionStorage.setItem w2-import"]
+    SS --> NAV["router.push /play?import=1"]
+    NAV --> PLAY["play mount: parseBeatmap → GameEngine"]

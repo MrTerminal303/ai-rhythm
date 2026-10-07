@@ -1,0 +1,14 @@
+graph TD
+    PUSH["push / PR (web_app/game/**)"] --> C0["job: check"]
+    PUSH --> E0["job: e2e (parallel)"]
+
+    C0 --> S1["checkout + pnpm + node 22"]
+    S1 --> S2["pnpm install --frozen-lockfile"]
+    S2 --> S3["pnpm -r typecheck"]
+    S3 --> S4["pnpm -r test (unit)"]
+    S4 --> S5["pnpm build:atlas (400KB budget)"]
+    S5 --> S6["node scripts/check-assets.mjs (license gate)"]
+
+    E0 --> E1["playwright install chromium"]
+    E1 --> E2["pnpm --filter @airhythm/web e2e"]
+    E2 --> E3["upload w1-highway.png artifact"]

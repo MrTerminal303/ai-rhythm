@@ -1,0 +1,18 @@
+graph TD
+    H["hold note → targets: head(t) + tail(t+d) · totalTargets = taps + 2×holds"]
+    H --> KD["keydown → judge head/tap at inputChartTime · ±110 windows"]
+    KD --> HS{"head judged"}
+    HS -->|"hit"| HELD["lane held (heldLanes add)"]
+    HS -->|"missed by sweep"| TKEEP["tail stays pending — head miss never touches tail (own deadline t+d+150)"]
+    TKEEP --> KU
+
+    HELD --> KU["keyup → engine.release(lane, inputChartTime)"]
+    KU --> DTR["dt = judgeDt vs tail t+d (one calibrated domain)"]
+    DTR -->|"dt below −150"| EARLY["early release → tail Miss · head stays hit · combo = 0"]
+    DTR -->|"−150 ≤ dt ≤ 150"| GR["gradeTail 35/70/150 → tail hit · combo+1 (full-combo hold = totalTargets)"]
+    DTR -->|"dt over 150"| IGN["ignore — deadline passed, sweep owns it"]
+
+    NONE["no keyup"] -->|"update() sweep past t+d+150"| AUTO["tail auto-miss (independent of head outcome)"]
+
+    BLUR["window blur / hidden"] --> FL["flushHeldLanesBeforePause: release over COPY of heldLanes @ input-domain time → clear set → pause()"]
+    FL --> KU

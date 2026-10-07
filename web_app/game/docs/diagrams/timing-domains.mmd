@@ -1,0 +1,12 @@
+graph LR
+    TS["event.timeStamp — performance clock origin"] -->|"audioClockSeconds(ts, pair): pair.contextTime + (ts − pair.performanceTime)/1000"| CTX["AudioContext seconds"]
+    PAIR["ClockPair — getOutputTimestamp | fallback, maxAge 1000ms"] -.-> CTX
+
+    CTX -->|"inputChartTimeMs = audioSourceOffsetMs + (ctx − sourceStartCtxTime)×1000 + audioOffsetMs"| ICH["inputChartTimeMs — chart domain (input path)"]
+
+    BUF["rawBufferPosition — playbackPositionMs / audioSourceOffsetMs"] -->|"+ audioOffsetMs — EXACTLY ONCE"| CT["chartTimeMs — chart domain (render + miss sweep)"]
+    CT -->|"- audioOffsetMs — EXACTLY ONCE (source.start offset in AudioClock.start)"| BUF
+
+    ICH -->|"judgeDt = inputChartTimeMs − deviceCalibrationOffsetMs − note.t  (+ = late)"| DT["judgeDt — calibrated input domain"]
+    CAL["deviceCalibrationOffsetMs — localStorage median (judgement only, never render)"] -.->|"subtracted exactly once, inside judgeDt + sweep precompute"| DT
+    DT --> W["windows: 35 / 70 / 110 (tail 150)"]

@@ -1,0 +1,18 @@
+graph TD
+    ROOT["pnpm workspace root (airhythm-game)"] --> R1["root scripts: typecheck · test · build:atlas · check:assets"]
+    ROOT --> W["packages/* + apps/*"]
+
+    WEB["@airhythm/web — apps/web (Next 16 App Router)"]
+    SHARED["@airhythm/shared — zod schema, canonicalize, judgement"]
+    BFM["@airhythm/beatmap-formats — .osu/.osz/.dbm.json (fflate)"]
+    ASSETS["@airhythm/assets — build-atlas (pngjs)"]
+    ATLAS["apps/web/public/atlas — sprites.png + atlas.json + frames/"]
+    WRK["@airhythm/worker — apps/worker (wrangler)"]
+    DO["COUNTER Durable Object (SQLite)"]
+
+    WEB -->|"workspace:* dependency"| SHARED
+    BFM -->|"workspace:* dependency"| SHARED
+    WEB -.->|"dynamic relative import (src/index.js)"| BFM
+    WEB -.->|"fetch /atlas/* at runtime (initAtlas)"| ATLAS
+    ASSETS -->|"pnpm build:atlas (400KB budget)"| ATLAS
+    WRK -.->|"no workspace deps — independent"| DO

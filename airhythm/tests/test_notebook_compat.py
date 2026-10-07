@@ -330,14 +330,21 @@ class TestVersionFill:
     rather than train on a subset that claims to be the full corpus."""
 
     @staticmethod
-    def _fake_kagglehub(monkeypatch, responses, calls):
+    def _fake_kagglehub(monkeypatch, responses, calls, fail_first=0):
         import sys
+        import time
         import types
+
+        monkeypatch.setattr(time, "sleep", lambda _s: None)  # fill retry loop
 
         mod = types.ModuleType("kagglehub")
 
         def dataset_download(handle):
             calls.append(handle)
+            nonlocal fail_first
+            if fail_first > 0:  # simulated mount flap while publish processes
+                fail_first -= 1
+                raise RuntimeError("mount/unmount dataset: unknown error")
             v = int(handle.rsplit("/", 1)[1])
             if v not in responses:
                 raise RuntimeError(f"404: no version {v}")
@@ -345,6 +352,30 @@ class TestVersionFill:
 
         mod.dataset_download = dataset_download
         monkeypatch.setitem(sys.modules, "kagglehub", mod)
+
+    def test_fill_retries_until_version_download_finishes(self, tmp_path, monkeypatch):
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        monkeypatch.setenv("KAGGLE_USERNAME", "user")
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        (flat / "song_7__0000.npy").write_bytes(b"x")
+        TestEnsureCorpus._write_manifest(flat, song_count=2)
+        v1 = tmp_path / "v1"
+        v1.mkdir()
+        (v1 / "song_8__0000.npy").write_bytes(b"y")
+        calls = []
+        self._fake_kagglehub(monkeypatch, {1: v1}, calls, fail_first=1)
+
+        dest, _src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "input"),
+            download_handle=config.CORPUS_HANDLE)
+
+        assert (dest / "8" / "0000.npy").read_bytes() == b"y"
+        # 08-07 CELL 13 bug: first mount failure killed the fill — now retried
+        assert calls == [f"user/{config.CORPUS_HANDLE}/versions/1"] * 2
 
     def test_fill_pulls_versions_until_covered(self, tmp_path, monkeypatch):
         from airhythm import config

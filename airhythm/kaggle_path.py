@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 from airhythm import config
@@ -172,13 +173,27 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
         # this the cell looks dead ("just stopped") while kagglehub downloads
         print(f"corpus fill: {have}/{target} songs — pulling version {v} ...",
               flush=True)
-        try:
-            root = Path(kagglehub.dataset_download(f"{full}/versions/{v}"))
-            attach_corpus(root, dest_root)
-        except Exception as e:
-            print(f"corpus fill: version {v} unavailable ({e}) — stopping",
+        root, last = None, None
+        # mount flaps while Kaggle is still processing a publish ("Error
+        # trying to mount/unmount dataset to/from session") — confirm files
+        # actually arrived and keep waiting instead of dying mid-fill
+        for attempt in range(1, 21):
+            try:
+                p = Path(kagglehub.dataset_download(f"{full}/versions/{v}"))
+                if any(p.iterdir()):
+                    root = p
+                    break
+                last = RuntimeError(f"{p} empty — download not finished")
+            except Exception as e:
+                last = e
+            print(f"corpus fill: version {v} not ready ({attempt}/20): "
+                  f"{last} — retry in 15s", flush=True)
+            time.sleep(15)
+        if root is None:
+            print(f"corpus fill: version {v} unavailable ({last}) — stopping",
                   flush=True)
             break
+        attach_corpus(root, dest_root)
         have = _have()
         print(f"corpus fill: version {v} ok — {have}/{target} songs", flush=True)
     if have < target:

@@ -168,13 +168,19 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
     for v in range(1, 10_000):
         if have >= target:
             break
+        # flush: a version pull can take minutes on a cold cache — without
+        # this the cell looks dead ("just stopped") while kagglehub downloads
+        print(f"corpus fill: {have}/{target} songs — pulling version {v} ...",
+              flush=True)
         try:
             root = Path(kagglehub.dataset_download(f"{full}/versions/{v}"))
             attach_corpus(root, dest_root)
         except Exception as e:
-            print(f"corpus fill: version {v} unavailable ({e}) — stopping")
+            print(f"corpus fill: version {v} unavailable ({e}) — stopping",
+                  flush=True)
             break
         have = _have()
+        print(f"corpus fill: version {v} ok — {have}/{target} songs", flush=True)
     if have < target:
         raise RuntimeError(
             f"corpus incomplete after version fill: {have}/{target} song dirs "

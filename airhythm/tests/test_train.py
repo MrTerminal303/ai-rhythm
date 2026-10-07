@@ -186,6 +186,22 @@ class TestTripwire:
         hist = [(0.03, 0.03)] * 10 + [(0.001, 0.03)] * 3
         assert tripwire_breached(hist) == (True, 3)
 
+    def test_no_lr_decay_during_toy_gate(self, monkeypatch):
+        """toy-gate-precision: plateau decay on oscillating train loss collapsed
+        LR to ~1e-8 by ep84 and froze the last FP frames — toy gate must hold
+        constant LR (PLAN's decay is val-monitored and belongs to the real loop)."""
+        from airhythm.model import AIRhythmCRNN
+
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 1.0)
+        torch.manual_seed(0)
+        data, _ = build_metronome_data(2, device=torch.device("cpu"))
+        out = run_toy_overfit_gate(
+            AIRhythmCRNN(), data, device=torch.device("cpu"),
+            pos_weight=39.0, max_epochs=10,
+        )
+        assert out["optimizer"].param_groups[0]["lr"] == config.TRAIN_LR
+        assert out["scheduler"].state_dict()["num_bad_epochs"] == 0
+
     def test_gate_smoke_one_epoch(self):
         from airhythm.model import AIRhythmCRNN
 

@@ -268,7 +268,12 @@ def run_toy_overfit_gate(model, data, *, device, pos_weight,
         pred_rate = predicted_positive_rate(model, data, device=device)
         history.append((pred_rate, true_rate))
         halt, _ = tripwire_breached(history)
-        scheduler.step(epoch_loss)
+        # NO scheduler.step here: plateau decay on the OSCILLATING per-epoch
+        # train loss halved LR every ~4 epochs to ~1e-8 by ep84, freezing the
+        # last FP frames before the gate could pass (debug: toy-gate-precision).
+        # Toy gate has no val split; PLAN's ReduceLROnPlateau monitors val loss
+        # in run_real_training only. Scheduler object kept in result for
+        # CELL 12 checkpoint contract.
         if passed:
             break
         if halt:

@@ -94,4 +94,22 @@ describe("AudioClock", () => {
     c.stop();
     expect(() => c.chartTimeMs()).toThrow(/not started/);
   });
+
+  it("context suspension freezes chartTime in lockstep with audio; resume has 0 ms formula error", () => {
+    const { ctx, keeper } = makeCtx();
+    const c = new AudioClock(ctx, keeper, () => 0);
+    c.load({}, 20);
+    c.start(0);
+    ctx.currentTime = 103;           // 3 s of playback
+    expect(c.chartTimeMs()).toBe(3020);
+    // suspension: currentTime frozen (browser behavior) for simulated 5 s of wall time
+    const frozen = ctx.currentTime;  // 103
+    expect(c.chartTimeMs()).toBe(3020); // chartTime does not drift while ctx frozen
+    expect(c.chartTimeMs()).toBe(c.playbackPositionMs() + 20); // invariant: chart = buffer + offset, always
+    ctx.currentTime = frozen;        // still suspended
+    expect(c.chartTimeMs()).toBe(3020);
+    ctx.currentTime = frozen + 2;    // resume
+    expect(c.chartTimeMs()).toBe(5020);
+    expect(c.chartTimeMs() - c.playbackPositionMs()).toBe(20); // exactly one offset after resume
+  });
 });

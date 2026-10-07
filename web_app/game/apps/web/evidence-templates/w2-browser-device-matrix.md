@@ -1,5 +1,8 @@
 # W2 browser/device matrix — output offset acceptance (spec §4.7)
 
+**Status: PENDING OPERATOR** — no measurement rows executed yet; the filled copy
+belongs in gitignored `evidence/` per `w2-slowmo-procedure.md` step 6.
+
 Copy this file to the local gitignored `evidence/` directory as `w2-browser-device-matrix.md`
 and fill it during measurement runs. Procedure: `w2-slowmo-procedure.md` (Task 24).
 Pass criterion per row: |measured offset| ≤ 10 ms after accounting for video-frame quantization.

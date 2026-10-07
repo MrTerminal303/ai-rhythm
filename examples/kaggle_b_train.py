@@ -300,7 +300,7 @@ from pathlib import Path
 
 from airhythm import config
 from airhythm.checkpoint_store import CheckpointStore
-from airhythm.kaggle_path import ensure_corpus, read_corpus_manifest
+from airhythm.kaggle_path import ensure_corpus, find_attached_input, read_corpus_manifest
 from airhythm.kaggle_push import prune_old_checkpoints, wait_dataset_ready
 from airhythm.model import AIRhythmCRNN
 from airhythm.run_meta import build_run_meta, verify_resume_compat
@@ -387,7 +387,7 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 # push_now() publishing CKPT_DIR always contains whatever selection picked
 STORE = CheckpointStore(
     CKPT_DIR,
-    attached_dir=Path("/kaggle/input") / config.DATASET_HANDLE,
+    attached_dir=find_attached_input(config.DATASET_HANDLE),
     drive_dir=runtime.drive_checkpoints,
 )
 

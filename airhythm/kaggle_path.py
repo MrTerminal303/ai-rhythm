@@ -17,6 +17,7 @@ from airhythm import config
 __all__ = [
     "detect_kaggle_env",
     "resolve_kaggle_input_dir",
+    "find_attached_input",
     "attach_corpus",
     "ensure_corpus",
     "read_corpus_manifest",
@@ -45,6 +46,19 @@ def resolve_kaggle_input_dir() -> Path | None:
     for child in input_root.iterdir():
         if child.is_dir() and (child / "airhythm" / "__init__.py").exists():
             return child
+    return None
+
+
+def find_attached_input(slug: str, input_root="/kaggle/input") -> Path | None:
+    """Dir of attached dataset `slug` — bare legacy path or the current
+    Kaggle nesting datasets/<owner>/<slug> (CELL 0's scan finds
+    /kaggle/input/datasets/<owner>/<slug>). None when not attached."""
+    root = Path(input_root)
+    if not root.is_dir():
+        return None
+    for p in (root / slug, *sorted(root.glob(f"datasets/*/{slug}"))):
+        if p.is_dir():
+            return p
     return None
 
 
@@ -232,8 +246,8 @@ def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None
         root = Path(env)
         _verify_corpus_manifest(read_corpus_manifest(root), where=root, expect=expect)
         return root, root
-    attached = Path(input_root) / config.CORPUS_HANDLE
-    if attached.is_dir():
+    attached = find_attached_input(config.CORPUS_HANDLE, input_root)
+    if attached is not None:
         try:
             manifest = _verify_corpus_manifest(read_corpus_manifest(attached),
                                                where=attached, expect=expect)
@@ -261,8 +275,8 @@ def ensure_corpus(dest_root, *, input_root="/kaggle/input", download_handle=None
         return dest, dl
     raise FileNotFoundError(
         "corpus not found: no AIRHYTHM_DATA env, no "
-        f"{attached} mount, no download_handle — attach the corpus dataset "
-        f"({config.CORPUS_HANDLE}) or set AIRHYTHM_DATA"
+        f"{input_root}/{config.CORPUS_HANDLE} mount, no download_handle — "
+        f"attach the corpus dataset ({config.CORPUS_HANDLE}) or set AIRHYTHM_DATA"
     )
 
 

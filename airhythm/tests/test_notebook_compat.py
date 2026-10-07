@@ -477,3 +477,35 @@ class TestReadCorpusManifest:
         from airhythm.kaggle_path import read_corpus_manifest
 
         assert read_corpus_manifest(None) is None
+
+
+class TestFindAttachedInput:
+    """Resume/attach lookup: bare legacy mount vs current Kaggle nesting
+    datasets/<owner>/<slug> (CELL 0 finds /kaggle/input/datasets/<owner>/...).
+    Wrong shape made CheckpointStore.attached_dir point at a non-dir — every
+    fresh session printed 'no local checkpoint — fresh start'."""
+
+    def test_bare_wins_over_nested(self, tmp_path):
+        from airhythm.kaggle_path import find_attached_input
+
+        root = tmp_path / "input"
+        bare = root / "my-ds"
+        bare.mkdir(parents=True)
+        (root / "datasets" / "owner" / "my-ds").mkdir(parents=True)
+        assert find_attached_input("my-ds", str(root)) == bare
+
+    def test_nested_layout_found(self, tmp_path):
+        from airhythm.kaggle_path import find_attached_input
+
+        root = tmp_path / "input"
+        nested = root / "datasets" / "owner" / "my-ds"
+        nested.mkdir(parents=True)
+        assert find_attached_input("my-ds", str(root)) == nested
+
+    def test_absent_returns_none(self, tmp_path):
+        from airhythm.kaggle_path import find_attached_input
+
+        root = tmp_path / "input"
+        root.mkdir()
+        assert find_attached_input("my-ds", str(root)) is None
+        assert find_attached_input("my-ds", str(tmp_path / "nope")) is None

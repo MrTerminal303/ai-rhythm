@@ -148,7 +148,7 @@ from airhythm.checkpoint_store import CheckpointStore
 from airhythm.datasets import boundary_fraction, build_full_song_cache, proximity_binned_recall
 from airhythm.model import AIRhythmCRNN
 from airhythm.pin_baseline import load_song_audio_sr, reconstruct_ref_times
-from airhythm.kaggle_path import ensure_corpus, read_corpus_manifest
+from airhythm.kaggle_path import ensure_corpus, find_attached_input, read_corpus_manifest
 from airhythm.run_meta import verify_resume_compat
 from airhythm.runtime import runtime
 from airhythm.salience_eval import (est_times_from_envelope, run_salience_gate,
@@ -202,7 +202,7 @@ if runtime.is_colab and runtime.drive_root:
     drive.mount("/content/drive")
 store = CheckpointStore(
     WORKING / config.CHECKPOINTS_DIR,
-    attached_dir=Path("/kaggle/input") / config.DATASET_HANDLE,
+    attached_dir=find_attached_input(config.DATASET_HANDLE),
     drive_dir=runtime.drive_checkpoints,
 )
 best = store.glob("best_*.pt")

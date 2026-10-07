@@ -22,6 +22,10 @@ const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light 
 // Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume)
 type Phase = "idle" | "loading" | "countdown" | "playing" | "paused";
 
+// I5: cap the stored chart JSON before JSON.parse (mirrors MAX_TEXT_FILE_BYTES in
+// import/page.tsx — different file, same value; beatmaps are KB-scale).
+const MAX_IMPORT_JSON_CHARS = 10 * 1024 * 1024;
+
 // debug hook for e2e (w2-sync) — set on mount, reads live refs
 declare global {
   interface Window {
@@ -140,6 +144,7 @@ export default function PlayPage() {
       try {
         const raw = sessionStorage.getItem("w2-import");
         if (!raw) throw new Error("w2-import missing from sessionStorage");
+        if (raw.length > MAX_IMPORT_JSON_CHARS) throw new Error("w2-import exceeds size limit");
         chart = parseBeatmap(JSON.parse(raw));
       } catch (err) {
         console.error("[play] imported chart failed to load:", err);
@@ -166,18 +171,24 @@ export default function PlayPage() {
     chartRef.current = chart;
     benchmarkRef.current = benchmark;
     perfRef.current = perf;
-    window.__w2 = {
-      chartTimeMs: () => {
-        if (!clockRef.current) throw new Error("__w2.chartTimeMs: clock not created yet");
-        return clockRef.current.chartTimeMs();
-      },
-      playbackPositionMs: () => {
-        if (!clockRef.current) throw new Error("__w2.playbackPositionMs: clock not created yet");
-        return clockRef.current.playbackPositionMs();
-      },
-      phase: () => phaseRef.current,
-      noteCount: () => chart.notes.length,
-    };
+    // I3: live-game debug hook is a timing side-channel for any XSS on this origin.
+    // Dev builds get it; production builds only when explicitly opted in — the
+    // Playwright webServer sets NEXT_PUBLIC_E2E=1 (inlined at `pnpm build`, since its
+    // webServer runs `pnpm build && pnpm start`). Vercel builds leave it unset → absent.
+    if (process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1") {
+      window.__w2 = {
+        chartTimeMs: () => {
+          if (!clockRef.current) throw new Error("__w2.chartTimeMs: clock not created yet");
+          return clockRef.current.chartTimeMs();
+        },
+        playbackPositionMs: () => {
+          if (!clockRef.current) throw new Error("__w2.playbackPositionMs: clock not created yet");
+          return clockRef.current.playbackPositionMs();
+        },
+        phase: () => phaseRef.current,
+        noteCount: () => chart.notes.length,
+      };
+    }
     const onResize = () => renderer.resize();
     window.addEventListener("resize", onResize);
     window.addEventListener("blur", pauseGame); // tab/window blur while playing → pause (T10)

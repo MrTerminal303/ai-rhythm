@@ -10,6 +10,13 @@ type ImportWarning = { code: string; message: string };
 const STORE_KEY = "w2-import";
 const MISSING_AUDIO_SONG_KEY = "file:missing-audio";
 
+// Size gates (W2 final security review C1): beatmaps are KB-scale, so 10 MB of text
+// is already absurd — reject BEFORE file.text()/JSON.parse. The .osz gate mirrors
+// DEFAULT_ZIP_LIMITS.maxCompressedBytes (100 MB); extractOsz re-checks internally.
+// play/page.tsx mirrors MAX_TEXT_FILE_BYTES as MAX_IMPORT_JSON_CHARS (see comment there).
+const MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_OSZ_FILE_BYTES = 100 * 1024 * 1024;
+
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const copy = new Uint8Array(bytes); // ArrayBuffer-backed copy — satisfies BufferSource typing
   const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
@@ -81,6 +88,11 @@ export default function ImportPage() {
     resetForNewFile();
     try {
       const name = file.name.toLowerCase();
+      const sizeCap = name.endsWith(".osz") ? MAX_OSZ_FILE_BYTES : MAX_TEXT_FILE_BYTES;
+      if (file.size > sizeCap) {
+        fail(`file too large — limit is ${Math.round(sizeCap / (1024 * 1024))} MB`);
+        return;
+      }
       if (name.endsWith(".dbm.json")) {
         // canonical .dbm.json — already canonical, no warnings to derive
         storeChart(canonicalizeBeatmap(JSON.parse(await file.text())));

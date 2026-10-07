@@ -104,6 +104,34 @@ describe("parseOsu", () => {
   it("rejects non-mania mode with clear error", () => {
     expect(() => parseOsu(fix("reject-standard.osu"))).toThrow(/osu!mania \(Mode 3\)/);
   });
+
+  // Security caps (W2 final security review C2/I4): DoS guards, spec has no explicit cap
+  const minimal = (section: string, lines: string) =>
+    `[General]\nMode: 3\n[Difficulty]\nCircleSize: 4\n${section}\n${lines}`;
+
+  it("over-cap hit objects → throws (DoS guard)", () => {
+    const lines = Array.from({ length: 10_001 }, (_, i) => `${i % 512},192,${1000 + i},1,0,`).join("\n");
+    expect(() => parseOsu(minimal("[HitObjects]", lines))).toThrow(/too many hit objects/);
+  });
+
+  it("hit objects exactly at cap → parses", () => {
+    const lines = Array.from({ length: 10_000 }, (_, i) => `${i % 512},192,${1000 + i},1,0,`).join("\n");
+    const p = parseOsu(minimal("[HitObjects]", lines));
+    expect(p.notes).toHaveLength(10_000);
+  });
+
+  it("over-cap timing points → throws (DoS guard)", () => {
+    const lines = Array.from({ length: 10_001 }, (_, i) => `${i * 500},500,4,2,0,60,1,0`).join("\n");
+    expect(() => parseOsu(minimal("[TimingPoints]", lines))).toThrow(/too many timing points/);
+  });
+
+  it("Tags over cap → truncated to 64 with warning", () => {
+    const tags = Array.from({ length: 65 }, (_, i) => `tag${i}`).join(" ");
+    const text = fix("basic-4k.osu").replace("[Metadata]", `[Metadata]\nTags: ${tags}`);
+    const p = parseOsu(text);
+    expect(p.meta.tags).toHaveLength(64);
+    expect(p.warnings.some((w) => w.message.includes("Tags truncated"))).toBe(true);
+  });
 });
 
 describe("roundtrip fixtures (T16 ahead-of-time)", () => {
@@ -149,5 +177,16 @@ describe("candidateFromParsed → canonicalize", () => {
     expect(c.pulses[0]).toMatchObject({ t: 0, s: 1 });
     expect(c.pulses[1]!.s).toBe(0.5);
     expect(c.pulses[4]!.s).toBe(1); // beat 4 = next bar (meter 4)
+  });
+
+  it("insane beatLength (sub-ms) → pulse derivation throws instead of hanging (C2 compound)", () => {
+    // beatLength 0.01 ms → 6 MHz "BPM" passes the finite/positive guard; without a
+    // pulses cap the nested loop iterates span/beatLength (or spins forever once
+    // float64 stops absorbing the increment)
+    const p = parseOsu(
+      `[General]\nMode: 3\n[Difficulty]\nCircleSize: 4\n[TimingPoints]\n0,0.01,4,2,0,60,1,0\n[HitObjects]\n64,192,5000,1,0,`,
+    );
+    expect(p.timing).toHaveLength(1);
+    expect(() => candidateFromParsed(p, "file:missing-audio")).toThrow(/too many pulses/);
   });
 });

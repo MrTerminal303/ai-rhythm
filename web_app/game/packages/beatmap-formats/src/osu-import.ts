@@ -18,6 +18,18 @@ export interface ParsedOsu {
 const CORE_TYPE_BITS = 0x1 | 0x80;
 
 /** osu!mania Mode = 3 (0=osu!, 1=taiko, 2=catch, 3=mania) — Spec §5.2's "Mode: 4" is a recorded typo. */
+
+// Security caps (W2 final security review): spec has no explicit caps — these are
+// deliberately generous DoS guards; real mania charts sit far below them (notes are
+// KB-scale, timing points are dozens, tags are a handful).
+const MAX_NOTES = 10_000;
+const MAX_TIMING_POINTS = 10_000;
+const MAX_TAGS = 64;
+// C2 compound (pulse derivation): sub-ms beatLength or huge note times make the
+// nested beat loop iterate span/beatLength — or spin forever once float64 absorbs
+// the increment. Real charts derive <20k pulses; 100k is a generous DoS ceiling.
+const MAX_PULSES = 100_000;
+
 export function parseOsu(text: string): ParsedOsu {
   const warnings: ImportWarning[] = [];
   const sections: Record<string, string[]> = {};
@@ -54,7 +66,14 @@ export function parseOsu(text: string): ParsedOsu {
 
   const meta = (k: string, fallback = "") =>
     sections.Metadata?.find((l) => l.startsWith(k + ":"))?.slice(k.length + 1).trim() ?? fallback;
-  const tags = meta("Tags").split(/\s+/).filter(Boolean);
+  const allTags = meta("Tags").split(/\s+/).filter(Boolean);
+  const tags = allTags.slice(0, MAX_TAGS); // I4: cap — unbounded Tags field is attacker-controlled
+  if (allTags.length > MAX_TAGS) {
+    warnings.push({
+      code: "feature-dropped",
+      message: `Tags truncated to ${MAX_TAGS} entries (${allTags.length - MAX_TAGS} dropped)`,
+    });
+  }
   const previewMs = Math.max(0, Math.round(Number(meta("PreviewTime", "0")) || 0));
 
   // timing: fields are time,beatLength,meter,sampleSet,sampleIndex,volume,uninherited,effects
@@ -72,6 +91,7 @@ export function parseOsu(text: string): ParsedOsu {
     // reject beatLength 0/negative/NaN — non-finite bpm would hang pulse derivation
     if (!Number.isFinite(bpm) || bpm <= 0) continue;
     timing.push({ t, bpm, meter: Number(meterStr) || 4 });
+    if (timing.length > MAX_TIMING_POINTS) throw new Error(`osu: too many timing points (limit ${MAX_TIMING_POINTS})`);
   }
   if (timing.length === 0) timing.push({ t: 0, bpm: 120, meter: 4 });
 
@@ -114,6 +134,8 @@ export function parseOsu(text: string): ParsedOsu {
     } else {
       warnings.push({ code: "feature-dropped", message: `unsupported hit object flags (${typeFlags}) at ${t} ms dropped` });
     }
+    // C2: abort mid-parse — millions of lines must not reach pulses/sessionStorage
+    if (notes.length > MAX_NOTES) throw new Error(`osu: too many hit objects (limit ${MAX_NOTES})`);
   }
   notes.sort((a, b) => a.t - b.t || a.lane - b.lane);
 
@@ -142,6 +164,7 @@ export function candidateFromParsed(p: ParsedOsu, songKey: string): unknown {
     const nextT = p.timing[i + 1]?.t ?? durationMs;
     const beatMs = 60_000 / tp.bpm;
     for (let t = tp.t, beat = 0; t < nextT && t <= durationMs; t += beatMs, beat++) {
+      if (pulses.length >= MAX_PULSES) throw new Error(`osu: too many pulses (limit ${MAX_PULSES})`);
       pulses.push({ t: Math.round(t), s: beat % tp.meter === 0 ? 1.0 : 0.5 });
     }
   }

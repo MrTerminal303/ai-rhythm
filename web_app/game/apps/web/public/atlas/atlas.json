@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "size": {
+      "width": 1796,
+      "height": 1282
+    },
+    "generator": "atlas/1"
+  },
+  "frames": {
+    "particles/circle_01": {
+      "x": 0,
+      "y": 0,
+      "w": 512,
+      "h": 512
+    },
+    "particles/flare_01": {
+      "x": 513,
+      "y": 0,
+      "w": 512,
+      "h": 512
+    },
+    "particles/smoke_01": {
+      "x": 1026,
+      "y": 0,
+      "w": 512,
+      "h": 512
+    },
+    "particles/spark_01": {
+      "x": 0,
+      "y": 513,
+      "w": 512,
+      "h": 512
+    },
+    "particles/star_01": {
+      "x": 513,
+      "y": 513,
+      "w": 512,
+      "h": 512
+    },
+    "patterns/Thick/Default (256px)/pattern_0000": {
+      "x": 1026,
+      "y": 513,
+      "w": 256,
+      "h": 256
+    },
+    "patterns/Thick/Default (256px)/pattern_0007": {
+      "x": 1283,
+      "y": 513,
+      "w": 256,
+      "h": 256
+    },
+    "patterns/Thin/Default (256px)/pattern_0000": {
+      "x": 1540,
+      "y": 513,
+      "w": 256,
+      "h": 256
+    },
+    "patterns/Thin/Default (256px)/pattern_0007": {
+      "x": 0,
+      "y": 1026,
+      "w": 256,
+      "h": 256
+    },
+    "ui/button_rectangle_flat": {
+      "x": 257,
+      "y": 1026,
+      "w": 192,
+      "h": 64
+    },
+    "ui/input_rectangle": {
+      "x": 450,
+      "y": 1026,
+      "w": 192,
+      "h": 64
+    },
+    "ui/slide_horizontal_grey_section_wide": {
+      "x": 643,
+      "y": 1026,
+      "w": 32,
+      "h": 16
+    }
+  }
+}

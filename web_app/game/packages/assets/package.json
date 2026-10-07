@@ -1,0 +1,21 @@
+{
+  "name": "@airhythm/assets",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/pack.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "atlas": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/build-atlas.ts"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  },
+  "dependencies": {
+    "pngjs": "7.0.0"
+  }
+}

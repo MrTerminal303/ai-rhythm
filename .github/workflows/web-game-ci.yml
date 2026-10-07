@@ -25,6 +25,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       - run: pnpm -r test
+      - run: pnpm build:atlas # plan T24 order: atlas first, license gate second
       - name: Asset license check
         run: node scripts/check-assets.mjs
   e2e:

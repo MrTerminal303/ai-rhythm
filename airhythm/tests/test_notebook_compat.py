@@ -412,6 +412,9 @@ class TestVersionFill:
         (flat / "song_7__0000.npy").write_bytes(b"x")
         TestEnsureCorpus._write_manifest(flat, song_count=2)  # wants 2, has 1
         calls = []
+        # production default _FILL_MAX_ATTEMPTS=0 waits forever — cap here so
+        # the loud-stop path stays reachable under test
+        monkeypatch.setattr(kaggle_path, "_FILL_MAX_ATTEMPTS", 3)
         self._fake_kagglehub(monkeypatch, {}, calls)  # every version 404s
 
         with pytest.raises(RuntimeError, match="corpus incomplete"):

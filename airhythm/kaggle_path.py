@@ -22,6 +22,10 @@ __all__ = [
     "read_corpus_manifest",
 ]
 
+# 0 = wait forever (default: downloads are very slow, never give up mid-fill);
+# tests cap attempts so the bounded stop path stays reachable
+_FILL_MAX_ATTEMPTS = 0
+
 
 def detect_kaggle_env() -> bool:
     """Return True if running inside a Kaggle kernel."""
@@ -173,27 +177,29 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
         # this the cell looks dead ("just stopped") while kagglehub downloads
         print(f"corpus fill: {have}/{target} songs — pulling version {v} ...",
               flush=True)
-        root, last = None, None
-        # mount flaps while Kaggle is still processing a publish ("Error
-        # trying to mount/unmount dataset to/from session") — confirm files
-        # actually arrived and keep waiting instead of dying mid-fill
-        for attempt in range(1, 21):
+        # wait until the pull actually delivers files — mount POST flaps
+        # while Kaggle processes a publish, and cold downloads are slow;
+        # backoff 15s → 60s cap, unbounded by default (see _FILL_MAX_ATTEMPTS)
+        delay, attempt, last, p = 15, 0, None, None
+        while _FILL_MAX_ATTEMPTS == 0 or attempt < _FILL_MAX_ATTEMPTS:
+            attempt += 1
             try:
                 p = Path(kagglehub.dataset_download(f"{full}/versions/{v}"))
                 if any(p.iterdir()):
-                    root = p
                     break
                 last = RuntimeError(f"{p} empty — download not finished")
             except Exception as e:
                 last = e
-            print(f"corpus fill: version {v} not ready ({attempt}/20): "
-                  f"{last} — retry in 15s", flush=True)
-            time.sleep(15)
-        if root is None:
+                p = None
+            print(f"corpus fill: version {v} not ready (attempt {attempt}): "
+                  f"{last} — retry in {delay}s", flush=True)
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+        else:  # test-capped attempts exhausted — loud, never train on subset
             print(f"corpus fill: version {v} unavailable ({last}) — stopping",
                   flush=True)
             break
-        attach_corpus(root, dest_root)
+        attach_corpus(p, dest_root)
         have = _have()
         print(f"corpus fill: version {v} ok — {have}/{target} songs", flush=True)
     if have < target:

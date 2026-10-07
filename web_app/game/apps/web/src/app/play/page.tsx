@@ -154,6 +154,10 @@ export default function PlayPage() {
     // unavailable) — the B6 e2e waits on this attribute instead of calling getContext()
     // itself, which would succeed even if the app never initialized the renderer
     canvas.dataset.webglReady = "true";
+    // W2 T22: atlas load is opportunistic — kicked off AFTER readiness and never awaited
+    // (gameplay never blocks on assets, spec §6.4); rejection consumed so the permanent
+    // code-drawn fallback can't surface as an unhandled rejection in the B6 e2e
+    renderer.initAtlas().catch(() => {});
     // PerfMonitor created INSIDE the mount effect (stable for the effect's lifetime),
     // never at component scope — React re-renders driven by snapshot updates would
     // otherwise reset the metrics every frame (p95 would be garbage).

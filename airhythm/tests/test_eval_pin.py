@@ -13,6 +13,10 @@ import pytest
 
 from airhythm.pin_baseline import OPTION_B_PARAMS, pin_baseline, safe_f_measure
 
+# canonical committed artifact (same file the gate reads); the old CWD-relative
+# "data/eval_pins.json" was an untracked CLI-run leftover that vanished
+PIN_PATH = Path(__file__).resolve().parents[1] / "data" / "eval_pins.json"
+
 
 class TestPinBaseline:
     """Smoke and correctness tests for the pin_baseline CLI and output."""
@@ -62,7 +66,7 @@ class TestPinBaseline:
 
     def test_pin_baseline_no_nan(self):
         """All F values in committed pin are finite; both buckets present per song."""
-        pin = json.load(open("data/eval_pins.json"))
+        pin = json.load(open(PIN_PATH))
         for song_id, vals in pin["per_song"].items():
             for k in [
                 "F_important",
@@ -96,7 +100,7 @@ class TestPinBaseline:
 
     def test_pin_baseline_decision_recorded(self):
         """pin JSON contains derivation_option and decision_ref fields."""
-        pin = json.load(open("data/eval_pins.json"))
+        pin = json.load(open(PIN_PATH))
         assert pin["derivation_option"] == "b"
         assert "decision_ref" in pin
         assert "D-10" in pin["decision_ref"]
@@ -104,7 +108,7 @@ class TestPinBaseline:
 
     def test_pin_baseline_derivation_is_option_b(self):
         """Derivation option is deterministically 'b' and params match OPTION_B_PARAMS."""
-        pin = json.load(open("data/eval_pins.json"))
+        pin = json.load(open(PIN_PATH))
         assert pin["params"] == OPTION_B_PARAMS
         assert pin["params"] == pin["params"]
 

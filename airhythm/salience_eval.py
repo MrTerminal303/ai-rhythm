@@ -117,7 +117,7 @@ def eval_song_buckets(
 def run_salience_gate(
     song_evals: Sequence[dict],
     *,
-    pin_path: str = "data/eval_pins.json",
+    pin_path: str | Path | None = None,
     margin: float = config.GATE_MARGIN,
     min_wins: int = config.GATE_MIN_WINS,
 ) -> dict:
@@ -139,6 +139,10 @@ def run_salience_gate(
     bucket per cut, predicted positive rate) and returned; never raises on fail —
     caller prints/asserts/halts.
     """
+    # default = package-shipped pins: CWD-relative "data/eval_pins.json" never
+    # resolved on Kaggle (CWD=/kaggle/working) — FileNotFoundError at gate time
+    if pin_path is None:
+        pin_path = Path(__file__).resolve().parent / "data" / "eval_pins.json"
     pin = json.loads(Path(pin_path).read_text())
     base_f = {sid: v["F_important"] for sid, v in pin["per_song"].items()}
     bar = float(pin["aggregate"]["mean_F_important"]) + margin

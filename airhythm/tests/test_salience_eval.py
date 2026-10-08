@@ -13,7 +13,7 @@ from airhythm import config
 from airhythm.pin_baseline import OPTION_B_PARAMS, bucket_refs_by_salience
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PIN_PATH = REPO_ROOT / "data" / "eval_pins.json"
+PIN_PATH = REPO_ROOT / "airhythm" / "data" / "eval_pins.json"  # committed artifact (root data/ copy was untracked)
 
 SONG_IDS = ["s1", "s2", "s3", "s4", "s5"]
 

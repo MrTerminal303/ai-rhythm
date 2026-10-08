@@ -620,9 +620,13 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
     else:
         # load_state_dict is a raw __dict__ update: an old ckpt saved
         # min_lrs=[0] overwrites the constructor floor — re-floor here so
-        # every real run is covered (next plateau step lifts lr to the floor)
+        # every real run is covered
         scheduler.min_lrs = [max(float(m), config.TRAIN_LR / 10)
                              for m in scheduler.min_lrs]
+    # torch _reduce_lr only DECREASES (old_lr - new_lr > eps guard) — a ckpt
+    # collapsed below the floor (1.56e-5) never lifts on its own; clamp once
+    for _g in optimizer.param_groups:
+        _g["lr"] = max(float(_g["lr"]), config.TRAIN_LR / 10)
 
     best_val = float("inf") if best_val is None else float(best_val)
     best_epoch = start_epoch if best_val != float("inf") else 0

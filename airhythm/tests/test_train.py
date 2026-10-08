@@ -565,6 +565,21 @@ class TestSchedulerFloor:
         )
         assert sch.min_lrs == [config.TRAIN_LR / 10]
 
+    def test_collapsed_resume_lr_lifted_to_floor(self, tmp_path, monkeypatch):
+        # torch _reduce_lr only decreases (old_lr - new_lr > eps guard) — a ckpt
+        # collapsed to 1.56e-5 can never lift via scheduler.step; run start must clamp
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(1, device=device)
+        opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1.56e-5)
+        sch = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, min_lr=0.0)
+        run_real_training(
+            data, data, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=1, patience=100,
+            optimizer=opt, scheduler=sch, _val_fn=lambda: 1.0,
+        )
+        assert opt.param_groups[0]["lr"] == config.TRAIN_LR / 10
+
 
 class TestDeterminism:
     def test_same_seed_same_first_batch(self):

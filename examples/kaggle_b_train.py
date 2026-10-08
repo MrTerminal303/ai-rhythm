@@ -378,9 +378,17 @@ train_loader, val_loader, info = build_real_loaders(
 assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
 
 # D-03 (2) real-data pos_weight re-derivation (deferred 08-CONTEXT, now active):
-# seed 36.4 = TOY pos_frac 2.7%, real corpus ~10% → correct ~9. pw 36.4 makes
-# loss-optimal pred ≈0.80 where truth is 0.10 — explains pred stuck HIGH + frozen val
-_lab = torch.cat([y for _, y in train_loader])
+# seed 36.4 = TOY pos_frac 2.7%, real corpus ~10% → correct ~14. pw 36.4 makes
+# loss-optimal pred ≈0.80 where truth is 0.10 — explains pred stuck HIGH + frozen val.
+# Derive over full-song label caches, NOT a loader pass: random crops made the
+# value drift run-to-run (14.6 vs 14.1) — shifts val-loss scale and biases
+# cross-session best_val comparisons (D-08 best-over-sessions)
+from airhythm.datasets import build_full_song_cache
+_train_ids = set(info["train_ids"])
+_lab = torch.cat([
+    torch.from_numpy(np.load(build_full_song_cache(
+        d, cache_root=str(WORKING / "full_cache"))[1]))[1]
+    for d in song_dirs if int(d.name) in _train_ids])
 POS_WEIGHT = compute_pos_weight_candidate(_lab)
 print(f"pos_weight: derived from real train frames = {POS_WEIGHT:.1f} (seed was 36.4)")
 
@@ -525,6 +533,10 @@ result = run_real_training(
     ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
     start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
     max_epochs=None, session_budget_s=SESSION_BUDGET_H * 3600,
+    # epochs are seconds-long (3.4s × 84 steps) — default patience 10 dies in
+    # ~34s of flat val while the model is still oscillating (1.29-1.55 range);
+    # research range for loss-patience is 10-50 (D-08 cites Apicella 2026)
+    patience=50,
     # real-data warmup: fresh model's pred_rate sits outside the degeneracy
     # envelope for >10 epochs (toy-validated grace 10 halted fresh runs at
     # ep13 — 3 breaches once the budget fix let training get there)

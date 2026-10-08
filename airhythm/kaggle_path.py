@@ -114,10 +114,10 @@ def _verify_corpus_manifest(manifest, *, where, expect=None) -> dict:
     missing = [k for k in required if k not in manifest]
     if missing:
         raise ValueError(f"corpus manifest at {where} missing fields: {missing}")
-    if manifest["schema_version"] != 1:
+    if manifest["schema_version"] not in (1, 2):
         raise ValueError(
             f"corpus manifest at {where}: schema_version "
-            f"{manifest['schema_version']} != 1")
+            f"{manifest['schema_version']} not in (1, 2)")
     if manifest["song_count"] != len(manifest["song_ids"]):
         raise ValueError(
             f"corpus manifest at {where}: song_count {manifest['song_count']} "
@@ -129,6 +129,31 @@ def _verify_corpus_manifest(manifest, *, where, expect=None) -> dict:
         raise ValueError(
             f"corpus manifest at {where}: file_count {manifest['file_count']} "
             "with songs present")
+    if manifest["schema_version"] == 2:
+        # manifest-map: the shard table is the reader's routing truth —
+        # validate hard, an incomplete map sends fill to the wrong versions
+        shards = manifest.get("shards")
+        if not isinstance(shards, list):
+            raise ValueError(
+                f"corpus manifest at {where}: schema_version 2 without "
+                "a shards list")
+        covered, versions = set(), set()
+        for s in shards:
+            if not isinstance(s, dict) or not {"shard_id", "version",
+                                               "song_ids"} <= set(s):
+                raise ValueError(
+                    f"corpus manifest at {where}: malformed shard {s!r}")
+            if s["version"] in versions:
+                raise ValueError(
+                    f"corpus manifest at {where}: duplicate shard version "
+                    f"{s['version']}")
+            versions.add(s["version"])
+            covered |= set(s["song_ids"])
+        if covered != set(manifest["song_ids"]):
+            raise ValueError(
+                f"corpus manifest at {where}: shards cover {len(covered)} "
+                f"ids but song_ids has {len(manifest['song_ids'])} — "
+                "shard map incomplete")
     for k, v in (expect or {}).items():
         if manifest.get(k) != v:
             raise ValueError(
@@ -241,10 +266,11 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
     new songs + the union manifest — an attached/CLI source is only the
     LATEST shard, so cover the rest via kagglehub owner/handle/versions/N
     (shared resource cache inside Kaggle notebooks = zero VM disk; ~/.cache
-    elsewhere). Preflights with manifest-only fetches (_version_id_map) so
-    fill pulls exactly the versions that add songs and skips ids already
-    live; raises if versions run out first — an under-filled tree would
-    silently train on a subset while claiming the full corpus.
+    elsewhere). schema2 manifests carry the shard table, so fill pulls
+    exactly the versions named for missing ids — no preflight scan; schema1
+    falls back to manifest-only discovery per version (_version_id_map).
+    Raises if versions run out first — an under-filled tree would silently
+    train on a subset while claiming the full corpus.
     ponytail: sequential scan stopping at first missing version — versions
     are immutable/append-only; revisit if a version is ever deleted."""
     def _have() -> int:
@@ -261,9 +287,20 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
             f"corpus incomplete ({have}/{target}) and kagglehub unavailable "
             f"for version fill — pip install kagglehub ({e})") from e
     full = _expand_handle(handle)
-    add_map = _version_id_map(full, manifest["song_ids"])
-    versions = ([v for v, a in sorted(add_map.items()) if a]
-                if add_map is not None else list(range(1, 10_000)))
+    if manifest["schema_version"] == 2:
+        # manifest-map: union manifest already names every shard's version —
+        # route on it directly, zero manifest fetches
+        missing = {sid for sid in manifest["song_ids"]
+                   if not _song_live(dest_root, sid)}
+        add_map = {int(s["version"]): list(s["song_ids"])
+                   for s in manifest["shards"]}
+        versions = sorted(v for v, ids in add_map.items() if missing & set(ids))
+        print(f"corpus fill: manifest-map — {len(missing)} ids missing, "
+              f"versions {versions}", flush=True)
+    else:
+        add_map = _version_id_map(full, manifest["song_ids"])
+        versions = ([v for v, a in sorted(add_map.items()) if a]
+                    if add_map is not None else list(range(1, 10_000)))
     for v in versions:
         if have >= target:
             break

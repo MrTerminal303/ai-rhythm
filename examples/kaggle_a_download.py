@@ -342,18 +342,41 @@ print(f"flat corpus staged: {n_files} files -> {CORPUS_ROOT}")
 
 # A5 corpus manifest (review #9): ships at the dataset root so B/C read it for
 # RUN_META + resume validation (B9). corpus_version = hash over song IDs.
+# manifest-map (08-07): the shard table routes B/C fills — shard ordinal == the
+# Kaggle version this publish lands on (single writer; asserted after
+# wait_dataset_ready below). schema1 remote = one-time migration: scan old
+# version manifests once, emit shards[] — later publishes skip the scan.
+_probe_mf = WORKING / "data" / "remote_probe" / "corpus_manifest.json"
+remote = json.loads(_probe_mf.read_text()) if _probe_mf.exists() else None
+if remote is None:
+    prior_shards = []
+elif remote.get("schema_version") == 2:
+    prior_shards = remote["shards"]
+else:
+    from airhythm.kaggle_path import _expand_handle, _version_id_map
+    _add_map = _version_id_map(_expand_handle(config.CORPUS_HANDLE),
+                               remote["song_ids"])
+    assert _add_map, (
+        "migration scan could not map schema1 version history — refusing to "
+        "publish schema2 without the full shard table")
+    prior_shards = [{"shard_id": f"shard-{v:06d}", "version": v,
+                     "song_ids": ids}
+                    for v, ids in sorted(_add_map.items()) if ids]
+_next_version = max((s["version"] for s in prior_shards), default=0) + 1
+
 manifest = build_corpus_manifest(_src_root, target_songs=100,
-                                 pinned_ids=PINNED if "PINNED" in globals() else None)
+                                 pinned_ids=PINNED if "PINNED" in globals() else None,
+                                 shard_version=_next_version)
 # multi-session union (CELL 2.5): a top-up session's manifest must describe
 # remote ∪ local — one corpus_manifest.json per publish, last writer consistent
-_probe_mf = WORKING / "data" / "remote_probe" / "corpus_manifest.json"
-if _probe_mf.exists():
+if remote is not None:
     manifest = merge_manifest_with_remote(
-        manifest, json.loads(_probe_mf.read_text()), _src_root)
+        manifest, remote, _src_root, prior_shards=prior_shards)
 (CORPUS_ROOT / "corpus_manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True))
 print(f"manifest: version={manifest['corpus_version']} songs={manifest['song_count']} "
-      f"complete={manifest['complete_song_count']} pinned={manifest['pinned_song_count']}")
+      f"complete={manifest['complete_song_count']} pinned={manifest['pinned_song_count']} "
+      f"shards={len(manifest['shards'])} next_version={_next_version}")
 assert manifest["complete_song_count"] == manifest["song_count"], (
     f"incomplete songs in corpus: {manifest['song_count'] - manifest['complete_song_count']}")
 
@@ -401,3 +424,29 @@ print(f"corpus published: {CORPUS_SLUG}"
       " — attach in Notebook B/C (Data → Add data)")
 # review #8 #1: upload may still process after version/create — poll until READY
 wait_dataset_ready(CORPUS_SLUG)
+
+# manifest-map: the shard table's `version` must equal the Kaggle version this
+# publish actually created — versions are immutable, a wrong ordinal lies
+# forever, so fail loud here (re-probe CELL 2.5 + republish) instead of B/C
+# silently pulling the wrong versions
+import kagglehub as _kh
+_pub, _tries = None, 0
+while _pub is None and _tries < 3:
+    _tries += 1
+    try:
+        _pub = json.loads(Path(_kh.dataset_download(
+            f"{CORPUS_SLUG}/versions/{_next_version}",
+            path="corpus_manifest.json")).read_text())
+    except Exception as _e:
+        print(f"version assert: fetch attempt {_tries} failed: {_e}", flush=True)
+        if _tries < 3:
+            time.sleep(15)
+assert _pub is not None, (
+    f"cannot fetch versions/{_next_version} manifest after publish — "
+    "shard/version map unverified")
+assert _pub["corpus_version"] == manifest["corpus_version"], (
+    f"version drift: predicted v{_next_version} holds corpus "
+    f"{_pub['corpus_version']}, published {manifest['corpus_version']} — "
+    "shard/version map wrong; re-probe and republish")
+print(f"manifest-map ok: shard-{_next_version:06d} == Kaggle v{_next_version}",
+      flush=True)

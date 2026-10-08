@@ -449,13 +449,18 @@ def wait_dataset_ready(slug: str, *, attempts: int = 20, delay_s: float = 15.0) 
         output=f"not READY after {attempts} attempts; last status: {last}")
 
 
-def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None) -> dict:
+def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None,
+                          shard_version: int = 1) -> dict:
     """A5 corpus manifest (review #9): identity of the published corpus.
 
     Notebook A writes this into the flat publish dir so it ships with the
     dataset; B/C read it for RUN_META and resume validation (B9). corpus_version
     is a content hash over song IDs — a different song set yields a different
     version, so resume detects corpus swaps.
+
+    schema2 (manifest-map): `shards` routes the reader — shard_id/version are
+    the same ordinal (single writer, CELL 16 asserts the Kaggle version after
+    publish), so B/C pull exactly the versions holding missing ids.
     """
     from airhythm.download_batch import is_complete_song_dir
 
@@ -473,7 +478,7 @@ def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None
     digest = hashlib.sha1("\n".join(str(i) for i in song_ids).encode()).hexdigest()[:12]
     return {
         "corpus_version": f"v1-{digest}",
-        "schema_version": 1,
+        "schema_version": 2,
         "target_songs": target_songs,
         "song_count": len(song_ids),
         "song_ids": song_ids,
@@ -481,10 +486,14 @@ def build_corpus_manifest(song_root, *, target_songs: int = 100, pinned_ids=None
         "complete_song_count": complete,
         "pinned_song_count": len(pinned_ids or []),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "shards": [{"shard_id": f"shard-{shard_version:06d}",
+                    "version": shard_version,
+                    "song_ids": song_ids}],
     }
 
 
-def merge_manifest_with_remote(manifest: dict, remote: dict, song_root) -> dict:
+def merge_manifest_with_remote(manifest: dict, remote: dict, song_root, *,
+                               prior_shards) -> dict:
     """Multi-session union (08-07): local view + already-published manifest.
 
     A top-up session stages only its NEW songs; publishing a manifest over the
@@ -492,6 +501,11 @@ def merge_manifest_with_remote(manifest: dict, remote: dict, song_root) -> dict:
     sessions still live there). corpus_version is re-hashed over the union —
     a grown corpus is a NEW version, so old checkpoints fail resume loudly
     (intended: never train on a corpus the ckpt was not built from).
+
+    schema2 (manifest-map): prior_shards (remote's shards, or the one-time
+    migration scan of schema1 history) + this session's batch as the next
+    ordinal — version = max(prior)+1, single writer, CELL 16 asserts it
+    against the actual Kaggle version post-publish.
 
     ponytail: file_count = remote count + files of local-only songs; assumes
     remote songs persist across versions (append semantics) OR the local tree
@@ -512,8 +526,11 @@ def merge_manifest_with_remote(manifest: dict, remote: dict, song_root) -> dict:
     added_complete = sum(
         1 for sid in added if is_complete_song_dir(root / str(sid)))
     digest = hashlib.sha1("\n".join(str(i) for i in union).encode()).hexdigest()[:12]
+    prior = list(prior_shards)
+    next_v = max((int(s["version"]) for s in prior), default=0) + 1
     out = dict(manifest)
     out["corpus_version"] = f"v1-{digest}"
+    out["schema_version"] = 2
     out["song_ids"] = union
     out["song_count"] = len(union)
     out["file_count"] = int(remote["file_count"]) + added_files
@@ -521,4 +538,7 @@ def merge_manifest_with_remote(manifest: dict, remote: dict, song_root) -> dict:
     out["pinned_song_count"] = max(int(remote["pinned_song_count"]),
                                    int(manifest["pinned_song_count"]))
     out["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out["shards"] = prior + [{"shard_id": f"shard-{next_v:06d}",
+                              "version": next_v,
+                              "song_ids": added}]
     return out

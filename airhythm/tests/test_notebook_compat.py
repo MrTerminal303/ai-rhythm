@@ -201,16 +201,21 @@ class TestEnsureCorpus:
     > loud failure — every source VERIFIED via corpus_manifest.json first."""
 
     @staticmethod
-    def _write_manifest(root, *, version="v1-abc", song_count=1):
+    def _write_manifest(root, *, version="v1-abc", song_count=1,
+                        schema_version=1, shards=None):
         import json
 
         root.mkdir(parents=True, exist_ok=True)
-        (root / "corpus_manifest.json").write_text(json.dumps({
-            "corpus_version": version, "schema_version": 1, "target_songs": 100,
+        m = {
+            "corpus_version": version, "schema_version": schema_version,
+            "target_songs": 100,
             "song_count": song_count, "song_ids": list(range(7, 7 + song_count)),
             "file_count": song_count * 3, "complete_song_count": song_count,
             "pinned_song_count": 0, "created_at": "2026-10-06T00:00:00+00:00",
-        }))
+        }
+        if shards is not None:
+            m["shards"] = shards
+        (root / "corpus_manifest.json").write_text(json.dumps(m))
 
     @staticmethod
     def _write_flat(root):
@@ -468,6 +473,55 @@ class TestVersionFill:
         assert self._manifest_calls(calls) == \
             [f"user/{config.CORPUS_HANDLE}/versions/1",
              f"user/{config.CORPUS_HANDLE}/versions/2"]
+
+    def test_schema2_fill_routes_on_manifest_map(self, tmp_path, monkeypatch):
+        """manifest-map (schema2): union manifest names shard→version, so fill
+        pulls exactly the version holding missing ids — zero manifest preflight
+        fetches (fake serves no path= responses: any scan call would raise)."""
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        monkeypatch.setenv("KAGGLE_USERNAME", "user")
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        (flat / "song_7__0000.npy").write_bytes(b"x")
+        (flat / "song_8__0000.npy").write_bytes(b"y")  # attached: shard 1 live
+        TestEnsureCorpus._write_manifest(
+            flat, song_count=3, schema_version=2,
+            shards=[{"shard_id": "shard-000001", "version": 1, "song_ids": [7, 8]},
+                    {"shard_id": "shard-000002", "version": 2, "song_ids": [9]}])
+        v2 = tmp_path / "v2"
+        v2.mkdir()
+        (v2 / "song_9__0000.npy").write_bytes(b"z")
+        calls = []
+        self._fake_kagglehub(monkeypatch, {2: v2}, calls)
+
+        dest, _src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "input"),
+            download_handle=config.CORPUS_HANDLE)
+
+        assert (dest / "9" / "0000.npy").read_bytes() == b"z"
+        assert self._full_calls(calls) == \
+            [f"user/{config.CORPUS_HANDLE}/versions/2"]
+        assert self._manifest_calls(calls) == []  # no preflight scan
+
+    def test_schema2_shard_map_must_cover_song_ids(self, tmp_path, monkeypatch):
+        """verify: an incomplete shard map routes fill to the wrong versions —
+        schema2 manifest whose shards miss an id is rejected, not trusted."""
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        TestEnsureCorpus._write_manifest(
+            flat, song_count=3, schema_version=2,
+            shards=[{"shard_id": "shard-000001", "version": 1,
+                     "song_ids": [7]}])  # misses 8, 9
+        with pytest.raises(ValueError, match="shard map incomplete"):
+            kaggle_path.ensure_corpus(
+                tmp_path / "dest", input_root=str(tmp_path / "input"))
 
     def test_fill_raises_when_versions_exhausted(self, tmp_path, monkeypatch):
         from airhythm import config

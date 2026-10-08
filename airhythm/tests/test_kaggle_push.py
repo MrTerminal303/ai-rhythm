@@ -375,9 +375,11 @@ class TestBuildCorpusManifest:
         assert set(m) == {
             "corpus_version", "schema_version", "target_songs", "song_count",
             "song_ids", "file_count", "complete_song_count",
-            "pinned_song_count", "created_at",
+            "pinned_song_count", "created_at", "shards",
         }
-        assert m["schema_version"] == 1
+        assert m["schema_version"] == 2
+        assert m["shards"] == [{"shard_id": "shard-000001", "version": 1,
+                                "song_ids": [100, 200, 300, 400]}]
         assert m["target_songs"] == 100
         assert m["song_count"] == 4
         assert m["song_ids"] == [100, 200, 300, 400]
@@ -451,7 +453,14 @@ class TestMergeManifestWithRemote:
         for sid in (300, 400):  # local has ONLY new songs (no pull)
             self._make_song(tmp_path, sid)
         local = build_corpus_manifest(tmp_path, pinned_ids=[100, 200])
-        merged = merge_manifest_with_remote(local, self._remote([100, 200], 8), tmp_path)
+        merged = merge_manifest_with_remote(
+            local, self._remote([100, 200], 8), tmp_path,
+            prior_shards=[{"shard_id": "shard-000001", "version": 1,
+                           "song_ids": [100, 200]}])
+        assert merged["schema_version"] == 2
+        assert merged["shards"] == [
+            {"shard_id": "shard-000001", "version": 1, "song_ids": [100, 200]},
+            {"shard_id": "shard-000002", "version": 2, "song_ids": [300, 400]}]
         assert merged["song_ids"] == [100, 200, 300, 400]
         assert merged["song_count"] == 4
         assert merged["complete_song_count"] == 4  # remote 2 + 2 local-only
@@ -467,7 +476,12 @@ class TestMergeManifestWithRemote:
         for sid in (100, 300):  # 100 also remote (pulled), 300 is new
             self._make_song(tmp_path, sid)
         local = build_corpus_manifest(tmp_path)
-        merged = merge_manifest_with_remote(local, self._remote([100, 200], 8), tmp_path)
+        merged = merge_manifest_with_remote(
+            local, self._remote([100, 200], 8), tmp_path,
+            prior_shards=[{"shard_id": "shard-000001", "version": 1,
+                           "song_ids": [100, 200]}])
+        assert merged["shards"][1] == {"shard_id": "shard-000002",
+                                       "version": 2, "song_ids": [300]}
         assert merged["song_ids"] == [100, 200, 300]
         assert merged["file_count"] == 8 + 4  # remote covers 100; only 300 adds files
         assert merged["complete_song_count"] == 3  # remote 2 + local-only 1

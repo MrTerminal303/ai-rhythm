@@ -627,6 +627,10 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
     # collapsed below the floor (1.56e-5) never lifts on its own; clamp once
     for _g in optimizer.param_groups:
         _g["lr"] = max(float(_g["lr"]), config.TRAIN_LR / 10)
+    # memory-vs-disk check: prints only if THIS module revision is active —
+    # a Kaggle rerun keeps sys.modules cached, silently training old code
+    print(f"run_real_training start: lr={optimizer.param_groups[0]['lr']:.2e} "
+          f"min_lrs={scheduler.min_lrs}")
 
     best_val = float("inf") if best_val is None else float(best_val)
     best_epoch = start_epoch if best_val != float("inf") else 0

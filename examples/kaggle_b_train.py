@@ -392,8 +392,8 @@ _lab = torch.cat([
 POS_WEIGHT = compute_pos_weight_candidate(_lab)
 print(f"pos_weight: derived from real train frames = {POS_WEIGHT:.1f} (seed was 36.4)")
 
-# --- resume (D-11): local latest_*.pt (manually web-downloaded, or written by
-# an earlier run in this session) OR the published checkpoint dataset —
+# --- resume (D-11): local best_*.pt (basin fix — resume at the best-val model,
+# not latest; latest fallback) OR the published checkpoint dataset —
 # attached Kaggle Dataset on Kaggle, Google Drive on Colab (review #9 B4/B5)
 if runtime.is_colab and runtime.drive_root:
     from google.colab import drive
@@ -415,8 +415,10 @@ STORE = CheckpointStore(
 start_epoch, global_step, resume_val = 0, 0, None
 # review #10 P0: glob returns candidates across local/Drive/attached ordered by
 # metadata — [-1] is highest global_step regardless of location, never a stale
-# local copy shadowing a newer Drive checkpoint
-resume_candidates = STORE.glob("latest_*.pt")
+# local copy shadowing a newer Drive checkpoint. best-first: sessions resuming
+# latest restarted at ~1.50 and no LR rung climbed back to best (1.207) —
+# restart from the best-val basin; latest only as fallback when best absent.
+resume_candidates = STORE.glob("best_*.pt") or STORE.glob("latest_*.pt")
 if not resume_candidates and os.environ.get("KAGGLE_USERNAME"):
     # D-11: Kaggle never auto-attaches datasets via CLI/hub — pull the published
     # checkpoint dataset explicitly. Best-effort: any failure → fresh start.
@@ -426,7 +428,7 @@ if not resume_candidates and os.environ.get("KAGGLE_USERNAME"):
              "-d", f"{os.environ['KAGGLE_USERNAME']}/{config.DATASET_HANDLE}",
              "-p", str(CKPT_DIR), "--unzip"],
             check=True, capture_output=True, text=True)
-        resume_candidates = STORE.glob("latest_*.pt")
+        resume_candidates = STORE.glob("best_*.pt") or STORE.glob("latest_*.pt")
         if resume_candidates:
             print(f"auto-pulled checkpoint dataset {config.DATASET_HANDLE}")
     except Exception as e:

@@ -552,6 +552,7 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
                       best_val: float | None = None,
                       on_epoch_end=None,
                       run_meta: dict | None = None,
+                      session_budget_s: float | None = None,
                       _val_fn=None) -> dict:
     """Phase 8 loop (package owns loop - notebook only chains it).
 
@@ -579,7 +580,11 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
 
     Returns {"history": [{"epoch", "train_loss", "val_loss", "val_frame_f", "pred_rate"}...],
              "best_epoch", "best_val_loss", "stopped_reason", "epoch_times", "global_step"}.
-    max_epochs=None means run until early stop/tripwire (caller passes epoch_cap(...) on Kaggle).
+    max_epochs=None means run until early stop/tripwire/session budget.
+    session_budget_s: wall-clock seconds from loop start; checked at each epoch
+    boundary — when exhausted, stop with stopped_reason="session_budget"
+    (Kaggle sessions must stop clean before the 12h kill, regardless of how
+    long an epoch actually takes).
 
     Resume extension (08-06, D-11): start_epoch/global_step seed numbering from a loaded
     ckpt (history starts empty); model/optimizer/scheduler accept the caller's loaded
@@ -620,7 +625,14 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
     # while (not for): max_epochs=None means run until early stop/tripwire (D-08);
     # epoch numbering continues from start_epoch on resume (08-06).
     epoch = start_epoch
+    session_start = time.time()
     while max_epochs is None or epoch < max_epochs:
+        # wall-clock session budget: checked at epoch boundary so the run
+        # stops clean (checkpoint already saved) before the platform kill
+        if session_budget_s is not None and time.time() - session_start >= session_budget_s:
+            halted = True
+            halt_reason = "session_budget"
+            break
         epoch += 1
         epoch_start = time.time()
 

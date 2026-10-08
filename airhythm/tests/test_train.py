@@ -357,7 +357,8 @@ class TestEarlyStop:
     """D-08: early stop after `patience` consecutive non-improving val losses."""
 
     @staticmethod
-    def _run(tmp_path, monkeypatch, losses, *, max_epochs, patience):
+    def _run(tmp_path, monkeypatch, losses, *, max_epochs, patience,
+             session_budget_s=None):
         monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
         seq = iter(losses)
         device = torch.device("cpu")
@@ -365,6 +366,7 @@ class TestEarlyStop:
         return run_real_training(
             data, data[:1], pos_weight=39.0, device=device,
             ckpt_dir=str(tmp_path), max_epochs=max_epochs, patience=patience,
+            session_budget_s=session_budget_s,
             _val_fn=lambda: next(seq),
         )
 
@@ -383,6 +385,15 @@ class TestEarlyStop:
         assert out["stopped_reason"] == "max_epochs"
         assert len(out["history"]) == 5
         assert out["best_epoch"] == 5
+
+    def test_session_budget_stops_when_max_epochs_none(self, tmp_path, monkeypatch):
+        # CELL 13 fast-exit regression: exhausted wall-clock budget must stop
+        # the run with stopped_reason "session_budget" even with max_epochs=None
+        # (budget exhausted before epoch 1 -> zero epochs, empty losses safe).
+        out = self._run(tmp_path, monkeypatch, [], max_epochs=None, patience=3,
+                        session_budget_s=0.0)
+        assert out["stopped_reason"] == "session_budget"
+        assert out["history"] == []
 
 
 class TestBestValLoss:

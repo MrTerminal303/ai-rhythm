@@ -305,7 +305,7 @@ from airhythm.kaggle_push import prune_old_checkpoints, wait_dataset_ready
 from airhythm.model import AIRhythmCRNN
 from airhythm.run_meta import build_run_meta, verify_resume_compat
 from airhythm.runtime import runtime
-from airhythm.train import (build_real_loaders, epoch_cap, load_checkpoint,
+from airhythm.train import (build_real_loaders, load_checkpoint,
                             median_epoch_time, resume_smoke_test, run_real_training)
 
 WORKING = runtime.scratch   # review #9: replace hard-coded Path("/kaggle/working")
@@ -482,7 +482,9 @@ def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
             # visible, but never kill a 12h run over a push: local ckpts still save
             print(f"PUSH FAILED at epoch={epoch} ({e}) — will retry next cadence")
 
-# --- train (D-08): fresh session epoch cap from measured time; resume runs until stop
+# --- train (D-08): wall-clock session budget — stop clean at SESSION_BUDGET_H
+# regardless of epoch duration (epoch-count caps mis-handle unknown epoch time:
+# seconds-vs-hours division made every session stop after EPOCH_CAP_FLOOR epochs).
 # review #6: 12h Kaggle session − ~1h margin — stop intentional, push clean,
 # resume next session (repeated-resume makes the old 45h budget moot).
 # review #7: cap EVERY session incl. resumed ones — otherwise resume runs
@@ -491,19 +493,18 @@ def maybe_push(epoch, epoch_times):  # wired as run_real_training on_epoch_end
 # (B6, no absolute paths), corpus pinned via A5 manifest, schema tagged
 RUN_META = build_run_meta(runtime.name, CORPUS_MANIFEST)
 SESSION_BUDGET_H = 11.0
-session_epochs = epoch_cap(median_epoch_time([600.0]), budget_h=SESSION_BUDGET_H)
 result = run_real_training(
     train_loader, val_loader, pos_weight=POS_WEIGHT, device=DEVICE,
     ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
     start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
-    max_epochs=start_epoch + session_epochs,
+    max_epochs=None, session_budget_s=SESSION_BUDGET_H * 3600,
     on_epoch_end=maybe_push, run_meta=RUN_META)
 print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
 
 # D-10: recompute display after run (median epoch times, epoch-1 warm-up discarded)
 if len(result["epoch_times"]) >= 2:
     print(f"push cadence checked at epoch {start_epoch + len(result['epoch_times'])}: "
-          f"median_epoch_h={median_epoch_time(result['epoch_times']):.3f}")
+          f"median_epoch_s={median_epoch_time(result['epoch_times']):.3f}")
 push_now()  # always push at clean session end (D-10)
 
 

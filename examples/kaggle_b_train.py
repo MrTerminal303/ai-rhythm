@@ -518,6 +518,13 @@ result = run_real_training(
     tripwire_grace=100,
     on_epoch_end=maybe_push, run_meta=RUN_META)
 print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
+# stop diagnostics: distinguish LR-death (val flat, lr collapsed) from
+# never-learned (best_epoch=1, pred~0) — CELL 13 stops were unexplainable
+print(f"  best_epoch={result['best_epoch']} history={len(result['history'])} "
+      f"lr={optimizer.param_groups[0]['lr']:.2e}")
+for h in result["history"][-12:]:
+    print(f"  ep{h['epoch']:>3} val={h['val_loss']:.4f} pred={h['pred_rate']:.4f} "
+          f"true={h['true_rate']:.4f}")
 
 # D-10: recompute display after run (median epoch times, epoch-1 warm-up discarded)
 if len(result["epoch_times"]) >= 2:

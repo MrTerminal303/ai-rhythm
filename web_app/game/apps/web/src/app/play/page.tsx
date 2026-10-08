@@ -197,6 +197,7 @@ export default function PlayPage() {
     // Guards every phase: only playing→pause and paused→resume; idle/loading/countdown ignored
     // so Escape can never abort the start or resume 3-2-1.
     const onEscape = (e: KeyboardEvent): void => {
+      if (e.repeat) return; // OS auto-repeat while held must not cycle pause↔resume
       if (e.key !== "Escape") return;
       if (phaseRef.current === "playing") pauseGame();
       else if (phaseRef.current === "paused") resumeGame();

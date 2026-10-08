@@ -24,6 +24,10 @@ async function startPlaying(page: Page): Promise<void> {
 for (const viewport of [
   { width: 800, height: 600 },
   { width: 320, height: 560 },
+  // re-review boundary probes: overlap holds while width <848 (keys) / <584 (pause button),
+  // so the reflow/pad classes must be active at exactly 847 and 583
+  { width: 847, height: 600 },
+  { width: 583, height: 600 },
 ]) {
   test(`F-08: HUD readouts never intersect D F J K indicators at ${viewport.width}x${viewport.height}`, async ({
     page,

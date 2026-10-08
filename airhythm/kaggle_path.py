@@ -167,11 +167,21 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
     ponytail: sequential scan stopping at first missing version — versions
     are immutable/append-only; revisit if a version is ever deleted."""
     def _have() -> int:
-        try:
-            return sum(1 for p in Path(dest_root).iterdir()
-                       if p.is_dir() and p.name.isdigit())
-        except FileNotFoundError:
-            return 0
+        """Manifest songs whose dir is live — NOT bare digit dirs: a stale
+        dir or a dead symlink (a prior version's mount swapped under the
+        same path) means the owning version was not fetched; counting it
+        let fill stop early and the disk guard then crashed on f.stat()
+        of the dead link (1311764/0008.npy)."""
+        live = 0
+        for sid in manifest["song_ids"]:
+            try:
+                entries = list((Path(dest_root) / str(sid)).iterdir())
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if entries and not any(e.is_symlink() and not e.exists()
+                                   for e in entries):
+                live += 1
+        return live
 
     target = int(manifest["song_count"])
     have = _have()

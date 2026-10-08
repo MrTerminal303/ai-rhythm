@@ -553,6 +553,7 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
                       on_epoch_end=None,
                       run_meta: dict | None = None,
                       session_budget_s: float | None = None,
+                      tripwire_grace: int = config.TRIPWIRE_GRACE_EPOCHS,
                       _val_fn=None) -> dict:
     """Phase 8 loop (package owns loop - notebook only chains it).
 
@@ -696,13 +697,13 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         })
 
         # tripwire check
-        if len(history) >= config.TRIPWIRE_GRACE_EPOCHS + 1:
+        if len(history) >= tripwire_grace + 1:
             tripwire_history = [
                 (h["pred_rate"], h["true_rate"]) for h in history
             ]
             halted, run = tripwire_breached(
                 tripwire_history,
-                grace=config.TRIPWIRE_GRACE_EPOCHS,
+                grace=tripwire_grace,
                 consecutive=config.TRIPWIRE_BREACH_N,
             )
             if halted:

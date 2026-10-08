@@ -530,6 +530,24 @@ class TestTripwireWiring:
         assert len(out["history"]) == 13
         assert out["best_epoch"] == 1
 
+    def test_tripwire_grace_param_overrides_config(self, tmp_path, monkeypatch):
+        # CELL 13: config grace 10 halted a fresh real-data run at ep13
+        # (pred_rate outside envelope while warming up) — tripwire_grace must
+        # delay counting: with grace 20 > max_epochs 20 the tripwire never fires.
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
+        monkeypatch.setattr("airhythm.train.predicted_positive_rate",
+                            lambda *a, **k: 0.9)
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(1, device=device)
+        out = run_real_training(
+            data, data, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=20, patience=100,
+            tripwire_grace=20,
+            _val_fn=lambda: 1.0,
+        )
+        assert out["stopped_reason"] == "max_epochs"
+        assert len(out["history"]) == 20
+
 
 class TestDeterminism:
     def test_same_seed_same_first_batch(self):

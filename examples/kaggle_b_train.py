@@ -396,6 +396,20 @@ start_epoch, global_step, resume_val = 0, 0, None
 # metadata — [-1] is highest global_step regardless of location, never a stale
 # local copy shadowing a newer Drive checkpoint
 resume_candidates = STORE.glob("latest_*.pt")
+if not resume_candidates and os.environ.get("KAGGLE_USERNAME"):
+    # D-11: Kaggle never auto-attaches datasets via CLI/hub — pull the published
+    # checkpoint dataset explicitly. Best-effort: any failure → fresh start.
+    try:
+        subprocess.run(
+            ["kaggle", "datasets", "download",
+             "-d", f"{os.environ['KAGGLE_USERNAME']}/{config.DATASET_HANDLE}",
+             "-p", str(CKPT_DIR), "--unzip"],
+            check=True, capture_output=True, text=True)
+        resume_candidates = STORE.glob("latest_*.pt")
+        if resume_candidates:
+            print(f"auto-pulled checkpoint dataset {config.DATASET_HANDLE}")
+    except Exception as e:
+        print(f"auto-pull skipped ({e})")
 if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 assert)
     ckpt = load_checkpoint(str(resume_candidates[-1]), model=model, optimizer=optimizer,
                            scheduler=scheduler, device=DEVICE)
@@ -498,6 +512,10 @@ result = run_real_training(
     ckpt_dir=str(CKPT_DIR), model=model, optimizer=optimizer, scheduler=scheduler,
     start_epoch=start_epoch, global_step=global_step, best_val=resume_val,
     max_epochs=None, session_budget_s=SESSION_BUDGET_H * 3600,
+    # real-data warmup: fresh model's pred_rate sits outside the degeneracy
+    # envelope for >10 epochs (toy-validated grace 10 halted fresh runs at
+    # ep13 — 3 breaches once the budget fix let training get there)
+    tripwire_grace=100,
     on_epoch_end=maybe_push, run_meta=RUN_META)
 print("stopped_reason:", result["stopped_reason"], "best_val:", result["best_val_loss"])
 

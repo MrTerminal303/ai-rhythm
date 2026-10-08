@@ -402,7 +402,9 @@ model = AIRhythmCRNN().to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
-    min_lr=config.TRAIN_LR / 10)  # floor: flat warmup collapsed lr to 1.56e-5 by ep32
+    min_lr=config.TRAIN_LR / 100)  # floor /100: /10 absorbed every scheduler
+    # reduction (lr pinned 1e-4 while val thrashed 1.28-1.65) — /100 lets the
+    # designed anneal 1e-4 → 1e-5 run; still never reaches degenerate 1e-6
 
 # copy-in semantics (review #5): hits outside CKPT_DIR are copied in first, so
 # push_now() publishing CKPT_DIR always contains whatever selection picked

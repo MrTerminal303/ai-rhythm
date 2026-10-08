@@ -552,7 +552,7 @@ class TestTripwireWiring:
 class TestSchedulerFloor:
     def test_passed_scheduler_min_lrs_refloored(self, tmp_path, monkeypatch):
         # old ckpts load min_lrs=[0] over the constructor floor — run_real_training
-        # must re-floor so flat-warmup val can never collapse lr below TRAIN_LR/10
+        # must re-floor so flat-warmup val can never collapse lr below TRAIN_LR/100
         monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
         device = torch.device("cpu")
         data, _ = build_metronome_data(1, device=device)
@@ -563,22 +563,23 @@ class TestSchedulerFloor:
             ckpt_dir=str(tmp_path), max_epochs=1, patience=100,
             scheduler=sch, _val_fn=lambda: 1.0,
         )
-        assert sch.min_lrs == [config.TRAIN_LR / 10]
+        assert sch.min_lrs == [config.TRAIN_LR / 100]
 
     def test_collapsed_resume_lr_lifted_to_floor(self, tmp_path, monkeypatch):
         # torch _reduce_lr only decreases (old_lr - new_lr > eps guard) — a ckpt
-        # collapsed to 1.56e-5 can never lift via scheduler.step; run start must clamp
+        # collapsed below the floor (e.g. 1.56e-6 < TRAIN_LR/100) can never lift
+        # via scheduler.step; run start must clamp
         monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
         device = torch.device("cpu")
         data, _ = build_metronome_data(1, device=device)
-        opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1.56e-5)
+        opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1.56e-6)
         sch = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, min_lr=0.0)
         run_real_training(
             data, data, pos_weight=39.0, device=device,
             ckpt_dir=str(tmp_path), max_epochs=1, patience=100,
             optimizer=opt, scheduler=sch, _val_fn=lambda: 1.0,
         )
-        assert opt.param_groups[0]["lr"] == config.TRAIN_LR / 10
+        assert opt.param_groups[0]["lr"] == config.TRAIN_LR / 100
 
 
 class TestDeterminism:

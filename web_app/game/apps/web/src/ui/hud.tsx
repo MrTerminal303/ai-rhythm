@@ -35,7 +35,10 @@ export function Hud({ snapshot, activeLanes }: { snapshot: GameSnapshot | null; 
 
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-2 p-4">
-      <div className="flex w-full max-w-[480px] items-baseline justify-between text-sm">
+      {/* F-08: below 848px the 480px row's right edge reaches the pinned key strip — keys
+          reflow into the column instead (see below); below 584px the row's left edge reaches
+          the top-left pause button, so pad it clear. 1920 (and every width ≥848) unchanged. */}
+      <div className="flex w-full max-w-[480px] items-baseline justify-between text-sm max-[583px]:pl-14">
         <span data-testid="score" className="text-xl" style={{ color: "var(--text)", fontFamily: "var(--font-mono)" }}>
           {score.toLocaleString("en-US")}
         </span>
@@ -51,7 +54,10 @@ export function Hud({ snapshot, activeLanes }: { snapshot: GameSnapshot | null; 
           {JUDGE_LABEL[popup]}
         </div>
       )}
-      <div className="absolute right-4 top-4 flex gap-2">
+      {/* F-08: pinned top-right only at ≥848px (the width where the centered row can no
+          longer reach it); below that the strip flows under COMBO — same anchor model,
+          different anchor, never overlapping the readouts at any width ≥320 */}
+      <div className="absolute right-4 top-4 flex gap-2 max-[847px]:static">
         {KEYS.map(([label, lane]) => (
           <span
             key={label}

@@ -193,6 +193,15 @@ export default function PlayPage() {
     const onResize = () => renderer.resize();
     window.addEventListener("resize", onResize);
     window.addEventListener("blur", pauseGame); // tab/window blur while playing → pause (T10)
+    // F-04: user-invokable pause. Its own listener — never routed through the lane key map.
+    // Guards every phase: only playing→pause and paused→resume; idle/loading/countdown ignored
+    // so Escape can never abort the start or resume 3-2-1.
+    const onEscape = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      if (phaseRef.current === "playing") pauseGame();
+      else if (phaseRef.current === "paused") resumeGame();
+    };
+    window.addEventListener("keydown", onEscape);
     const onVisibility = () => {
       if (document.visibilityState === "hidden") pauseGame();
     };
@@ -205,6 +214,7 @@ export default function PlayPage() {
       if (onKeyUpRef.current) window.removeEventListener("keyup", onKeyUpRef.current);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("blur", pauseGame);
+      window.removeEventListener("keydown", onEscape);
       document.removeEventListener("visibilitychange", onVisibility);
       for (const t of activeTimers.current) window.clearTimeout(t); // key-flash timers must not outlive the effect
       activeTimers.current.clear();
@@ -380,6 +390,23 @@ export default function PlayPage() {
     <main className="fixed inset-0" style={{ background: "var(--bg)" }}>
       <canvas ref={canvasRef} className="h-full w-full" data-testid="highway" />
       <Hud snapshot={snapshot} activeLanes={activeLanes} />
+      {/* F-04: visible pause control while playing — top-left, clear of the centered readouts
+          (they pad left below 584px, hud.tsx) and of the key strip (reflows below 848px) */}
+      {phase === "playing" && (
+        <button
+          type="button"
+          data-testid="pause-button"
+          aria-label="Pause"
+          onClick={pauseGame}
+          className="absolute left-4 top-4 flex h-9 w-9 cursor-pointer items-center justify-center rounded-[6px] border"
+          style={{ borderColor: "var(--line)", background: "var(--surface)" }}
+        >
+          <span aria-hidden className="flex gap-[3px]">
+            <span className="block h-3.5 w-[3px]" style={{ background: "var(--text-dim)" }} />
+            <span className="block h-3.5 w-[3px]" style={{ background: "var(--text-dim)" }} />
+          </span>
+        </button>
+      )}
       {deviceToast && (
         <div
           role="status"

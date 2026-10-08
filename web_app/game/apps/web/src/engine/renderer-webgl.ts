@@ -27,6 +27,17 @@ export function noteY(noteT: number, chartTimeMs: number, hitLineY: number, scro
   return hitLineY - (noteT - chartTimeMs) * scrollPxPerMs;
 }
 
+const HIT_FLASH_MS = 200; // hit flash fades out over 200 ms from the transition frame
+const MISS_FLASH_MS = 400; // missed flash fades out over 400 ms (the HUD MISS red read)
+
+/** linear fade of the hit/missed flash: 1 at the transition frame, 0 at the duration */
+export function flashAlpha(kind: "hit" | "missed", elapsedMs: number): number {
+  const duration = kind === "hit" ? HIT_FLASH_MS : MISS_FLASH_MS;
+  if (elapsedMs <= 0) return 1;
+  if (elapsedMs >= duration) return 0;
+  return 1 - elapsedMs / duration;
+}
+
 export class WebGLRenderer implements Renderer {
   private readonly gl: WebGL2RenderingContext;
   private readonly program: WebGLProgram;
@@ -56,6 +67,15 @@ export class WebGLRenderer implements Renderer {
   private disposed = false;
   /** test seam (W2 T22): cumulative gl.drawArrays calls per pipeline since construction */
   readonly drawCounts = { solid: 0, textured: 0 };
+  /** test seam: solid-batch vertex count left by the most recent render() */
+  get solidVertCount(): number { return this.vertCount; }
+  /** peak color of the hit flash — noteColor lightened toward white for punch */
+  private readonly hitFlashColor: readonly [number, number, number];
+  // W1→W2 deferral: per-note flash transition tracking — O(1) state allocated once in
+  // the ctor (chart length is known there); the rAF path never allocates
+  private readonly flashKind: Uint8Array; // 0 none/pending, 1 hit, 2 missed
+  private readonly flashStartedAt: Float64Array; // performance.now() at the transition
+  private readonly flashY: Float32Array; // y frozen at the transition frame (§flash position)
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -82,6 +102,17 @@ export class WebGLRenderer implements Renderer {
     // §6.1 tokens are the color source of truth: read --you once at construction
     // (canvas inherits it); fallback keeps rendering identical if the var is absent
     this.noteColor = hexToRgb(getComputedStyle(canvas).getPropertyValue("--you")) ?? NOTE_COLOR;
+    // hit flash peak: same accent lightened 35% toward white (bright pop at the hit line)
+    const nc = this.noteColor;
+    this.hitFlashColor = [
+      nc[0] + (1 - nc[0]) * 0.35,
+      nc[1] + (1 - nc[1]) * 0.35,
+      nc[2] + (1 - nc[2]) * 0.35,
+    ];
+    // flash state sized to the chart — one allocation at construction, O(1) per note after
+    this.flashKind = new Uint8Array(this.chart.notes.length);
+    this.flashStartedAt = new Float64Array(this.chart.notes.length);
+    this.flashY = new Float32Array(this.chart.notes.length);
     // textured pipeline (W2 T22): program + buffer sync like the solid path —
     // the atlas TEXTURE itself loads later via initAtlas (off the readiness path)
     this.texProgram = buildTextureProgram(gl);
@@ -135,7 +166,25 @@ export class WebGLRenderer implements Renderer {
     const atlas = this.atlasFrames;
     for (const [i, note] of this.chart.notes.entries()) {
       const state = noteStates[i];
-      if (state !== "pending") continue; // pooled: only pending/visible drawn
+      if (state === "hit" || state === "missed") {
+        // W1→W2 deferral landed: resolved notes flash at the y they had when their state
+        // changed (frozen — chartTime no longer moves them), then are culled at fade end
+        const kind = state === "hit" ? 1 : 2;
+        const now = performance.now();
+        if (this.flashKind[i] !== kind) {
+          this.flashKind[i] = kind;
+          this.flashStartedAt[i] = now;
+          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+        }
+        const a = flashAlpha(state, now - this.flashStartedAt[i]!);
+        if (a <= 0) continue; // fade complete — zero draws for this note from here on
+        const fy = this.flashY[i]!;
+        if (fy < -40 || fy > this.height + 40) continue;
+        const fc = state === "hit" ? this.hitFlashColor : MISS_FLASH_COLOR;
+        this.quad(this.laneX[note.lane]! + 4, fy - 14, this.laneW - 8, 28, fc[0], fc[1], fc[2], a);
+        continue;
+      }
+      if (state !== "pending") continue; // short noteStates array: undefined skipped as before
       const y = noteY(note.t, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
       if (y < -40 || y > this.height + 40) continue;
       const x = this.laneX[note.lane]!;
@@ -327,10 +376,13 @@ export class WebGLRenderer implements Renderer {
   }
 }
 
-// Only "pending" notes are ever drawn (see guard above); hit/missed flash colors deferred to W2.
+// Pending notes draw as before; hit/missed notes draw a fading flash (flashAlpha) at the
+// y frozen on their transition frame, culled once the fade completes.
 // Fallback for an absent/unparsable --you token — kept byte-equal to the §6.1 value
 // so the rendered color matches even when getComputedStyle cannot resolve the var
 const NOTE_COLOR: readonly [number, number, number] = [92 / 255, 225 / 255, 230 / 255]; // --you cyan #5CE1E6
+// missed flash — matches the HUD MISS red rgb(255, 92, 92)
+const MISS_FLASH_COLOR: readonly [number, number, number] = [1, 92 / 255, 92 / 255];
 
 function hexToRgb(raw: string): readonly [number, number, number] | null {
   const m = raw.trim().match(/^#([0-9a-fA-F]{6})$/);

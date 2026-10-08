@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Beatmap } from "@airhythm/shared";
 import { GameEngine } from "./engine.js";
 import { PerformanceClock } from "./clock.js";
-import { noteY, WebGLRenderer } from "./renderer-webgl.js";
+import { flashAlpha, noteY, WebGLRenderer } from "./renderer-webgl.js";
 import type { GameSnapshot, NoteState, Renderer } from "./types.js";
 
 const chart: Beatmap = {
@@ -256,6 +256,85 @@ describe("atlas-textured note path (W2 T22)", () => {
     renderer.render(1000, ["pending", "pending"]);
     expect(renderer.drawCounts.textured).toBe(0);
     expect(renderer.drawCounts.solid).toBeGreaterThan(0);
+    renderer.dispose();
+  });
+});
+
+// ---- W1→W2 deferral (plan line 2108 / renderer-webgl.ts:330): hit/missed flash ----
+
+describe("flashAlpha fade helper", () => {
+  it("starts at full alpha and reaches exactly 0 at the flash duration", () => {
+    expect(flashAlpha("hit", 0)).toBe(1);
+    expect(flashAlpha("hit", 200)).toBe(0); // hit flash: 200 ms
+    expect(flashAlpha("missed", 0)).toBe(1);
+    expect(flashAlpha("missed", 400)).toBe(0); // missed flash: 400 ms
+  });
+
+  it("decays monotonically over the whole fade", () => {
+    let prev = Number.POSITIVE_INFINITY;
+    for (let t = 0; t <= 200; t += 10) {
+      const a = flashAlpha("hit", t);
+      expect(a).toBeLessThanOrEqual(prev);
+      expect(a).toBeGreaterThanOrEqual(0);
+      expect(a).toBeLessThanOrEqual(1);
+      prev = a;
+    }
+    expect(flashAlpha("hit", 100)).toBeCloseTo(0.5); // linear midpoint
+  });
+
+  it("hit and missed use different durations (200 vs 400)", () => {
+    expect(flashAlpha("hit", 300)).toBe(0); // hit already gone
+    expect(flashAlpha("missed", 300)).toBeCloseTo(0.25); // missed still fading
+    expect(flashAlpha("missed", 150)).toBeCloseTo(0.625);
+    expect(flashAlpha("hit", 150)).toBeCloseTo(0.25);
+  });
+});
+
+describe("hit/missed note flash rendering (W1 deferral)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("hit note draws a flash into the solid batch: more solid verts than same chart pending", async () => {
+    stubAtlasFetch();
+    const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart);
+    expect(await renderer.initAtlas()).toBe(true);
+    renderer.render(1000, ["pending", "pending"]);
+    const pendingVerts = renderer.solidVertCount;
+    renderer.render(1000, ["hit", "pending"]);
+    expect(renderer.solidVertCount).toBeGreaterThan(pendingVerts);
+    renderer.dispose();
+  });
+
+  it("missed note likewise draws a flash: more solid verts than same chart pending", async () => {
+    stubAtlasFetch();
+    const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart);
+    expect(await renderer.initAtlas()).toBe(true);
+    renderer.render(1000, ["pending", "pending"]);
+    const pendingVerts = renderer.solidVertCount;
+    renderer.render(1000, ["missed", "pending"]);
+    expect(renderer.solidVertCount).toBeGreaterThan(pendingVerts);
+    renderer.dispose();
+  });
+
+  it("flash fades out and is culled: steady-state solid verts return to the pending baseline", async () => {
+    stubAtlasFetch();
+    const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart);
+    expect(await renderer.initAtlas()).toBe(true);
+    renderer.render(1000, ["pending", "pending"]);
+    const baseline = renderer.solidVertCount; // lanes/receptors/hit line only (atlas batched notes)
+    const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1000);
+    renderer.render(1000, ["hit", "missed"]); // transition frame → both flashes at full alpha
+    expect(renderer.solidVertCount).toBeGreaterThan(baseline);
+    nowSpy.mockReturnValue(1000 + 500); // past hit (200) and missed (400) durations
+    renderer.render(1000, ["hit", "missed"]);
+    expect(renderer.solidVertCount).toBe(baseline); // faded flashes culled — zero draws for them
+    nowSpy.mockRestore();
     renderer.dispose();
   });
 });

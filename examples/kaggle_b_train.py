@@ -369,6 +369,10 @@ assert _free_gb > _need_gb, (
 
 train_loader, val_loader, info = build_real_loaders(
     song_dirs, eval_ids=EVAL_IDS, search_id=SEARCH_ID,
+    # crops_per_song=1 (default) = 84 items = 10 steps/epoch — patience 10
+    # then caps a session at ~110 steps (dies before Adam can converge);
+    # plan allows scaling (08-01: "caller may scale"); 8 -> 84 steps/epoch
+    crops_per_song=8,
     num_workers=2, pin_memory=DEVICE.startswith("cuda"),  # Kaggle = 4 cores
     cache_root=str(WORKING / "full_cache"))  # read-only corpus (review #6)
 assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})

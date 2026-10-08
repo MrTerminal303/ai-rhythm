@@ -305,7 +305,8 @@ from airhythm.kaggle_push import prune_old_checkpoints, wait_dataset_ready
 from airhythm.model import AIRhythmCRNN
 from airhythm.run_meta import build_run_meta, verify_resume_compat
 from airhythm.runtime import runtime
-from airhythm.train import (build_real_loaders, load_checkpoint,
+from airhythm.train import (build_real_loaders, compute_pos_weight_candidate,
+                            load_checkpoint,
                             median_epoch_time, resume_smoke_test, run_real_training)
 
 WORKING = runtime.scratch   # review #9: replace hard-coded Path("/kaggle/working")
@@ -371,6 +372,13 @@ train_loader, val_loader, info = build_real_loaders(
     num_workers=2, pin_memory=DEVICE.startswith("cuda"),  # Kaggle = 4 cores
     cache_root=str(WORKING / "full_cache"))  # read-only corpus (review #6)
 assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {SEARCH_ID})
+
+# D-03 (2) real-data pos_weight re-derivation (deferred 08-CONTEXT, now active):
+# seed 36.4 = TOY pos_frac 2.7%, real corpus ~10% → correct ~9. pw 36.4 makes
+# loss-optimal pred ≈0.80 where truth is 0.10 — explains pred stuck HIGH + frozen val
+_lab = torch.cat([y for _, y in train_loader])
+POS_WEIGHT = compute_pos_weight_candidate(_lab)
+print(f"pos_weight: derived from real train frames = {POS_WEIGHT:.1f} (seed was 36.4)")
 
 # --- resume (D-11): local latest_*.pt (manually web-downloaded, or written by
 # an earlier run in this session) OR the published checkpoint dataset —

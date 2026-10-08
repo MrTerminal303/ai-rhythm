@@ -232,12 +232,17 @@ for bid in PINNED:
     assert files, f"frozen eval/search song {bid} preprocess failed"
     print(f"pinned {bid}: {len(files)} files")
 
-# n_songs = TOTAL target: resumes to 100 across reruns, prunes partial dirs;
-# the 6 pinned songs already complete count toward the target.
-# 08-07: exclude_ids = published manifest songs (CELL 2.5 probe) — a top-up
-# session downloads only what is NOT on the dataset yet; raise n_songs to grow
+# n_songs = local ∩ published + this session's batch (100). The old plain
+# 100 counted EVERY local dir, so a rerun with the previous 100 still on disk
+# hit the target and downloaded nothing ("already 100 — done"). Base on the
+# published overlap instead: rerun with 100 published+local → target 200 →
+# 100 entirely NEW ids; a fresh working dir or interrupted first run keeps the
+# old resume math (unpublished batch already on disk counts toward its 100).
+# exclude_ids keeps published ids out — the batch never re-downloads them.
+_saved_base = len((have if "have" in globals() else set())
+                  & (REMOTE_IDS if "REMOTE_IDS" in globals() else set()))
 saved = download_main(
-    output=DATA_DIR, n_songs=100,
+    output=DATA_DIR, n_songs=_saved_base + 100,
     exclude_ids=REMOTE_IDS if "REMOTE_IDS" in globals() else None)
 print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
 
@@ -324,11 +329,17 @@ from airhythm.kaggle_push import (build_corpus_manifest, merge_manifest_with_rem
 # review #7 P0: staging stays FLAT as song_<sid>__<file>; B/C rebuild
 # <sid>/<file> dirs as symlinks via kaggle_path.attach_corpus.
 CORPUS_ROOT = WORKING / "data" / "corpus_publish"
+shutil.rmtree(CORPUS_ROOT, ignore_errors=True)  # rerun: drop last batch's staged files, else the zip republishes them
 CORPUS_ROOT.mkdir(exist_ok=True)
 _src_root = WORKING / "data" / "minimal_dataset"
+# batch-only publish: songs already on the dataset stay in THEIR versions —
+# re-uploading them re-zips the whole corpus every session (the overflow the
+# version-shard design exists to avoid). Probe-miss → REMOTE_IDS empty →
+# stages everything, same as before the shard era.
+_remote_ids = REMOTE_IDS if "REMOTE_IDS" in globals() else set()
 n_files = 0
 for song_dir in sorted(_src_root.iterdir()):
-    if song_dir.is_dir() and song_dir.name.isdigit():
+    if song_dir.is_dir() and song_dir.name.isdigit() and int(song_dir.name) not in _remote_ids:
         for f in song_dir.iterdir():
             n_files += 1
             dst = CORPUS_ROOT / f"song_{song_dir.name}__{f.name}"

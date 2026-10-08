@@ -1,0 +1,101 @@
+{
+  "aggregate": {
+    "mean_F_filler": 0.4770442907239459,
+    "mean_F_important": 0.6568831564689932,
+    "mean_P_filler": 0.6384782656036178,
+    "mean_P_important": 0.6384782656036178,
+    "mean_R_filler": 0.4351555369204621,
+    "mean_R_important": 0.7372191641272983
+  },
+  "bucket_definition": "top-30% refs by oenv-at-frame, rank-based (ceil(0.3*n))",
+  "decision_ref": "D-10 (amended 2026-10-02), D-16, RESEARCH.md Section 3.1 option b",
+  "derivation_option": "b",
+  "eval_song_ids": [
+    "2255671",
+    "2256944",
+    "2516285",
+    "2527391",
+    "2589624"
+  ],
+  "fp_protocol": "global-one-to-one-match (SBOEP v1, Perplexity-reviewed)",
+  "normalize": "librosa x-min; /(max+tiny)",
+  "params": {
+    "delta": 0.02,
+    "post_avg": 15,
+    "post_max": 1,
+    "pre_avg": 15,
+    "pre_max": 3,
+    "wait": 3
+  },
+  "per_song": {
+    "2255671": {
+      "F_filler": 0.5299680587986524,
+      "F_important": 0.7473517195506763,
+      "P_filler": 0.846524064171123,
+      "P_important": 0.846524064171123,
+      "R_filler": 0.3857264231096007,
+      "R_important": 0.6689791873141725,
+      "cut_percentile": 1.0349214773811402,
+      "n_est": 1870,
+      "n_filler": 2354,
+      "n_important": 1009,
+      "n_ref": 3363
+    },
+    "2256944": {
+      "F_filler": 0.5514794164969401,
+      "F_important": 0.7574597934018658,
+      "P_filler": 0.6706231454005934,
+      "P_important": 0.6706231454005934,
+      "R_filler": 0.46828358208955223,
+      "R_important": 0.8701298701298701,
+      "cut_percentile": 1.2418058524932711,
+      "n_est": 674,
+      "n_filler": 536,
+      "n_important": 231,
+      "n_ref": 767
+    },
+    "2516285": {
+      "F_filler": 0.46227268473751526,
+      "F_important": 0.5312853120870282,
+      "P_filler": 0.39501039501039503,
+      "P_important": 0.39501039501039503,
+      "R_filler": 0.5571428571428572,
+      "R_important": 0.8111111111111111,
+      "cut_percentile": 1.642614267785102,
+      "n_est": 481,
+      "n_filler": 210,
+      "n_important": 90,
+      "n_ref": 300
+    },
+    "2527391": {
+      "F_filler": 0.5206471380692647,
+      "F_important": 0.5996486625939887,
+      "P_filler": 0.48367501898253606,
+      "P_important": 0.48367501898253606,
+      "R_filler": 0.5637393767705382,
+      "R_important": 0.7887788778877888,
+      "cut_percentile": 1.0044900111109019,
+      "n_est": 1317,
+      "n_filler": 706,
+      "n_important": 303,
+      "n_ref": 1009
+    },
+    "2589624": {
+      "F_filler": 0.32085415551735696,
+      "F_important": 0.6486702947114072,
+      "P_filler": 0.7965587044534413,
+      "P_important": 0.7965587044534413,
+      "R_filler": 0.20088544548976203,
+      "R_important": 0.5470967741935484,
+      "cut_percentile": 1.0670383157581091,
+      "n_est": 988,
+      "n_filler": 1807,
+      "n_important": 775,
+      "n_ref": 2582
+    }
+  },
+  "pinned_at": "2026-10-03T04:26:58.582110+00:00",
+  "search_set_ids": [
+    "2561773"
+  ]
+}

@@ -549,6 +549,23 @@ class TestTripwireWiring:
         assert len(out["history"]) == 20
 
 
+class TestSchedulerFloor:
+    def test_passed_scheduler_min_lrs_refloored(self, tmp_path, monkeypatch):
+        # old ckpts load min_lrs=[0] over the constructor floor — run_real_training
+        # must re-floor so flat-warmup val can never collapse lr below TRAIN_LR/10
+        monkeypatch.setattr("airhythm.train.train_epoch", lambda *a, **k: 0.5)
+        device = torch.device("cpu")
+        data, _ = build_metronome_data(1, device=device)
+        sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))]), min_lr=0.0)
+        run_real_training(
+            data, data, pos_weight=39.0, device=device,
+            ckpt_dir=str(tmp_path), max_epochs=1, patience=100,
+            scheduler=sch, _val_fn=lambda: 1.0,
+        )
+        assert sch.min_lrs == [config.TRAIN_LR / 10]
+
+
 class TestDeterminism:
     def test_same_seed_same_first_batch(self):
         dirs = sorted(p for p in Path("data/minimal_dataset").iterdir()

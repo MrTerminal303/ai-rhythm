@@ -613,7 +613,16 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min",
             patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
+            # flat warmup val + patience 3 collapsed lr to 1.56e-5 by ep32
+            # (model frozen, early_stop at every resume) — floor = TRAIN_LR/10
+            min_lr=config.TRAIN_LR / 10,
         )
+    else:
+        # load_state_dict is a raw __dict__ update: an old ckpt saved
+        # min_lrs=[0] overwrites the constructor floor — re-floor here so
+        # every real run is covered (next plateau step lifts lr to the floor)
+        scheduler.min_lrs = [max(float(m), config.TRAIN_LR / 10)
+                             for m in scheduler.min_lrs]
 
     best_val = float("inf") if best_val is None else float(best_val)
     best_epoch = start_epoch if best_val != float("inf") else 0

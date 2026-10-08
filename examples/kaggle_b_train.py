@@ -381,7 +381,8 @@ if runtime.is_colab and runtime.drive_root:
 model = AIRhythmCRNN().to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR)
+    optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
+    min_lr=config.TRAIN_LR / 10)  # floor: flat warmup collapsed lr to 1.56e-5 by ep32
 
 # copy-in semantics (review #5): hits outside CKPT_DIR are copied in first, so
 # push_now() publishing CKPT_DIR always contains whatever selection picked

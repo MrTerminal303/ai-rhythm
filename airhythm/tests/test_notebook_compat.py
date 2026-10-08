@@ -330,28 +330,52 @@ class TestVersionFill:
     rather than train on a subset that claims to be the full corpus."""
 
     @staticmethod
-    def _fake_kagglehub(monkeypatch, responses, calls, fail_first=0):
+    def _fake_kagglehub(monkeypatch, responses, calls, fail_first=0,
+                        manifests=None):
+        import json
         import sys
+        import tempfile
         import time
         import types
 
         monkeypatch.setattr(time, "sleep", lambda _s: None)  # fill retry loop
+        manifests = manifests or {}  # version -> song_ids for preflight fetches
 
         mod = types.ModuleType("kagglehub")
 
-        def dataset_download(handle):
-            calls.append(handle)
+        flapped = set()  # first call per (handle, path) stage — the intent is
+        # "one flap on preflight, one on the pull", not "two flaps wherever
+        # they land first" (a global counter burns both on the manifest stage)
+
+        def dataset_download(handle, path=None, **_kw):
+            calls.append((handle, path))
             nonlocal fail_first
-            if fail_first > 0:  # simulated mount flap while publish processes
+            if fail_first > 0 and (handle, path) not in flapped:
+                flapped.add((handle, path))
                 fail_first -= 1
                 raise RuntimeError("mount/unmount dataset: unknown error")
             v = int(handle.rsplit("/", 1)[1])
+            if path is not None:  # preflight: corpus_manifest.json only
+                if v not in manifests:
+                    raise ValueError(
+                        f"'{path}' is not present in the dataset files.")
+                d = Path(tempfile.mkdtemp())
+                (d / path).write_text(json.dumps({"song_ids": manifests[v]}))
+                return str(d / path)
             if v not in responses:
                 raise RuntimeError(f"404: no version {v}")
             return str(responses[v])
 
         mod.dataset_download = dataset_download
         monkeypatch.setitem(sys.modules, "kagglehub", mod)
+
+    @staticmethod
+    def _full_calls(calls):
+        return [h for h, p in calls if p is None]
+
+    @staticmethod
+    def _manifest_calls(calls):
+        return [h for h, p in calls if p is not None]
 
     def test_fill_retries_until_version_download_finishes(self, tmp_path, monkeypatch):
         from airhythm import config
@@ -367,7 +391,9 @@ class TestVersionFill:
         v1.mkdir()
         (v1 / "song_8__0000.npy").write_bytes(b"y")
         calls = []
-        self._fake_kagglehub(monkeypatch, {1: v1}, calls, fail_first=1)
+        # flap twice: once on the manifest preflight, once on the full pull
+        self._fake_kagglehub(monkeypatch, {1: v1}, calls, fail_first=2,
+                             manifests={1: [7, 8]})
 
         dest, _src = kaggle_path.ensure_corpus(
             tmp_path / "dest", input_root=str(tmp_path / "input"),
@@ -375,7 +401,11 @@ class TestVersionFill:
 
         assert (dest / "8" / "0000.npy").read_bytes() == b"y"
         # 08-07 CELL 13 bug: first mount failure killed the fill — now retried
-        assert calls == [f"user/{config.CORPUS_HANDLE}/versions/1"] * 2
+        # (both the manifest preflight fetch and the full version pull)
+        assert self._manifest_calls(calls) == \
+            [f"user/{config.CORPUS_HANDLE}/versions/1"] * 2
+        assert self._full_calls(calls) == \
+            [f"user/{config.CORPUS_HANDLE}/versions/1"] * 2
 
     def test_fill_pulls_versions_until_covered(self, tmp_path, monkeypatch):
         from airhythm import config
@@ -391,7 +421,8 @@ class TestVersionFill:
         v1.mkdir()
         (v1 / "song_8__0000.npy").write_bytes(b"y")  # older version holds the rest
         calls = []
-        self._fake_kagglehub(monkeypatch, {1: v1}, calls)
+        # preflight map: v1's manifest = full union → v1 adds both ids
+        self._fake_kagglehub(monkeypatch, {1: v1}, calls, manifests={1: [7, 8]})
 
         dest, _src = kaggle_path.ensure_corpus(
             tmp_path / "dest", input_root=str(tmp_path / "input"),
@@ -399,7 +430,44 @@ class TestVersionFill:
 
         assert (dest / "7" / "0000.npy").read_bytes() == b"x"
         assert (dest / "8" / "0000.npy").read_bytes() == b"y"
-        assert calls == [f"user/{config.CORPUS_HANDLE}/versions/1"]  # stops at target
+        # stops at target: exactly one full pull of the adding version
+        assert self._full_calls(calls) == [f"user/{config.CORPUS_HANDLE}/versions/1"]
+
+    def test_fill_map_skips_live_versions_and_pulls_missing(self, tmp_path, monkeypatch):
+        """user bug: fetcher re-pulled version 1 (already covered) and never
+        reached version 2's songs — preflight diff must say v1 adds nothing
+        live, v2 adds the missing id, and only v2 downloads."""
+        from airhythm import config
+        from airhythm import kaggle_path
+
+        monkeypatch.delenv("AIRHYTHM_DATA", raising=False)
+        monkeypatch.setenv("KAGGLE_USERNAME", "user")
+        flat = tmp_path / "input" / config.CORPUS_HANDLE
+        flat.mkdir(parents=True)
+        (flat / "song_7__0000.npy").write_bytes(b"x")
+        (flat / "song_8__0000.npy").write_bytes(b"y")  # attached has 7, 8
+        TestEnsureCorpus._write_manifest(flat, song_count=3)  # union = 7, 8, 9
+        v1, v2 = tmp_path / "v1", tmp_path / "v2"
+        v1.mkdir()
+        (v1 / "song_8__0000.npy").write_bytes(b"y")  # v1 batch: ids 7, 8 — all live
+        v2.mkdir()
+        (v2 / "song_9__0000.npy").write_bytes(b"z")  # v2 batch: id 9 — missing
+        calls = []
+        self._fake_kagglehub(
+            monkeypatch, {1: v1, 2: v2}, calls,
+            manifests={1: [7, 8], 2: [7, 8, 9]})  # cumulative union manifests
+
+        dest, _src = kaggle_path.ensure_corpus(
+            tmp_path / "dest", input_root=str(tmp_path / "input"),
+            download_handle=config.CORPUS_HANDLE)
+
+        assert (dest / "9" / "0000.npy").read_bytes() == b"z"
+        # v1 adds nothing live → skipped; only v2's full archive downloads
+        assert self._full_calls(calls) == \
+            [f"user/{config.CORPUS_HANDLE}/versions/2"]
+        assert self._manifest_calls(calls) == \
+            [f"user/{config.CORPUS_HANDLE}/versions/1",
+             f"user/{config.CORPUS_HANDLE}/versions/2"]
 
     def test_fill_raises_when_versions_exhausted(self, tmp_path, monkeypatch):
         from airhythm import config
@@ -415,7 +483,9 @@ class TestVersionFill:
         # production default _FILL_MAX_ATTEMPTS=0 waits forever — cap here so
         # the loud-stop path stays reachable under test
         monkeypatch.setattr(kaggle_path, "_FILL_MAX_ATTEMPTS", 3)
-        self._fake_kagglehub(monkeypatch, {}, calls)  # every version 404s
+        # no manifests: preflight gives up after 3 manifest-less versions,
+        # falls back to blind fill, which then hits the same 404 wall
+        self._fake_kagglehub(monkeypatch, {}, calls)
 
         with pytest.raises(RuntimeError, match="corpus incomplete"):
             kaggle_path.ensure_corpus(

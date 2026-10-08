@@ -156,32 +156,99 @@ def _expand_handle(handle: str) -> str:
     return f"{owner}/{handle}"
 
 
+def _song_live(dest_root, sid) -> bool:
+    """Song dir present, non-empty, zero dangling symlinks — a dead link
+    means a stale mount swapped files out from under it, so the owning
+    version still needs pulling (1311764/0008.npy crash)."""
+    try:
+        entries = list((Path(dest_root) / str(sid)).iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return bool(entries) and not any(
+        e.is_symlink() and not e.exists() for e in entries)
+
+
+def _version_id_map(full, song_ids) -> dict[int, list[int]] | None:
+    """Preflight: download ONLY each version's corpus_manifest.json (one
+    small file — lazy mount read; http fetches the single file, not the
+    archive) and record which ids the version ADDS (first appearance
+    scanning 1, 2, ... — works for both batch and union manifests).
+    Returns {version: added_ids} once the union covers `song_ids`; None
+    (printed reason) after 3 consecutive manifest-less versions — caller
+    falls back to blind sequential fill, never trusting a partial map.
+    ponytail: extra ids beyond song_ids are printed, not fatal — a stale
+    manifest field must not block training on ids that do exist."""
+    import kagglehub
+
+    target, seen, add_map, empty = set(song_ids), set(), {}, 0
+    for v in range(1, 10_000):
+        ids = None
+        delay, attempt, last = 15, 0, None
+        while _FILL_MAX_ATTEMPTS == 0 or attempt < _FILL_MAX_ATTEMPTS:
+            attempt += 1
+            try:
+                p = Path(kagglehub.dataset_download(
+                    f"{full}/versions/{v}", path="corpus_manifest.json"))
+                ids = set(json.loads(p.read_text())["song_ids"])
+                break
+            except ValueError as e:
+                if "not present" in str(e):  # version ships no manifest
+                    break
+                last = e
+            except FileNotFoundError:  # http archive lacks the member
+                break
+            except KeyError as e:
+                if "song_ids" in str(e):  # malformed manifest — loud, not None
+                    raise
+                break  # zipfile has no such member
+            except Exception as e:
+                last = e
+            print(f"corpus check: version {v} manifest not ready "
+                  f"(attempt {attempt}): {last} — retry in {delay}s", flush=True)
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+        else:  # capped attempts exhausted (tests) — behave like no manifest
+            ids = None
+        if ids is None:
+            empty += 1
+            add_map[v] = []
+            print(f"corpus check: version {v} has no manifest "
+                  f"({empty} consecutive) — union "
+                  f"{len(seen & target)}/{len(target)}", flush=True)
+            if empty >= 3:
+                print("corpus check: 3 manifest-less versions in a row — "
+                      "falling back to blind sequential fill", flush=True)
+                return None
+            continue
+        empty = 0
+        added = sorted(ids - seen)
+        seen |= ids
+        add_map[v] = added
+        print(f"corpus check: version {v} adds {len(added)} songs "
+              f"{added[:3]} — union {len(seen & target)}/{len(target)}",
+              flush=True)
+        if target <= seen:
+            extra = sorted(seen - target)
+            if extra:
+                print(f"corpus check: ids in versions but not in manifest "
+                      f"(ignored): {extra[:10]}", flush=True)
+            return add_map
+    return None
+
+
 def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
     """Version-shard corpus (08-07): each Kaggle version holds ONE batch of
     new songs + the union manifest — an attached/CLI source is only the
     LATEST shard, so cover the rest via kagglehub owner/handle/versions/N
     (shared resource cache inside Kaggle notebooks = zero VM disk; ~/.cache
-    elsewhere). Fills dest symlinks until song dirs meet manifest song_count;
-    raises if versions run out first — an under-filled tree would silently
-    train on a subset while claiming the full corpus.
+    elsewhere). Preflights with manifest-only fetches (_version_id_map) so
+    fill pulls exactly the versions that add songs and skips ids already
+    live; raises if versions run out first — an under-filled tree would
+    silently train on a subset while claiming the full corpus.
     ponytail: sequential scan stopping at first missing version — versions
     are immutable/append-only; revisit if a version is ever deleted."""
     def _have() -> int:
-        """Manifest songs whose dir is live — NOT bare digit dirs: a stale
-        dir or a dead symlink (a prior version's mount swapped under the
-        same path) means the owning version was not fetched; counting it
-        let fill stop early and the disk guard then crashed on f.stat()
-        of the dead link (1311764/0008.npy)."""
-        live = 0
-        for sid in manifest["song_ids"]:
-            try:
-                entries = list((Path(dest_root) / str(sid)).iterdir())
-            except (FileNotFoundError, NotADirectoryError):
-                continue
-            if entries and not any(e.is_symlink() and not e.exists()
-                                   for e in entries):
-                live += 1
-        return live
+        return sum(_song_live(dest_root, sid) for sid in manifest["song_ids"])
 
     target = int(manifest["song_count"])
     have = _have()
@@ -194,9 +261,17 @@ def _fill_missing_versions(dest_root, handle: str, manifest: dict) -> None:
             f"corpus incomplete ({have}/{target}) and kagglehub unavailable "
             f"for version fill — pip install kagglehub ({e})") from e
     full = _expand_handle(handle)
-    for v in range(1, 10_000):
+    add_map = _version_id_map(full, manifest["song_ids"])
+    versions = ([v for v, a in sorted(add_map.items()) if a]
+                if add_map is not None else list(range(1, 10_000)))
+    for v in versions:
         if have >= target:
             break
+        if add_map is not None and all(
+                _song_live(dest_root, s) for s in add_map[v]):
+            print(f"corpus fill: version {v} songs already live — skipping",
+                  flush=True)
+            continue
         # flush: a version pull can take minutes on a cold cache — without
         # this the cell looks dead ("just stopped") while kagglehub downloads
         print(f"corpus fill: {have}/{target} songs — pulling version {v} ...",

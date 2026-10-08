@@ -613,22 +613,23 @@ def run_real_training(train_data, val_data, *, pos_weight: float, device,
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min",
             patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
-            # floor = TRAIN_LR/100: at /100-10 the floor itself absorbed every
-            # ×0.5 reduction (1e-4 × 0.5 < 1e-4 → no-op) — scheduler neutered,
-            # lr pinned 1e-4 while val thrashed 1.28-1.65 over 4200 steps;
-            # /100 re-enables the designed anneal 1e-4 → 1e-5
-            min_lr=config.TRAIN_LR / 100,
+            # floor = TRAIN_LR/1000 (1e-6): /10-100 floors absorbed every ×0.5
+            # reduction (neutered scheduler, lr pinned while val thrashed) and
+            # ckpts carried their revision's stale bound — 1e-6 sits below every
+            # LR-experiment step (5e-5 → 1e-5 ladder) so the bound never blocks
+            min_lr=config.TRAIN_LR / 1000,
         )
     else:
-        # load_state_dict is a raw __dict__ update: an old ckpt saved
-        # min_lrs=[0] overwrites the constructor floor — re-floor here so
-        # every real run is covered
-        scheduler.min_lrs = [max(float(m), config.TRAIN_LR / 100)
-                             for m in scheduler.min_lrs]
+        # load_state_dict is a raw __dict__ update: ckpts carry the floor OF
+        # THEIR REVISION — [0] pre-floor era, [1e-4] TRAIN_LR/10 era. max()
+        # could only lift; a stale HIGHER bound survived and kept the scheduler
+        # neutered (live log: min_lrs=[0.0001] after /100 deploy).
+        # Config is authority — force the current floor
+        scheduler.min_lrs = [config.TRAIN_LR / 1000] * len(scheduler.min_lrs)
     # torch _reduce_lr only DECREASES (old_lr - new_lr > eps guard) — a ckpt
-    # collapsed below the floor (1.56e-5) never lifts on its own; clamp once
+    # collapsed below the floor never lifts on its own; clamp once
     for _g in optimizer.param_groups:
-        _g["lr"] = max(float(_g["lr"]), config.TRAIN_LR / 100)
+        _g["lr"] = max(float(_g["lr"]), config.TRAIN_LR / 1000)
     # memory-vs-disk check: prints only if THIS module revision is active —
     # a Kaggle rerun keeps sys.modules cached, silently training old code
     print(f"run_real_training start: lr={optimizer.param_groups[0]['lr']:.2e} "

@@ -402,9 +402,7 @@ model = AIRhythmCRNN().to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.TRAIN_LR, weight_decay=config.TRAIN_WD)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode="min", patience=config.SCHED_PATIENCE, factor=config.SCHED_FACTOR,
-    min_lr=config.TRAIN_LR / 100)  # floor /100: /10 absorbed every scheduler
-    # reduction (lr pinned 1e-4 while val thrashed 1.28-1.65) — /100 lets the
-    # designed anneal 1e-4 → 1e-5 run; still never reaches degenerate 1e-6
+    min_lr=config.TRAIN_LR / 1000)  # floor 1e-6 — below every LR-experiment step
 
 # copy-in semantics (review #5): hits outside CKPT_DIR are copied in first, so
 # push_now() publishing CKPT_DIR always contains whatever selection picked
@@ -452,6 +450,14 @@ if resume_candidates:  # load prints "resume: epoch=... global_step=..." (D-11 a
     print(f"RESUMED at epoch={start_epoch} global_step={global_step}")
 else:
     print("no local checkpoint — fresh start")
+
+# LR experiment (user protocol — ONLY variable that changes): force start lr
+# every session; floor 1e-6 keeps the scheduler bound below the whole ladder
+# (5e-5 → 2.5e-5 → 1e-5). Frozen: arch, pos_weight, data, split, batch,
+# crops, patience, AdamW. Verify via run_real_training start print.
+LR_TRIAL = 5e-5
+for _g in optimizer.param_groups:
+    _g["lr"] = LR_TRIAL
 
 # --- time-based checkpoint push (D-09: 1 latest + 1 best; D-10: ~30min cadence)
 PUSH_INTERVAL_S = 1800  # PLAN.md default ~30min

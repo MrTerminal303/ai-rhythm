@@ -221,6 +221,24 @@ class TestGateMath:
         out = capsys.readouterr().out
         assert "per-song delta" in out  # D-02 evidence printed every run
 
+    def test_int_song_ids(self, tmp_path):
+        """JSON per_song keys are str; real song_ids are int (2255671) — KeyError without str() norm."""
+        songs = [dict(_song(i, k), song_id=1000 + i)
+                 for i, k in enumerate(self.MODEL_A)]
+        pin = {
+            "aggregate": {"mean_F_important": 0.50},
+            "per_song": {str(1000 + i): {"F_important": f}
+                         for i, f in enumerate([0.4, 0.4, 0.45, 0.35, 0.6])},
+            "eval_song_ids": list(range(1000, 1005)),
+        }
+        p = tmp_path / "pins.json"
+        p.write_text(json.dumps(pin))
+        from airhythm.salience_eval import run_salience_gate
+
+        res = run_salience_gate(songs, pin_path=str(p))
+        assert res["pass"] is True
+        assert res["wins"] == 4
+
     def test_teeth_margin_only_fail(self, tmp_path, song_a):
         """mean 0.55 > bar but wins 2/5 -> FAIL (D-02 has teeth)."""
         pin = _write_pin(tmp_path, 0.50, [0.5, 0.5, 0.9, 0.9, 0.9])

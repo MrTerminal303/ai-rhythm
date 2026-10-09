@@ -139,6 +139,9 @@ def run_salience_gate(
     bucket per cut, predicted positive rate) and returned; never raises on fail —
     caller prints/asserts/halts.
     """
+    # JSON per_song keys are str; real song_ids are int (2255671) — KeyError
+    # on base_f[s["song_id"]] without this (unit tests used str ids only)
+    song_evals = [dict(s, song_id=str(s["song_id"])) for s in song_evals]
     # default = package-shipped pins: CWD-relative "data/eval_pins.json" never
     # resolved on Kaggle (CWD=/kaggle/working) — FileNotFoundError at gate time
     if pin_path is None:

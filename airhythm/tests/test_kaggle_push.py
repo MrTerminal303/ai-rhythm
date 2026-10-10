@@ -13,6 +13,7 @@ from airhythm.kaggle_push import (
     create_dataset_structure,
     estimate_storage_size,
     prune_old_checkpoints,
+    push_dataset,
     save_eval_song_ids,
 )
 
@@ -485,3 +486,63 @@ class TestMergeManifestWithRemote:
         assert merged["song_ids"] == [100, 200, 300]
         assert merged["file_count"] == 8 + 4  # remote covers 100; only 300 adds files
         assert merged["complete_song_count"] == 3  # remote 2 + local-only 1
+
+
+class TestPushDatasetHandle:
+    """09-02 Kaggle evidence: kagglehub needs owner/slug, not the bare slug."""
+
+    def test_default_handle_expanded_with_owner(self, tmp_path, monkeypatch):
+        """Bare DATASET_HANDLE default -> KAGGLE_USERNAME/slug at upload."""
+        import sys
+        import types
+
+        from airhythm import config
+
+        seen = {}
+        fake = types.ModuleType("kagglehub")
+
+        def fake_upload(handle, local_dir, **kwargs):
+            seen["handle"] = handle
+            return None
+
+        fake.dataset_upload = fake_upload
+        monkeypatch.setitem(sys.modules, "kagglehub", fake)
+        monkeypatch.setenv("KAGGLE_USERNAME", "someuser")
+
+        assert push_dataset(str(tmp_path), "notes") is True
+        assert seen["handle"] == f"someuser/{config.DATASET_HANDLE}"
+
+    def test_full_handle_passes_through(self, tmp_path, monkeypatch):
+        """Explicit owner/slug handle is NOT double-prefixed."""
+        import sys
+        import types
+
+        seen = {}
+        fake = types.ModuleType("kagglehub")
+
+        def fake_upload(handle, local_dir, **kwargs):
+            seen["handle"] = handle
+            return None
+
+        fake.dataset_upload = fake_upload
+        monkeypatch.setitem(sys.modules, "kagglehub", fake)
+        monkeypatch.setenv("KAGGLE_USERNAME", "someuser")
+
+        assert push_dataset(str(tmp_path), "notes",
+                            handle="other/some-data") is True
+        assert seen["handle"] == "other/some-data"
+
+    def test_bare_handle_without_owner_fails_cleanly(self, tmp_path, monkeypatch):
+        """No KAGGLE_USERNAME + bare slug -> False (not an upload crash)."""
+        import sys
+        import types
+
+        fake = types.ModuleType("kagglehub")
+        fake.dataset_upload = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not reach upload"))
+        monkeypatch.setitem(sys.modules, "kagglehub", fake)
+        monkeypatch.delenv("KAGGLE_USERNAME", raising=False)
+        monkeypatch.setattr("pathlib.Path.home",
+                            lambda: tmp_path / "no-kaggle-json-here")
+
+        assert push_dataset(str(tmp_path), "notes") is False

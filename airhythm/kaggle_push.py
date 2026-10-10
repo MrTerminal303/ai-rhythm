@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from airhythm import config
+from airhythm.kaggle_path import _expand_handle
 
 __all__ = [
     "create_dataset_structure",
@@ -192,6 +193,13 @@ def push_dataset(
     """
     if handle is None:
         handle = config.DATASET_HANDLE
+    # kagglehub needs owner/slug; config holds the bare slug (CLI callers
+    # prepend KAGGLE_USERNAME themselves). Full handles pass through.
+    try:
+        handle = _expand_handle(handle)
+    except ValueError as e:
+        logger.error("Dataset upload failed: %s", e)
+        return False
 
     # Check size before upload
     size_info = estimate_storage_size(local_dir)

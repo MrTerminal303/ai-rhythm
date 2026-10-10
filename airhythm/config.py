@@ -122,6 +122,15 @@ BOOTSTRAP_SEED = 0           # reproducible CI
 MERGE_TOL_S = 0.05           # eval tolerance: cluster-merge est times within this (same as match window)
 
 
+# ONNX export + parity (Phase 9: EXP-01)
+ONNX_TOL = 1e-4                      # parity bar: max(abs(torch - onnx)) < ONNX_TOL
+ONNX_OPSET = 14                      # TorchScript path opset (ORT >=1.8 compat)
+ONNX_ARTIFACT_NAME = "onnx/stage1_best.onnx"          # D-04 stage-tagged Dataset path
+ONNX_FIXED400_NAME = "onnx/stage1_best_fixed400.onnx" # D-03 fallback artifact
+ONNX_DYNAMO_MIN = (2, 11)            # STATE decision #8 (PR #169710) — NOT the outdated 2.14
+ONNX_FLOOR_PINS = ("onnx>=1.16", "onnxscript>=0.1", "onnxruntime>=1.20")
+
+
 def print_config() -> None:
     """Log all config constants — used as first notebook cell per I1."""
     import sys
@@ -208,5 +217,11 @@ __all__: List[str] = [
     "BOOTSTRAP_N",
     "BOOTSTRAP_SEED",
     "MERGE_TOL_S",
+    "ONNX_TOL",
+    "ONNX_OPSET",
+    "ONNX_ARTIFACT_NAME",
+    "ONNX_FIXED400_NAME",
+    "ONNX_DYNAMO_MIN",
+    "ONNX_FLOOR_PINS",
     "print_config",
 ]

@@ -220,6 +220,8 @@ class TestGateMath:
         assert lo < hi
         out = capsys.readouterr().out
         assert "per-song delta" in out  # D-02 evidence printed every run
+        assert "per-song P/R per bucket:" in out  # EVL-03 rows print on PASS too
+        assert "P_imp=" in out
 
     def test_int_song_ids(self, tmp_path):
         """JSON per_song keys are str; real song_ids are int (2255671) — KeyError without str() norm."""

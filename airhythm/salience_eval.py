@@ -135,9 +135,10 @@ def run_salience_gate(
     Sensitivity: pass/fail ALSO computed at 0.2 and 0.5 (report-only); pass@0.3 and
     fail BOTH 0.2 and 0.5 -> flag "fragile win — cut-dependent" (print only, does
     NOT change pass — D-01: no auto-block on the flag alone).
-    D-03 fail contract: pass=False -> diagnostics printed (per-song deltas, P/R per
-    bucket per cut, predicted positive rate) and returned; never raises on fail —
-    caller prints/asserts/halts.
+    D-03 fail contract: pass=False -> diagnostics printed and returned; never raises
+    on fail — caller prints/asserts/halts.
+    EVL-03: per-song P/R per bucket at every cut prints on EVERY run (PASS too —
+    review gap: was FAIL-branch-only, must_haves truth 4 needs the rows on PASS).
     """
     # JSON per_song keys are str; real song_ids are int (2255671) — KeyError
     # on base_f[s["song_id"]] without this (unit tests used str ids only)
@@ -207,18 +208,22 @@ def run_salience_gate(
             "cuts": {cut: per_cut[cut][i] for cut in config.REPORT_CUTS},
         }
 
+    # EVL-03: per-song P/R per bucket at every cut — printed on PASS too
+    # (was FAIL-branch-only; must_haves truth 4 needs the rows on PASS)
+    print("per-song P/R per bucket:")
+    for cut in config.REPORT_CUTS:
+        for s, b in zip(song_evals, per_cut[cut]):
+            print(
+                f"  {s['song_id']} cut={cut}: "
+                f"P_imp={b['P_important']:.4f} R_imp={b['R_important']:.4f} "
+                f"P_fill={b['P_filler']:.4f} R_fill={b['R_filler']:.4f} "
+                f"ppr={s.get('pred_positive_rate')}"
+            )
+
     if not pass_flag:
         # D-03: halt + diagnose is the caller's job; we never raise, never stay silent
         print("GATE FAIL")
         print(f"  bar={bar:.4f} mean_F_important@0.3={mean_F:.4f} wins={wins} (min {min_wins})")
-        for cut in config.REPORT_CUTS:
-            for s, b in zip(song_evals, per_cut[cut]):
-                print(
-                    f"  {s['song_id']} cut={cut}: "
-                    f"P_imp={b['P_important']:.4f} R_imp={b['R_important']:.4f} "
-                    f"P_fill={b['P_filler']:.4f} R_fill={b['R_filler']:.4f} "
-                    f"ppr={s.get('pred_positive_rate')}"
-                )
 
     return {
         "pass": pass_flag,

@@ -57,6 +57,35 @@ def test_export_returns_dynamo_or_torchscript(model, tmp_path):
     assert out.stat().st_size > 0
 
 
+def test_dynamo_dynamic_shapes_use_axis_index_keys(model, tmp_path, monkeypatch):
+    """09-02 regression: dynamic_shapes tuple form keys per-arg spec by AXIS
+    INDEX ({0: ..., 3: ...}); {"mel": {...}} nesting is the TorchScript
+    dynamic_axes API and makes torch.export read "mel" as a dimension."""
+    import torch.export
+
+    seen = {}
+    real_export = torch.onnx.export
+
+    def spy(*a, **k):
+        if k.get("dynamo") is True:
+            seen["shapes"] = k.get("dynamic_shapes")
+        return real_export(*a, **k)
+
+    monkeypatch.setattr(torch.onnx, "export", spy)
+    # torch 2.13 local: no Dim constraint with min= breaks dynamo guard here,
+    # so only assert the SHAPE STRUCTURE passed — never the export label.
+    monkeypatch.setattr(torch.export, "Dim", lambda *a, **k: a[0] if a else None)
+    out = tmp_path / "m.onnx"
+    try:
+        export_model(model, out)
+    except Exception:
+        pass  # export success irrelevant — structure assertion below is the test
+    assert seen, "dynamo path was not attempted — version gate or API changed"
+    shapes = seen["shapes"]
+    assert isinstance(shapes, tuple) and len(shapes) == 1
+    assert set(shapes[0].keys()) == {0, 3}, f"axis-index keys required, got {shapes!r}"
+
+
 def test_parity_all_lengths(model, tmp_path, capsys):
     out = tmp_path / "dyn.onnx"
     export_model(model, out)

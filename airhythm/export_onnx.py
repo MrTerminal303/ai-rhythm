@@ -39,7 +39,11 @@ def export_model(model, out_path, *, dynamic: bool = True) -> str:
             prog = torch.onnx.export(
                 model, (example,),
                 input_names=["mel"], output_names=["logits"],
-                dynamo=True, dynamic_shapes=({"mel": {0: batch_dim, 3: time_dim}},),
+                # tuple form: per-arg spec keyed by AXIS INDEX (name-agnostic).
+                # {"mel": {...}} nesting is the TorchScript dynamic_axes API —
+                # leaving this out avoids the name-being-read-as-dimension bug
+                # that caused the Kaggle error.
+                dynamo=True, dynamic_shapes=({0: batch_dim, 3: time_dim},),
             )
             prog.save(str(out_path))  # NEVER f= on dynamo path
             return "dynamo"

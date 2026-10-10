@@ -313,3 +313,114 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
     "run_meta": ckpt.get("meta"),
 }, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
 print(f"results: {OUT_DIR / 'metrics.json'}")
+
+# %% ============================================================
+# CELL 16: ONNX export + parity verify (Phase 9) — EXP-01
+# =============================================================
+import importlib.util, subprocess, sys
+for _p, _m in [("onnx", "onnx"), ("onnxscript", "onnxscript"), ("onnxruntime", "onnxruntime")]:
+    if importlib.util.find_spec(_m) is None:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", _p])
+
+import onnx, onnxruntime as ort, onnxscript, torch
+import numpy as np
+from pathlib import Path
+from airhythm import config
+from airhythm.export_onnx import export_model, verify_parity, torch_ge
+_dyn_ok = torch_ge(torch.__version__, *config.ONNX_DYNAMO_MIN)
+print(f"torch={torch.__version__} onnx={onnx.__version__} onnxruntime={ort.__version__} onnxscript={onnxscript.__version__}")
+print(f"available providers: {ort.get_available_providers()}")
+_op = ">=" if _dyn_ok else "<"
+_dyn_msg = "try dynamo=True then fallback" if _dyn_ok else "TorchScript only"
+print(f"branch: torch {_op} 2.11 -> {_dyn_msg}")
+
+from airhythm.runtime import runtime
+from airhythm.checkpoint_store import CheckpointStore
+from airhythm.kaggle_path import ensure_corpus, find_attached_input
+from airhythm.model import AIRhythmCRNN
+if "WORKING" not in globals():
+    WORKING = runtime.scratch
+if "DATA_ROOT" not in globals():
+    DATA_ROOT, _ = ensure_corpus(WORKING / "data" / "minimal_dataset", download_handle=config.CORPUS_HANDLE)
+store = CheckpointStore(WORKING / config.CHECKPOINTS_DIR, attached_dir=find_attached_input(config.DATASET_HANDLE), drive_dir=runtime.drive_checkpoints)
+best = store.glob("best_*.pt")
+ckpt = torch.load(best[-1], map_location="cpu", weights_only=False)
+model = AIRhythmCRNN()
+model.load_state_dict(ckpt["model"])
+model.eval()
+print(f"export checkpoint: {best[-1].name} epoch={ckpt['epoch']}")
+
+OUT_DIR = WORKING / "onnx"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+out_path = OUT_DIR / "stage1_best.onnx"
+try:
+    path_label = export_model(model, out_path)
+except Exception as e:
+    path_label = "FAILED"
+    print(f"EXPORT FAILED: {type(e).__name__}: {e}")
+print(f"EXPORT PATH: {path_label} -> {out_path}")
+
+sess = ort.InferenceSession(str(out_path), providers=["CPUExecutionProvider"])
+assert sess.get_providers() == ["CPUExecutionProvider"], f"silent EP downgrade: {sess.get_providers()}"
+print(f"verify providers: {sess.get_providers()}")
+
+_len_results = {}
+for T in (400, 250, 300):
+    x = torch.randn(1, 1, 128, T)
+    _len_results[T] = verify_parity(model, sess, x)
+print(f"LENGTHS 400/250/300: {'PASS' if all(_len_results.values()) else 'FAIL'} {_len_results}")
+
+from airhythm.datasets import build_full_song_cache
+CUSTOM_SONG_PATH = None
+_song_dirs = [DATA_ROOT / "2561773"]
+if CUSTOM_SONG_PATH:
+    _song_dirs.append(Path(CUSTOM_SONG_PATH))
+else:
+    print("custom song: SKIPPED (CUSTOM_SONG_PATH not set)")
+_whole_results = {}
+for sdir in _song_dirs:
+    try:
+        spec_path, _ = build_full_song_cache(sdir, cache_root=WORKING / "full_cache")
+        spec = np.load(spec_path)
+        if spec.ndim == 3:
+            spec = spec[np.newaxis, ...]
+        x = torch.from_numpy(spec)
+        _whole_results[str(sdir)] = verify_parity(model, sess, x)
+    except Exception as e:
+        _whole_results[str(sdir)] = False
+        print(f"whole-song {sdir}: EXC {type(e).__name__}: {e}")
+_whole_ok = all(_whole_results.values()) and len(_whole_results) == len(_song_dirs)
+print(f"WHOLE-SONG SINGLE PASS: {'PASS' if _whole_ok else 'FAIL'} {_whole_results}")
+
+_dyn_pass = path_label in ("dynamo", "torchscript") and all(_len_results.values()) and _whole_ok
+if _dyn_pass:
+    verdict, verdict_path = "PASS", path_label
+else:
+    print(f"D-03 fallback engaging: export raised OR whole-song parity failed (path={path_label})")
+    fb_path = OUT_DIR / "stage1_best_fixed400.onnx"
+    fb_label = export_model(model, fb_path, dynamic=False)
+    fb_sess = ort.InferenceSession(str(fb_path), providers=["CPUExecutionProvider"])
+    _fb_len = verify_parity(model, fb_sess, torch.randn(1, 1, 128, 400))
+    _fb_chunks = True
+    for sdir in _song_dirs:
+        spec_path, _ = build_full_song_cache(sdir, cache_root=WORKING / "full_cache")
+        spec = np.load(spec_path)
+        s3 = spec[0] if spec.ndim == 4 else spec
+        n_total = s3.shape[2]
+        starts = list(range(0, max(1, n_total - config.N_FRAMES + 1), config.HOP_FRAMES))
+        if starts[-1] != max(0, n_total - config.N_FRAMES):
+            starts.append(max(0, n_total - config.N_FRAMES))
+        for st in starts:
+            chunk = s3[:, :, st:st + config.N_FRAMES]
+            if chunk.shape[2] < config.N_FRAMES:
+                chunk = np.pad(chunk, ((0, 0), (0, 0), (0, config.N_FRAMES - chunk.shape[2])), mode="edge")
+            _fb_chunks &= verify_parity(model, fb_sess, torch.from_numpy(chunk[np.newaxis, ...]))
+    verdict = "PASS" if (_fb_len and _fb_chunks) else "FAIL"
+    verdict_path = "fallback-fixed400" if verdict == "PASS" else path_label
+print(f"PHASE 9: {verdict} path={verdict_path}")
+assert verdict == "PASS", "Phase 9 export/verify FAILED — do not push"
+
+from airhythm.kaggle_push import push_dataset
+_ok = push_dataset(str(WORKING), f"phase9 onnx export path={verdict_path}")
+print(f"PUSH onnx/stage1_best.onnx: {'OK' if _ok else 'FAILED'}")
+assert _ok, "artifact push failed"

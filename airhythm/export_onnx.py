@@ -46,6 +46,14 @@ def export_model(model, out_path, *, dynamic: bool = True) -> str:
                 dynamo=True, dynamic_shapes=({0: batch_dim, 3: time_dim},),
             )
             prog.save(str(out_path))  # NEVER f= on dynamo path
+            # dynamo graphs can constant-fold the time axis (reshape baked
+            # to the example's 400) — claim "dynamo" only if a second
+            # length actually runs; else fall back to TorchScript.
+            import onnxruntime as ort
+            _chk = ort.InferenceSession(str(out_path),
+                                        providers=["CPUExecutionProvider"])
+            _chk.run(None, {_chk.get_inputs()[0].name:
+                            torch.randn(1, 1, 128, 250).numpy()})
             return "dynamo"
         except Exception as e:
             print(f"DYNAMO EXPORT FAILED, falling back: {type(e).__name__}: {e}")

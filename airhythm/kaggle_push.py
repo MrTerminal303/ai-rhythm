@@ -25,11 +25,14 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from airhythm import config
+from airhythm.checkpoint_store import attached_search_roots
 from airhythm.kaggle_path import _expand_handle
 
 __all__ = [
@@ -37,6 +40,7 @@ __all__ = [
     "build_manifest",
     "save_eval_song_ids",
     "push_dataset",
+    "stage_dataset_tree",
     "estimate_storage_size",
     "prune_old_checkpoints",
     "check_storage",
@@ -171,6 +175,39 @@ def save_eval_song_ids(song_ids: List[int], metadata_dir: str) -> str:
 
     logger.info("Eval song IDs saved to %s: %s", filepath, sorted(song_ids))
     return filepath
+
+
+def stage_dataset_tree(workspace) -> Path:
+    """Stage the canonical airhythm-data dataset tree for upload (09-02).
+
+    Canonical layout = Phase 8 save side (push_now uploads CONTENTS of
+    WORKING/config.CHECKPOINTS_DIR): checkpoint *.pt FLAT at the dataset
+    root + additive onnx/ subdir (D-04: onnx/stage1_best.onnx). Reads
+    derive from the same convention — checkpoint_store.attached_search_roots.
+
+    Pushing a raw eval WORKING snapshot (data/, full_cache/, metrics/)
+    reshaped the dataset and hid best_*.pt from the root glob — this
+    helper is the single place that defines what the dataset tree IS.
+    Returns a temp staging dir; caller pushes it with push_dataset().
+    """
+    ws = Path(workspace)
+    stage = Path(tempfile.mkdtemp(prefix="airhythm-dataset-"))
+    # checkpoints: first root that has *.pt (workspace layout, flat tree)
+    for root in (ws / config.CHECKPOINTS_DIR, ws):
+        pt_files = sorted(root.glob("*.pt")) if root.is_dir() else []
+        if pt_files:
+            for p in pt_files:
+                shutil.copy2(p, stage / p.name)
+            break
+    onnx_src = ws / "onnx"
+    if onnx_src.is_dir():
+        shutil.copytree(onnx_src, stage / "onnx", dirs_exist_ok=True)
+    staged = sorted(p.name for p in stage.iterdir())
+    if not staged:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise FileNotFoundError(
+            f"stage_dataset_tree: no checkpoints (*.pt) or onnx/ under {ws}")
+    return stage
 
 
 def push_dataset(

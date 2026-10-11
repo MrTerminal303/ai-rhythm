@@ -14,10 +14,25 @@ import os
 import shutil
 from pathlib import Path
 
-__all__ = ["CheckpointStore"]
+from airhythm import config
+
+__all__ = ["CheckpointStore", "attached_search_roots"]
 
 # review #10 P1: partial copies must never be discovered or returned
 _PARTIAL = (".tmp", ".part", ".partial")
+
+
+def attached_search_roots(attached_dir) -> tuple[Path, ...]:
+    """Canonical dataset layout for reads (Phase 8 save side = source of truth).
+
+    Training's push_now() uploads CONTENTS of WORKING/config.CHECKPOINTS_DIR
+    via `kaggle datasets version -p` -> checkpoint *.pt land FLAT at the
+    dataset root. Root first (canonical), then the nested checkpoints/ dir
+    as recovery for the one CELL 16 push that reshaped the tree (09-02).
+    save side: kaggle_push.stage_dataset_tree stages the same two roots.
+    """
+    root = Path(attached_dir)
+    return (root, root / config.CHECKPOINTS_DIR)
 
 
 def _atomic_copy(src: Path, dst: Path) -> None:
@@ -55,7 +70,10 @@ class CheckpointStore:
         import torch
 
         scored = []
-        for rank, d in enumerate((self.local_dir, self.drive_dir, self.attached_dir)):
+        roots = [self.local_dir, self.drive_dir]
+        if self.attached_dir is not None:
+            roots.extend(attached_search_roots(self.attached_dir))
+        for rank, d in enumerate(roots):
             if d is None or not d.is_dir():
                 continue
             for p in sorted(d.glob(pat)):

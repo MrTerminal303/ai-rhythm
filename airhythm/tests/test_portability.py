@@ -84,6 +84,25 @@ class TestCheckpointStore:
         assert hits[-1] == local / "best_a.pt"
         assert not (local / "best_b.pt").exists()  # loser not copied
 
+    def test_attached_nested_checkpoints_layout_found(self, tmp_path):
+        """09-02: one push reshaped the dataset (checkpoints/ subdir at
+        root). Recovery root must discover best_*.pt without a rollback —
+        canonical (flat) root stays first via attached_search_roots."""
+        from airhythm.checkpoint_store import CheckpointStore, attached_search_roots
+
+        local, att = tmp_path / "local", tmp_path / "att"
+        local.mkdir()
+        nested = att / "checkpoints"
+        nested.mkdir(parents=True)
+        self._ckpt(nested / "best_nest.pt", 7, epoch=7)
+        roots = attached_search_roots(att)
+        assert roots[0] == att              # canonical flat root first
+        assert roots[1] == nested           # recovery second
+        store = CheckpointStore(local, attached_dir=att)
+        hits = store.glob("best_*.pt")
+        assert [h.name for h in hits] == ["best_nest.pt"]
+        assert hits[-1].parent == local     # copy-in'd
+
     def test_same_name_higher_step_overwrites_local(self, tmp_path):
         from airhythm.checkpoint_store import CheckpointStore
 

@@ -15,6 +15,7 @@ from airhythm.kaggle_push import (
     prune_old_checkpoints,
     push_dataset,
     save_eval_song_ids,
+    stage_dataset_tree,
 )
 
 
@@ -546,3 +547,50 @@ class TestPushDatasetHandle:
                             lambda: tmp_path / "no-kaggle-json-here")
 
         assert push_dataset(str(tmp_path), "notes") is False
+
+
+class TestStageDatasetTree:
+    """09-02 layout contract: canonical tree = flat checkpoints + onnx/
+    at root; eval scratch (data/, full_cache/) never reshapes the dataset."""
+
+    @staticmethod
+    def _mk_workspace(root):
+        """Fake eval WORKING: canonical parts + scratch junk."""
+        import torch
+
+        ws = root / "working"
+        (ws / "checkpoints").mkdir(parents=True)
+        (ws / "data" / "minimal_dataset").mkdir(parents=True)
+        (ws / "full_cache").mkdir()
+        (ws / "onnx").mkdir()
+        torch.save({"global_step": 7, "epoch": 7},
+                   ws / "checkpoints" / "best_a.pt")
+        (ws / "data" / "minimal_dataset" / "junk.npy").write_bytes(b"junk")
+        (ws / "full_cache" / "2561773_full_spec.npy").write_bytes(b"cache")
+        (ws / "onnx" / "stage1_best.onnx").write_bytes(b"onnx-bytes")
+        return ws
+
+    def test_stages_flat_checkpoints_plus_onnx_excludes_scratch(self, tmp_path):
+        ws = self._mk_workspace(tmp_path)
+        stage = stage_dataset_tree(ws)
+        assert (stage / "best_a.pt").is_file()            # flat at root (Phase 8)
+        assert (stage / "onnx" / "stage1_best.onnx").is_file()  # additive, D-04
+        assert not (stage / "checkpoints").exists()
+        assert not (stage / "data").exists()
+        assert not (stage / "full_cache").exists()
+
+    def test_save_read_round_trip_with_store(self, tmp_path):
+        """staged tree as attached_dir -> CheckpointStore finds best_*.pt."""
+        from airhythm.checkpoint_store import CheckpointStore
+
+        ws = self._mk_workspace(tmp_path)
+        stage = stage_dataset_tree(ws)
+        local = tmp_path / "local"
+        store = CheckpointStore(local, attached_dir=stage)
+        hits = store.glob("best_*.pt")
+        assert [h.name for h in hits] == ["best_a.pt"]
+        assert hits[-1].parent == local  # copy-in'd for the next push
+
+    def test_empty_workspace_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            stage_dataset_tree(tmp_path)

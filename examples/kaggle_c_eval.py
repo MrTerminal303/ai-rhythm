@@ -326,6 +326,7 @@ import onnx, onnxruntime as ort, onnxscript, torch
 import numpy as np
 from pathlib import Path
 from airhythm import config
+from airhythm.audio_preproc import audio_to_mel_spec, normalize_chunk
 from airhythm.export_onnx import export_model, verify_parity, torch_ge
 _dyn_ok = torch_ge(torch.__version__, *config.ONNX_DYNAMO_MIN)
 print(f"torch={torch.__version__} onnx={onnx.__version__} onnxruntime={ort.__version__} onnxscript={onnxscript.__version__}")
@@ -371,12 +372,7 @@ for T in (400, 250, 300):
 print(f"LENGTHS 400/250/300: {'PASS' if all(_len_results.values()) else 'FAIL'} {_len_results}")
 
 from airhythm.datasets import build_full_song_cache
-CUSTOM_SONG_PATH = None
 _song_dirs = [DATA_ROOT / "2561773"]
-if CUSTOM_SONG_PATH:
-    _song_dirs.append(Path(CUSTOM_SONG_PATH))
-else:
-    print("custom song: SKIPPED (CUSTOM_SONG_PATH not set)")
 _whole_results = {}
 for sdir in _song_dirs:
     try:
@@ -430,3 +426,83 @@ print(f"staged push tree: {sorted(p.name for p in _push_root.iterdir())}")
 _ok = push_dataset(str(_push_root), f"phase9 onnx export path={verdict_path}")
 print(f"PUSH onnx/stage1_best.onnx: {'OK' if _ok else 'FAILED'}")
 assert _ok, "artifact push failed"
+
+# %% ============================================================
+# CELL 17: label-free custom-song scoring (spike 001) — EXP-01
+# =============================================================
+# Run the exported ONNX on arbitrary audio (mp3/wav/any decodable file) with
+# NO *_labels.npy and NO original.audio required. Reference "important
+# onsets" = librosa onset_detect on the raw file; the project salience
+# scoring (CELL 15 path: eval_song_buckets at cut 0.3) then measures
+# "important refs covered, extras allowed" — recall-dominant by construction.
+#
+# Set CUSTOM_AUDIO to a file path (or a dir containing one audio file),
+# e.g. a track you add under /kaggle/working.
+import mir_eval.onset  # ensure mir_eval.onset.util importable (salience_eval needs it)
+from airhythm.salience_eval import eval_song_buckets, est_times_from_envelope, stitch_envelope
+
+if "model" not in globals() or "sess" not in globals() or "out_path" not in globals():
+    raise RuntimeError("run CELL 16 first (needs model, sess, out_path in globals)")
+
+CUSTOM_AUDIO = "/kaggle/working/free_music"   # e.g. str(WORKING / "custom_song.mp3") or a dir path
+if CUSTOM_AUDIO is None:
+    print("CELL 17: SKIPPED (CUSTOM_AUDIO not set)")
+else:
+    _cp = Path(CUSTOM_AUDIO)
+    _audio_files = [p for p in (sorted(_cp.iterdir()) if _cp.is_dir() else [_cp])
+                    if p.is_file() and p.suffix.lower() in
+                    (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus")]
+    assert _audio_files, f"no audio files found at {CUSTOM_AUDIO}"
+    _audio_file = _audio_files[0]
+    print(f"CELL 17 audio: {_audio_file.name}")
+
+    _c_audio, _c_sr = librosa.load(str(_audio_file), sr=config.SAMPLE_RATE, mono=True)
+    _c_spec = audio_to_mel_spec(_c_audio.astype(np.float32), config.SAMPLE_RATE)
+    _c_n = _c_spec.shape[2]
+
+    # sliding-window ONNX inference (hop HOP_FRAMES, same as CELL 15)
+    _c_starts = list(range(0, max(1, _c_n - config.N_FRAMES + 1), config.HOP_FRAMES))
+    _c_last = max(0, _c_n - config.N_FRAMES)
+    if _c_starts[-1] != _c_last:
+        _c_starts.append(_c_last)
+    _c_windows = []
+    for _st in _c_starts:
+        _w = _c_spec[:, :, _st:_st + config.N_FRAMES]
+        if _w.shape[2] < config.N_FRAMES:
+            _w = np.pad(_w, ((0,0),(0,0),(0,config.N_FRAMES - _w.shape[2])), mode="edge")
+        _w = normalize_chunk(_w)
+        _o = sess.run(None, {"mel": _w.astype(np.float32)[None, ...]})[0]
+        _sig = 1.0 / (1.0 + np.exp(-_o)).squeeze()   # (400,) sigmoid
+        _c_windows.append((_st, _sig))
+    _c_env = stitch_envelope(_c_windows, _c_n)
+    _c_est, _c_dedup = est_times_from_envelope(_c_env)
+    print(f"CELL 17 model: n_est={len(_c_est)} dedup_ratio={_c_dedup:.3f}")
+
+    # librosa reference onsets + salience envelope for the important/filler split
+    _c_oenv = librosa.onset.onset_strength(y=_c_audio, sr=_c_sr,
+                                           hop_length=config.HOP_LENGTH, fmax=config.FMAX)
+    _c_ref = librosa.onset.onset_detect(y=_c_audio, sr=_c_sr,
+                                        hop_length=config.HOP_LENGTH, units="time")
+    if _c_ref.size == 0:
+        print(f"CELL 17: librosa reference found 0 onsets in {_audio_file.name} "
+              f"— recall/F are 0 by mir_eval convention, not a model failure")
+    else:
+        # same scoring as CELL 15 / EVL-03: important refs = top-30% salience
+        _c_b = eval_song_buckets(np.asarray(_c_ref, dtype=float), _c_oenv, _c_est, cut_frac=0.3)
+        print(f"CELL 17 SCORE (cut 0.3): n_ref={_c_b['n_ref']} n_est={_c_b['n_est']} "
+              f"important={_c_b['n_important']} filler={_c_b['n_filler']}")
+        print(f"  R_important={_c_b['R_important']:.4f}  P_global={_c_b['P_important']:.4f}  "
+              f"F_important={_c_b['F_important']:.4f}")
+        _c_matched = mir_eval.onset.util.match_events(
+            np.asarray(_c_ref, dtype=float), np.sort(_c_est), window=0.05)
+        # match_events returns (ref_idx, est_idx) pairs — use indices, not values
+        _matched_ref_idx = {i for i, _e in _c_matched}
+        # only the important bucket (top-30% salience) counts as a real miss
+        from airhythm.pin_baseline import bucket_refs_by_salience
+        _imp_mask, _fill_mask, _ = bucket_refs_by_salience(
+            np.asarray(_c_ref, dtype=float), _c_oenv, cut_frac=0.3)
+        _missed = [float(_c_ref[i]) for i in range(len(_c_ref))
+                   if _imp_mask[i] and i not in _matched_ref_idx]
+        print(f"  missed IMPORTANT onsets: {len(_missed)}/{_c_b['n_important']} "
+              f"(R_important={_c_b['R_important']:.3f})"
+              + (f" first={[round(t,2) for t in _missed[:10]]}" if _missed else ""))

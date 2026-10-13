@@ -424,6 +424,9 @@ from airhythm.kaggle_push import push_dataset, stage_dataset_tree
 # canonical tree (09-02): flat checkpoints + onnx/ at root — pushing raw
 # WORKING reshaped the dataset and hid best_*.pt from the root glob
 _push_root = stage_dataset_tree(WORKING)
+# evidence line: staged tree must be flat *.pt + onnx/ only (a 1.75G upload
+# means the OLD push_dataset(str(WORKING)) cell text — re-paste CELL 16)
+print(f"staged push tree: {sorted(p.name for p in _push_root.iterdir())}")
 _ok = push_dataset(str(_push_root), f"phase9 onnx export path={verdict_path}")
 print(f"PUSH onnx/stage1_best.onnx: {'OK' if _ok else 'FAILED'}")
 assert _ok, "artifact push failed"

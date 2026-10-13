@@ -6,7 +6,9 @@ CPU both sides — cuDNN GRU eval-backward raises on CUDA.
 """
 from __future__ import annotations
 
+import contextlib
 import re
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +29,43 @@ def torch_ge(version: str, major: int, minor: int) -> bool:
     return tuple(nums) >= (major, minor)
 
 
+@contextlib.contextmanager
+def _gru_dynamic_export():
+    """Scope for ONE dynamo export call — GRU decomp patch + torch-noise filters.
+
+    Hold register_gru_while_loop_decomposition for the WHOLE torch.onnx.export
+    (capture AND ONNX prepare), not just capture:
+    - torch < 2.13: the ONNX exporter never registers it -> tracing specializes
+      the time axis to the example's 400, and the exporter's
+      refine_dynamic_shapes_from_suggested_fixes silently rewrites dynamic_shapes
+      to static (input mel [.., 400]; the T=250 self-check then rejects with
+      'Got: 250 Expected: 400').
+    - torch >= 2.13: exporter registers it around capture only -> prepare
+      re-bakes post-GRU value_info static [1, 400, 256]; ORT's default
+      optimizations insert a constant reshape and every T != 400 run fails.
+
+    Filters = two researched torch-internal false positives, unreachable from
+    model code: RNN _flat_weights attribute-snapshot warning
+    (torch/_functorch/_aot_autograd/frontend_utils.py — state is restored,
+    weights ARE registered parameters) and dynamo's deprecated
+    isinstance(treespec, LeafSpec) (torch/_dynamo/variables/builder.py).
+    """
+    try:
+        from torch.export._patches import register_gru_while_loop_decomposition
+        rnn_ctx = register_gru_while_loop_decomposition()
+    except ImportError:
+        rnn_ctx = contextlib.nullcontext()
+    with rnn_ctx, warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*were assigned during export\..*",
+            category=UserWarning)
+        warnings.filterwarnings(
+            "ignore",
+            message=r"`isinstance\(treespec, LeafSpec\)` is deprecated.*",
+            category=FutureWarning)
+        yield
+
+
 def export_model(model, out_path, *, dynamic: bool = True) -> str:
     """Export AIRhythmCRNN to ONNX. Returns 'dynamo' or 'torchscript'."""
     model.eval()
@@ -36,15 +75,16 @@ def export_model(model, out_path, *, dynamic: bool = True) -> str:
         try:
             batch_dim = torch.export.Dim("batch")
             time_dim = torch.export.Dim("time", min=1)
-            prog = torch.onnx.export(
-                model, (example,),
-                input_names=["mel"], output_names=["logits"],
-                # tuple form: per-arg spec keyed by AXIS INDEX (name-agnostic).
-                # {"mel": {...}} nesting is the TorchScript dynamic_axes API —
-                # leaving this out avoids the name-being-read-as-dimension bug
-                # that caused the Kaggle error.
-                dynamo=True, dynamic_shapes=({0: batch_dim, 3: time_dim},),
-            )
+            with _gru_dynamic_export():
+                prog = torch.onnx.export(
+                    model, (example,),
+                    input_names=["mel"], output_names=["logits"],
+                    # tuple form: per-arg spec keyed by AXIS INDEX (name-agnostic).
+                    # {"mel": {...}} nesting is the TorchScript dynamic_axes API —
+                    # leaving this out avoids the name-being-read-as-dimension bug
+                    # that caused the Kaggle error.
+                    dynamo=True, dynamic_shapes=({0: batch_dim, 3: time_dim},),
+                )
             prog.save(str(out_path))  # NEVER f= on dynamo path
             # dynamo graphs can constant-fold the time axis (reshape baked
             # to the example's 400) — claim "dynamo" only if a second

@@ -57,6 +57,24 @@ def test_export_returns_dynamo_or_torchscript(model, tmp_path):
     assert out.stat().st_size > 0
 
 
+def test_dynamo_path_keeps_time_dim_dynamic(model, tmp_path):
+    """09-02 regression: GRU while-loop decomp patch must be held for the WHOLE
+    dynamo export — torch 2.11 never registers it (input mel baked static 400),
+    torch 2.13 registers capture-only (post-GRU value_info baked static 400 ->
+    ORT default opts fail T!=400). Both surface as export_model falling back to
+    'torchscript', so requiring 'dynamo' pins the fix; the T=250/300 runs then
+    prove the saved graph is variable-length under DEFAULT ort opts (the
+    self-check inside export_model uses the same defaults)."""
+    if not torch_ge(torch.__version__, *config.ONNX_DYNAMO_MIN):
+        pytest.skip("dynamo branch requires torch >= ONNX_DYNAMO_MIN")
+    out = tmp_path / "dyn.onnx"
+    assert export_model(model, out) == "dynamo"
+    sess = ort.InferenceSession(str(out), providers=["CPUExecutionProvider"])
+    for t in (250, 300):
+        torch.manual_seed(2)
+        assert verify_parity(model, sess, torch.randn(1, 1, 128, t)) is True
+
+
 def test_dynamo_dynamic_shapes_use_axis_index_keys(model, tmp_path, monkeypatch):
     """09-02 regression: dynamic_shapes tuple form keys per-arg spec by AXIS
     INDEX ({0: ..., 3: ...}); {"mel": {...}} nesting is the TorchScript

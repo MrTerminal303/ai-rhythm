@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { samplePair, ClockPairKeeper } from "./clock-pair.js";
 import { inputChartTimeMs } from "./time-math.js";
+import { asAudioOffsetMs, asBufferMs, asPerfMs } from "./branded.js";
 
 describe("samplePair", () => {
   it("prefers getOutputTimestamp mapping and labels the source (D21: conversion applied, both latency components present)", () => {
@@ -136,10 +137,10 @@ describe("A1 contract (D21): getOutputTimestamp pairs convert output-stream → 
     const pair = samplePair({ currentTime: 40 }, 5000, () => READING, LAT);
     // same instant as sourceStart → 0 ms; 100 ms later → 100 ms (no extra latency term)
     expect(
-      inputChartTimeMs(5000, pair, { sourceStartCtxTime: 40, audioSourceOffsetMs: 0, audioOffsetMs: 0 }),
+      inputChartTimeMs(asPerfMs(5000), pair, { sourceStartCtxTime: 40, audioSourceOffsetMs: asBufferMs(0), audioOffsetMs: asAudioOffsetMs(0) }),
     ).toBeCloseTo(0, 6);
     expect(
-      inputChartTimeMs(5100, pair, { sourceStartCtxTime: 40, audioSourceOffsetMs: 0, audioOffsetMs: 0 }),
+      inputChartTimeMs(asPerfMs(5100), pair, { sourceStartCtxTime: 40, audioSourceOffsetMs: asBufferMs(0), audioOffsetMs: asAudioOffsetMs(0) }),
     ).toBeCloseTo(100, 6);
   });
 });

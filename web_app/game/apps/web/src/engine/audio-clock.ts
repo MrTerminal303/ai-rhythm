@@ -1,6 +1,7 @@
 // apps/web/src/engine/audio-clock.ts
 import type { GameClock } from "./clock.js";
 import { chartTime, inputChartTimeMs, type ClockPair } from "./time-math.js";
+import { asAudioOffsetMs, asBufferMs, asChartMs, type AudioOffsetMs, type BufferMs, type ChartMs, type PerfMs } from "./branded.js";
 
 export interface AudioClockSource {
   buffer: unknown;
@@ -13,13 +14,13 @@ export interface AudioClockCtx {
 }
 
 export class AudioClock implements GameClock {
-  private audioOffsetMs = 0;
-  private audioSourceOffsetMs = 0;
+  private audioOffsetMs: AudioOffsetMs = asAudioOffsetMs(0);
+  private audioSourceOffsetMs: BufferMs = asBufferMs(0);
   private sourceStartCtxTime = 0;
   private source: AudioClockSource | null = null;
   private state: "idle" | "running" | "paused" | "stopped" = "idle";
-  private pausedChartMs = 0;
-  private pausedPosMs = 0;
+  private pausedChartMs: ChartMs = asChartMs(0);
+  private pausedPosMs: BufferMs = asBufferMs(0);
   private pendingBuffer: unknown = null;
 
   constructor(
@@ -28,15 +29,15 @@ export class AudioClock implements GameClock {
     private readonly nowMs: () => number = () => performance.now(),
   ) {}
 
-  load(buffer: unknown, audioOffsetMs: number): void {
+  load(buffer: unknown, audioOffsetMs: AudioOffsetMs): void {
     this.audioOffsetMs = audioOffsetMs;
     this.pendingBuffer = buffer;
   }
 
-  start(atChartMs = 0): void {
+  start(atChartMs: number = 0): void {
     if (this.pendingBuffer === null) throw new Error("load() before start()");
     this.source?.stop();
-    const raw = Math.max(0, atChartMs - this.audioOffsetMs); // chart → buffer: subtract offset ONCE
+    const raw: BufferMs = asBufferMs(Math.max(0, atChartMs - this.audioOffsetMs)); // chart → buffer: subtract offset ONCE
     this.audioSourceOffsetMs = raw;
     this.sourceStartCtxTime = this.ctx.currentTime;
     const src = this.ctx.createBufferSource();
@@ -55,7 +56,7 @@ export class AudioClock implements GameClock {
     this.state = "paused";
   }
 
-  chartTimeMs(): number {
+  chartTimeMs(): ChartMs {
     if (this.state === "running") {
       return chartTime({
         audioSourceOffsetMs: this.audioSourceOffsetMs,
@@ -68,15 +69,15 @@ export class AudioClock implements GameClock {
     throw new Error("clock not started"); // idle | stopped
   }
 
-  playbackPositionMs(): number {
+  playbackPositionMs(): BufferMs {
     if (this.state === "running") {
-      return this.audioSourceOffsetMs + (this.ctx.currentTime - this.sourceStartCtxTime) * 1000;
+      return asBufferMs(this.audioSourceOffsetMs + (this.ctx.currentTime - this.sourceStartCtxTime) * 1000);
     }
     if (this.state === "paused") return this.pausedPosMs;
     throw new Error("clock not started");
   }
 
-  chartTimeAt(timeStampMs: number, pair?: ClockPair): number {
+  chartTimeAt(timeStampMs: PerfMs, pair?: ClockPair): ChartMs {
     if (this.state !== "running") throw new Error("clock not started");
     // W3 T2 (D21 real-input probe): the caller may pass the EXACT pair it mapped through
     // (one keeper.get shared by conversion and the e2e recorder); omitted → keeper (backward compatible).

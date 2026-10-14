@@ -2,6 +2,7 @@ import type { Beatmap } from "@airhythm/shared";
 import { accuracyFraction, scoreFromWeights, grade, SCORE_WEIGHTS, JUDGE_WINDOWS } from "@airhythm/shared";
 import type { GameClock } from "./clock.js";
 import { judgeDt } from "./time-math.js";
+import { asCalibMs, asChartMs } from "./branded.js";
 import type { GameSnapshot, JudgementEvent, NoteState, Renderer } from "./types.js";
 import type { PerfMonitor } from "./perf.js";
 
@@ -84,7 +85,7 @@ export class GameEngine {
     for (const [i, target] of this.targets.entries()) {
       if (target.lane !== lane || target.state !== "pending") continue;
       if (target.kind !== "tap" && target.kind !== "head") continue; // judge resolves head/tap only; tails wait for release/expiry
-      const dt = judgeDt(inputMs, this.deviceCalibrationOffsetMs, target.targetMs); // selection + grading share the calibrated domain (spec §7.1)
+      const dt = judgeDt(asChartMs(inputMs), asCalibMs(this.deviceCalibrationOffsetMs), asChartMs(target.targetMs)); // selection + grading share the calibrated domain (spec §7.1)
       const abs = Math.abs(dt);
       if (abs > JUDGE_WINDOWS.good) continue; // same bound as AUTO_MISS_MS — both derive from JUDGE_WINDOWS.good
       const tie = bestIdx !== -1 && target.noteId < this.targets[bestIdx]!.noteId;
@@ -128,7 +129,7 @@ export class GameEngine {
     if (tailIdx !== -1) {
       const tail = this.targets[tailIdx]!;
       // ONE calibrated timing domain for every branch (controller ruling, W2 T17)
-      const dt = judgeDt(inputMs, this.deviceCalibrationOffsetMs, tail.targetMs);
+      const dt = judgeDt(asChartMs(inputMs), asCalibMs(this.deviceCalibrationOffsetMs), asChartMs(tail.targetMs));
       if (dt < -150) {
         // early release → tail Miss immediately
         tail.state = "missed";

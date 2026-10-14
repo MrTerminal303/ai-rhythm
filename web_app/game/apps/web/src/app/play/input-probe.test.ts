@@ -5,6 +5,7 @@
 // a client component ("use client") and its OmitWithTag constraint forbids extra named exports).
 import { describe, expect, it } from "vitest";
 import type { ClockPair } from "../../engine/time-math.js";
+import { asCtxSec, asPerfMs } from "../../engine/branded.js";
 
 // Mirrors the page-local pure computation (page.tsx):
 //   refPerfMid = (perfBefore + perfAfter) / 2
@@ -48,9 +49,9 @@ describe("inputProbeRecord — reference anchoring (round 10 P1-1 regression)", 
     const handlerNow = 5005; // handlerNow is 5 ms AFTER refPerfMid
     const e = { timeStamp: 5000 };
     const cached: ClockPair = {
-      contextTimeSeconds: 99.99, // deliberately off by 10 ms from ref
-      performanceTimeMs: 4000,
-      sampledAt: 4000,
+      contextTimeSeconds: asCtxSec(99.99), // deliberately off by 10 ms from ref
+      performanceTimeMs: asPerfMs(4000),
+      sampledAt: asPerfMs(4000),
       source: "getOutputTimestamp",
     };
 

@@ -15,6 +15,7 @@ import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
 import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
+import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { Hud } from "../../ui/hud.js";
 
@@ -77,7 +78,7 @@ type ProbePairResult = {
 declare global {
   interface Window {
     __w2?: {
-      chartTimeMs(): number;
+      chartTimeMs(): ChartMs;
       playbackPositionMs(): number;
       phase(): string;
       noteCount(): number;
@@ -165,7 +166,7 @@ export default function PlayPage() {
       heldLanes: heldLanesRef.current,
       releaseAt: (lane) => {
         if (!engine || engine.isFrozen()) return;
-        engine.release(lane, clock.chartTimeAt(performance.now())); // input-domain time, pre-pause
+        engine.release(lane, clock.chartTimeAt(asPerfMs(performance.now()))); // input-domain time, pre-pause
         store.set(engine.snapshot());
       },
       pause: () => {
@@ -404,7 +405,7 @@ export default function PlayPage() {
       pairKeeperRef.current = pairKeeper;
       inputProbeBufferRef.current = [];
       const clock = new AudioClock(audioCtx, pairKeeper);
-      clock.load(buffer, chart.song.audioOffsetMs);
+      clock.load(buffer, asAudioOffsetMs(chart.song.audioOffsetMs));
       clockRef.current = clock;
       // outputLatency → first-run default guess (spec §4.5); stored calibration wins inside loadCalibration
       const engine = new GameEngine({
@@ -444,7 +445,7 @@ export default function PlayPage() {
           inputChartTime: (ts) => {
             const pair = pairKeeperRef.current!.get(performance.now()); // D21: exact pair at mapping time
             probeRef.pairUsed = pair; // recorder measures the EXACT mapped pair
-            return clock.chartTimeAt(ts, pair);
+            return clock.chartTimeAt(asPerfMs(ts), pair);
           },
           engine: {
             // wrap judge: emit snapshot at keydown so HUD updates without waiting a frame (§2.3)
@@ -466,7 +467,7 @@ export default function PlayPage() {
         });
         // W2 T17: keyup → engine.release via inputChartTime (never render chartTimeMs)
         const rawRelease = createReleaseHandler({
-          inputChartTime: (ts) => clock.chartTimeAt(ts),
+          inputChartTime: (ts) => clock.chartTimeAt(asPerfMs(ts)),
           engine: {
             isFrozen: () => engine.isFrozen(),
             release: (lane, time) => {

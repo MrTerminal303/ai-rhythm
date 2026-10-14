@@ -33,40 +33,45 @@
 //   Real-browser validity of the conversion is measured by e2e/w3-clock-invariant.spec.ts
 //     (same-tick |currentTime − (ts.contextTime + base + out)| ≤ 25 ms), not assumed.
 //
+// W3 A10 (D22): the domain names above live in the types — ChartMs/BufferMs/CtxSec/PerfMs/
+// CalibMs/AudioOffsetMs (engine/branded.ts). Types erase at runtime; the as* constructors
+// are the only sanctioned casts (DOM boundaries cast once).
+
+import { asChartMs, asCtxSec, type AudioOffsetMs, type BufferMs, type CalibMs, type ChartMs, type CtxSec, type PerfMs } from "./branded.js";
 
 export interface ChartTimeInput {
-  audioSourceOffsetMs: number;
+  audioSourceOffsetMs: BufferMs;
   ctxCurrentTime: number;
   sourceStartCtxTime: number;
-  audioOffsetMs: number;
+  audioOffsetMs: AudioOffsetMs;
 }
 
-export function chartTime(i: ChartTimeInput): number {
-  return i.audioSourceOffsetMs + (i.ctxCurrentTime - i.sourceStartCtxTime) * 1000 + i.audioOffsetMs;
+export function chartTime(i: ChartTimeInput): ChartMs {
+  return asChartMs(i.audioSourceOffsetMs + (i.ctxCurrentTime - i.sourceStartCtxTime) * 1000 + i.audioOffsetMs);
 }
 
 export type PairSource = "getOutputTimestamp" | "fallback";
 
 export interface ClockPair {
-  performanceTimeMs: number;
-  contextTimeSeconds: number;
+  performanceTimeMs: PerfMs;
+  contextTimeSeconds: CtxSec;
   source: PairSource;
-  sampledAt: number;
+  sampledAt: PerfMs;
 }
 
-export function audioClockSeconds(timeStampMs: number, pair: ClockPair): number {
-  return pair.contextTimeSeconds + (timeStampMs - pair.performanceTimeMs) / 1000;
+export function audioClockSeconds(timeStampMs: PerfMs, pair: ClockPair): CtxSec {
+  return asCtxSec(pair.contextTimeSeconds + (timeStampMs - pair.performanceTimeMs) / 1000);
 }
 
 export function inputChartTimeMs(
-  timeStampMs: number,
+  timeStampMs: PerfMs,
   pair: ClockPair,
-  ctx: { sourceStartCtxTime: number; audioSourceOffsetMs: number; audioOffsetMs: number },
-): number {
+  ctx: { sourceStartCtxTime: number; audioSourceOffsetMs: BufferMs; audioOffsetMs: AudioOffsetMs },
+): ChartMs {
   const ctxSeconds = audioClockSeconds(timeStampMs, pair);
-  return ctx.audioSourceOffsetMs + (ctxSeconds - ctx.sourceStartCtxTime) * 1000 + ctx.audioOffsetMs;
+  return asChartMs(ctx.audioSourceOffsetMs + (ctxSeconds - ctx.sourceStartCtxTime) * 1000 + ctx.audioOffsetMs);
 }
 
-export function judgeDt(inputChartTimeMsValue: number, deviceCalibrationOffsetMs: number, noteTargetTimeMs: number): number {
+export function judgeDt(inputChartTimeMsValue: ChartMs, deviceCalibrationOffsetMs: CalibMs, noteTargetTimeMs: ChartMs): number {
   return inputChartTimeMsValue - deviceCalibrationOffsetMs - noteTargetTimeMs;
 }

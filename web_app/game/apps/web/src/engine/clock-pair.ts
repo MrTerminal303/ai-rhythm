@@ -1,5 +1,6 @@
 // apps/web/src/engine/clock-pair.ts
 import type { ClockPair, PairSource } from "./time-math.js";
+import { asCtxSec, asPerfMs, type CtxSec, type PerfMs } from "./branded.js";
 
 export const D21_RESIDUAL_S = 0.025; // 25 ms = EXPLICIT max permitted CLOCK-MAPPING contribution to judgement error (round 5: NOT a full input-to-render guarantee — event delivery and other contributors are measured separately, e.g. A13): boundary-error risk up to 25 ms ACCEPTED (never claimed away). Fallback does NOT inherit this bound from pair age — see the D21 three-quantity table: correctness rests on the CACHED-PAIR contract (≤1 s cache, keeper.invalidate() across lifecycle transitions) measured on the REAL input path (event.timeStamp mapping error vs independent same-tick reference) with the gated rate-divergence check; final outcome from d21FinalVerdict(). Budget changes = new D21 revision + fresh run.
 
@@ -14,7 +15,8 @@ export function samplePair(
   // exactly the same clock value.
   snapshot?: { currentTime: number },
 ): ClockPair {
-  const ctxNow = snapshot?.currentTime ?? ctx.currentTime;
+  const ctxNow: CtxSec = asCtxSec(snapshot?.currentTime ?? ctx.currentTime);
+  const perfNow: PerfMs = asPerfMs(perfNowMs);
   const t = readOutputTimestamp?.();
   if (t && Number.isFinite(t.performanceTime) && Number.isFinite(t.contextTime)) {
     const base = latency?.baseLatencySeconds;
@@ -23,20 +25,20 @@ export function samplePair(
     const outOk = out !== undefined && Number.isFinite(out) && out >= 0;
     if (!baseOk || !outOk) {
       // a latency component is unknown/invalid → cannot convert honestly: never a partial sum (D21)
-      return { performanceTimeMs: perfNowMs, contextTimeSeconds: ctxNow, source: "fallback", sampledAt: perfNowMs };
+      return { performanceTimeMs: perfNow, contextTimeSeconds: ctxNow, source: "fallback", sampledAt: perfNow };
     }
-    const scheduledAtPerfNow = t.contextTime + (perfNowMs - t.performanceTime) / 1000 + base! + out!;
+    const scheduledAtPerfNow: CtxSec = asCtxSec(t.contextTime + (perfNowMs - t.performanceTime) / 1000 + base! + out!);
     if (Math.abs(ctxNow - scheduledAtPerfNow) > D21_RESIDUAL_S) {
-      return { performanceTimeMs: perfNowMs, contextTimeSeconds: ctxNow, source: "fallback", sampledAt: perfNowMs };
+      return { performanceTimeMs: perfNow, contextTimeSeconds: ctxNow, source: "fallback", sampledAt: perfNow };
     }
     return {
-      performanceTimeMs: perfNowMs,
+      performanceTimeMs: perfNow,
       contextTimeSeconds: scheduledAtPerfNow,
       source: "getOutputTimestamp",
-      sampledAt: perfNowMs,
+      sampledAt: perfNow,
     };
   }
-  return { performanceTimeMs: perfNowMs, contextTimeSeconds: ctxNow, source: "fallback", sampledAt: perfNowMs };
+  return { performanceTimeMs: perfNow, contextTimeSeconds: ctxNow, source: "fallback", sampledAt: perfNow };
 }
 
 export class ClockPairKeeper {

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { associateTaps, computeCalibration, saveCalibration } from "../../calibration-store.js";
 import { ClockPairKeeper } from "../../engine/clock-pair.js";
 import { audioClockSeconds } from "../../engine/time-math.js";
+import { asPerfMs } from "../../engine/branded.js";
 
 const BEAT_COUNT = 20; // scheduled metronome clicks (Interfaces)
 const BEAT_INTERVAL_MS = 500;
@@ -62,7 +63,7 @@ export default function CalibratePage() {
       const pairKeeper = pairKeeperRef.current;
       if (!pairKeeper) return; // tapped before the context resumed
       const pair = pairKeeper.get(performance.now());
-      tapsRef.current.push(audioClockSeconds(e.timeStamp, pair) * 1000);
+      tapsRef.current.push(audioClockSeconds(asPerfMs(e.timeStamp), pair) * 1000);
       const pairs = associateTaps(tapsRef.current, beatsRef.current, { windowMs: WINDOW_MS });
       setValidPairs(pairs.length);
       if (pairs.length >= TARGET_PAIRS) finishRun();

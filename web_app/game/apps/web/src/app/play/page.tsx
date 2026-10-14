@@ -14,6 +14,7 @@ import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, lane
 import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
 import { ResyncController } from "../../engine/resync.js";
+import { PlayPhaseMachine, PLAY_TRANSITIONS, type PlayPhase } from "../../engine/play-phase.js";
 import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
@@ -63,11 +64,8 @@ const computeProbeEntry = (
   };
 };
 
-// Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume);
-// recovering (W3 T7 / A11) → countdown → playing (recovery resume) — T8 lands the `recovering`
-// PHASE enum entry in play-phase.ts; T7 wires the resync machine against the current Phase type
-// and replaces "paused"-string comparisons so T8's type swap is logic-neutral.
-type Phase = "idle" | "loading" | "countdown" | "playing" | "paused" | "recovering";
+// Play phases: driven by the A12 machine (play-phase.ts) — all movement goes through
+// applyPhase → machine.to; recovering (W3 T7 / A11) is a first-class machine state.
 
 // I5: cap the stored chart JSON before JSON.parse (mirrors MAX_TEXT_FILE_BYTES in
 // import/page.tsx — different file, same value; beatmaps are KB-scale).
@@ -112,7 +110,7 @@ export default function PlayPage() {
   const store = storeRef.current;
   const snapshot = useGameSnapshot(store);
   const [activeLanes, setActiveLanes] = useState<number[]>([]);
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [phase, setPhase] = useState<PlayPhase>("idle");
   const [countdown, setCountdown] = useState(3);
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
@@ -120,7 +118,9 @@ export default function PlayPage() {
   const [startError, setStartError] = useState<string | null>(null); // startGame failure surfaced in the start overlay
 
   // refs bridging the mount effect, the click-start flow, and cleanup
-  const phaseRef = useRef<Phase>("idle");
+  const phaseRef = useRef<PlayPhase>("idle");
+  const phaseMachineRef = useRef<PlayPhaseMachine | null>(null);
+  if (phaseMachineRef.current === null) phaseMachineRef.current = new PlayPhaseMachine();
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const chartRef = useRef<Beatmap | null>(null);
   const benchmarkRef = useRef(false);
@@ -183,8 +183,10 @@ export default function PlayPage() {
     };
   }
 
-  const applyPhase = (p: Phase): void => {
-    phaseRef.current = p; // sync first — guards re-entry before React re-renders
+  const applyPhase = (p: PlayPhase): void => {
+    const machine = phaseMachineRef.current!; // always constructed above
+    machine.to(p); // throws on illegal — bugs surface immediately (A12)
+    phaseRef.current = machine.current; // sync bridge for non-React closures (the ONE direct write)
     setPhase(p);
   };
 
@@ -244,7 +246,7 @@ export default function PlayPage() {
     const at = pauseCtlRef.current?.pausedAtMs ?? 0;
     // A11: user-resume is dispatched BEFORE the 3-2-1 (recovery-paused → resyncing is legal
     // only from recovery-paused; it must NOT run from "paused" — user pause stays off-machine)
-    const fromRecovery = phaseRef.current === "recovering";
+    const fromRecovery = phaseMachineRef.current!.current === "recovering";
     if (fromRecovery) resyncRef.current!.dispatch("user-resume");
     setResuming(true);
     runCountdown(() => {
@@ -385,8 +387,8 @@ export default function PlayPage() {
     const onEscape = (e: KeyboardEvent): void => {
       if (e.repeat) return; // OS auto-repeat while held must not cycle pause↔resume
       if (e.key !== "Escape") return;
-      if (phaseRef.current === "playing") pauseGame();
-      else if (phaseRef.current === "paused" || phaseRef.current === "recovering") resumeGame();
+      if (phaseMachineRef.current!.current === "playing") pauseGame();
+      else if (phaseMachineRef.current!.current === "paused" || phaseMachineRef.current!.current === "recovering") resumeGame();
     };
     window.addEventListener("keydown", onEscape);
     const onVisibility = () => {
@@ -508,7 +510,7 @@ export default function PlayPage() {
         // interruption — dispatch into the recovery machine, then enter the recovery pause.
         // enterPause's phase guard makes re-entry from the recovery-paused state a no-op,
         // so the repeated "interruption" self-loop is safe.
-        if (audioCtx.state !== "running" && phaseRef.current === "playing") {
+        if (audioCtx.state !== "running" && phaseMachineRef.current!.current === "playing") {
           resyncRef.current!.dispatch("interruption"); // legal from aligned, resyncing, and recovery-paused
           enterPause("recovering");
         }

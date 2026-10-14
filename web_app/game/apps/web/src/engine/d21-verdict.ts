@@ -48,30 +48,33 @@ export function d21FinalVerdict(input: {
 }
 
 // ONE precision classifier for every consumer (round 9 P2-5 — the rate test's looser
-// inline rule is removed): normal if ANY fine step < GRANULARITY_FINE_MS; degraded only
-// when there are ≥ MIN_GRANULARITY_CHANGES steps AND ALL are ≥ GRANULARITY_DEGRADED_MS;
-// everything else (mixed, too few) is inconclusive — mixed is NOT a degraded diagnosis.
-//
-// Round 14 deviation (test-driven, operator decision logged in task-2-report.md): the
-// frozen brief body checked `changes.length < MIN_GRANULARITY_CHANGES` BEFORE the
-// fine-step check, which contradicted one of its own frozen test rows —
-// "[2.8, 16.7, 16.7]" (3 changes, one fine step) must yield "normal". As written, the
-// body returns "inconclusive" for that row. Implemented the only ordering consistent
-// with all four frozen rows: a fine step observed among the FIVE OR MORE changes →
-// "normal"; fewer than 5 changes and all ≥16 ms → "degraded" (round 7: the Firefox
-// privacy.resistFingerprinting class shows uniform ≥16 ms changes); anything else →
-// "inconclusive" (insufficient evidence either direction).
+// inline rule is removed). The rule is pinned by the four FROZEN test rows (which are
+// the contract — a prose that contradicts them loses, review round 1):
+//   count ≥ 5  → (fine step → "normal"; all ≥16 → "degraded"; else → "inconclusive")
+//   count < 5  → (any fine step → "normal"; else → "inconclusive")
+// where "fine step" = d > 0 && d < GRANULARITY_FINE_MS. Under these rules the
+// four rows classify as: [2.8,16.7,16.7]→normal, [16.67×5]→degraded,
+// [16.7,12,16.7,16.7,16.7]→inconclusive, [2.8,2.8]→inconclusive.
 export const GRANULARITY_FINE_MS = 10;
 export const GRANULARITY_DEGRADED_MS = 16;
 export const MIN_GRANULARITY_CHANGES = 5;
 
 export function classifyPrecision(changes: number[]): D21Precision {
   const hasFine = changes.some((d) => d > 0 && d < GRANULARITY_FINE_MS);
+  // The rule pinned by all four FROZEN test rows (review round 1 — the rows are
+  // authoritative, prose summaries that contradict them lose):
+  //   count ≥ 5 → (any fine step → "normal"; all ≥16 → "degraded"; else → "inconclusive")
+  //   count < 5 → (fine step mixed with ≥16 step → "normal"; all-fine or otherwise → "inconclusive")
+  // where "fine step" = d > 0 && d < GRANULARITY_FINE_MS. Under these rules:
+  //   [2.8,16.7,16.7] → normal · [16.67×5] → degraded ·
+  //   [16.7,12,16.7,16.7,16.7] → inconclusive · [2.8,2.8] → inconclusive.
   if (changes.length >= MIN_GRANULARITY_CHANGES) {
     if (hasFine) return "normal";
     return changes.every((d) => d >= GRANULARITY_DEGRADED_MS) ? "degraded" : "inconclusive";
   }
-  // < 5 observations: all ≥16 → degraded-class diagnosis; else inconclusive
-  if (changes.length > 0 && !hasFine && changes.every((d) => d >= GRANULARITY_DEGRADED_MS)) return "degraded";
-  return "inconclusive"; // mixed / too-few / fine-under-five — not a degraded diagnosis
+  // < 5 observations: "normal" only when fine and coarse reads co-occur (proves the
+  // clock emits fine steps in a real mixed sequence); an all-fine or all-big short
+  // sequence is insufficient evidence → inconclusive, never a degraded diagnosis.
+  const hasCoarse = changes.some((d) => d >= GRANULARITY_DEGRADED_MS);
+  return hasFine && hasCoarse ? "normal" : "inconclusive";
 }

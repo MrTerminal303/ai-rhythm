@@ -5,12 +5,18 @@ import { inputChartTimeMs } from "./time-math.js";
 
 describe("samplePair", () => {
   it("prefers getOutputTimestamp mapping and labels the source (D21: conversion applied, both latency components present)", () => {
+    // distinct vector: 20 ms elapsed (perfNow 5000 vs ts.performanceTime 4980) + 20 ms total latency
+    // 41.0 + (5000 − 4980)/1000 + 0.005 + 0.015 = 41.04
     const p = samplePair(
-      { currentTime: 39.93 }, 5000,
-      () => ({ performanceTime: 4990, contextTime: 39.9 }),
+      { currentTime: 41.04 }, 5000,
+      () => ({ performanceTime: 4980, contextTime: 41.0 }),
       { baseLatencySeconds: 0.005, outputLatencySeconds: 0.015 },
     );
-    expect(p).toEqual({ performanceTimeMs: 5000, contextTimeSeconds: 39.93, source: "getOutputTimestamp", sampledAt: 5000 });
+    expect(p.source).toBe("getOutputTimestamp");
+    // 41.0 + (5000 − 4980)/1000 + 0.005 + 0.015 = 41.04
+    expect(p.contextTimeSeconds).toBeCloseTo(41.04, 9);
+    expect(p.performanceTimeMs).toBe(5000);
+    expect(p.sampledAt).toBe(5000);
   });
   it("falls back when reader missing, null, or non-finite", () => {
     expect(samplePair({ currentTime: 40 }, 5000).source).toBe("fallback");

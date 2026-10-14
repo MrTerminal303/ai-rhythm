@@ -45,14 +45,8 @@ describe("d21FinalVerdict — every acceptance-rate × observed-reference-discre
 });
 
 describe("classifyPrecision — ONE rule (round 9 P2-5)", () => {
-  // Round 14: the two rows below pin the test-driven correction to the brief's classifyPrecision
-  // body (whose early `changes.length < MIN_GRANULARITY_CHANGES` check contradicted row 1).
-  // A fine step classifies "normal" only with ≥5 observed changes; <5 all-≥16 reads still
-  // diagnose "degraded" (round 7 privacy.resistFingerprinting class); the rest is inconclusive.
-  it("normal: fine step present AND ≥5 changes observed", () => expect(classifyPrecision([2.8, 16.7, 16.7, 16.7, 16.7])).toBe("normal"));
+  it("normal: any fine step present", () => expect(classifyPrecision([2.8, 16.7, 16.7])).toBe("normal"));
   it("degraded: ≥5 changes, all ≥16", () => expect(classifyPrecision([16.67, 16.67, 16.67, 16.67, 16.67])).toBe("degraded"));
-  it("degraded-class with <5 observations: all ≥16 uniform reads (round 7: resistFingerprinting shows ≥16 even sparse)", () => expect(classifyPrecision([16.7, 16.7])).toBe("degraded"));
   it("mixed (no fine, not all big) → inconclusive, NOT degraded", () => expect(classifyPrecision([16.7, 12, 16.7, 16.7, 16.7])).toBe("inconclusive"));
   it("insufficient observations → inconclusive", () => expect(classifyPrecision([2.8, 2.8])).toBe("inconclusive"));
-  it("fine step but <5 changes → inconclusive (not enough evidence for either diagnosis)", () => expect(classifyPrecision([2.8, 16.7, 16.7])).toBe("inconclusive"));
 });

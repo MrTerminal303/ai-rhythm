@@ -492,8 +492,6 @@ export default function PlayPage() {
           buf.push(computeProbeEntry(ev, cached, handlerNow, ref));
           if (buf.length > 200) buf.shift();
         };
-        // Per-event probe state (one get per event, shared by conversion + recorder — round 9 P1-2)
-        const pendingInputProbeRef: { pairUsed: ClockPair | null } = { pairUsed: null };
         const onKey = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return; // paused/countdown: no judging (T10); chartTimeAt would throw
           const handlerNow = performance.now();

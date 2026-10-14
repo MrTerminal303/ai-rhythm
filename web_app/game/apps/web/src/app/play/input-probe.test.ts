@@ -2,7 +2,7 @@
 // Page-level regression target for D21 round 10 P1-1: the probe reference must be
 // anchored at the midpoint of ref.perfBefore/ref.perfAfter. computeProbeEntry is
 // re-implemented here against the CONTRACT (mirrored, not imported — the play page is
-// a RSC client component and its OmitWithTag constraint forbids extra named exports).
+// a client component ("use client") and its OmitWithTag constraint forbids extra named exports).
 import { describe, expect, it } from "vitest";
 import type { ClockPair } from "../../engine/time-math.js";
 

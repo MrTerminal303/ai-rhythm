@@ -33,11 +33,13 @@ export class GameEngine {
   private readonly clock: GameClock;
   private readonly renderer: Renderer;
   private readonly targets: Target[];
+  private readonly targetsByNote: Target[][] = []; // index = chart note index → that note's targets (≤ 2)
   private readonly states: NoteState[]; // per-NOTE states (aligned with chart.notes) for the renderer
   private readonly totalTargets: number;
   private readonly endTimeMs: number;
   private readonly perf?: PerfMonitor;
   private readonly deviceCalibrationOffsetMs: number;
+  private recomputes = 0;
   private sumWeights = 0;
   private combo = 0;
   private maxCombo = 0;
@@ -55,16 +57,20 @@ export class GameEngine {
     // totalTargets = taps + 2×holds = targets.length — score/accuracy denominators.
     this.targets = [];
     for (const [noteIdx, note] of opts.chart.notes.entries()) {
+      (this.targetsByNote[noteIdx] ??= []);
       if (note.type === "hold") {
         const d = note.d ?? 0;
         this.targets.push({ noteIdx, noteId: note.id, lane: note.lane, kind: "head", targetMs: note.t, state: "pending" });
+        this.targetsByNote[noteIdx]!.push(this.targets[this.targets.length - 1]!);
         this.targets.push({ noteIdx, noteId: note.id, lane: note.lane, kind: "tail", targetMs: note.t + d, state: "pending" });
+        this.targetsByNote[noteIdx]!.push(this.targets[this.targets.length - 1]!);
       } else {
         this.targets.push({ noteIdx, noteId: note.id, lane: note.lane, kind: "tap", targetMs: note.t, state: "pending" });
+        this.targetsByNote[noteIdx]!.push(this.targets[this.targets.length - 1]!);
       }
     }
     this.totalTargets = this.targets.length;
-    this.states = opts.chart.notes.map(() => "pending");
+    this.states = opts.chart.notes.map(() => "pending"); // no recompute count at init
     // endTimeMs = last target's deadline (tap/head: t+110; tail: t+d+150) — tap-only charts keep max(t)+110
     this.endTimeMs =
       this.totalTargets === 0
@@ -99,7 +105,7 @@ export class GameEngine {
     if (bestIdx !== -1) {
       const target = this.targets[bestIdx]!;
       const g = grade(bestDt); // |bestDt| ≤ good → can never be "miss" (controller ruling, W2 T9)
-      target.state = "hit";
+      this.setTargetState(target, "hit");
       this.combo += 1;
       if (this.combo > this.maxCombo) this.maxCombo = this.combo;
       this.sumWeights += SCORE_WEIGHTS[g];
@@ -108,7 +114,6 @@ export class GameEngine {
     // head miss-by-window: nothing marked — stays pending; update() expiry owns it (Review Focus 5)
 
     // emit immediately at keydown: rotation prev ← current ← new
-    this.syncStates();
     const next = this.emit(inputMs, events);
     this.prev = this.current;
     this.current = next;
@@ -132,12 +137,12 @@ export class GameEngine {
       const dt = judgeDt(asChartMs(inputMs), asCalibMs(this.deviceCalibrationOffsetMs), asChartMs(tail.targetMs));
       if (dt < -150) {
         // early release → tail Miss immediately
-        tail.state = "missed";
+        this.setTargetState(tail, "missed");
         this.combo = 0;
         events.push({ type: "miss", lane, chartTime: inputMs });
       } else if (dt <= 150) {
         const g = gradeTail(dt); // |dt| ≤ 150 → perfect/great/good; miss unreachable via release
-        tail.state = "hit";
+        this.setTargetState(tail, "hit");
         this.combo += 1;
         if (this.combo > this.maxCombo) this.maxCombo = this.combo; // successful tail increments maxCombo too (full-combo hold = totalTargets)
         this.sumWeights += SCORE_WEIGHTS[g];
@@ -146,7 +151,6 @@ export class GameEngine {
       // dt > 150 → ignore; the deadline already passed — update() owns expiry
     }
 
-    this.syncStates();
     const next = this.emit(inputMs, events);
     this.prev = this.current;
     this.current = next;
@@ -156,7 +160,6 @@ export class GameEngine {
     if (this.frozen) throw new Error("engine frozen");
     const chartTime = this.clock.chartTimeMs();
     const events = this.markExpiredPendingNotes(chartTime, chartTime - this.deviceCalibrationOffsetMs);
-    this.syncStates();
     const renderStart = performance.now();
     this.renderer.render(chartTime, this.states);
     this.perf?.recordRenderDuration(performance.now() - renderStart);
@@ -194,6 +197,12 @@ export class GameEngine {
    * never pre-ents a still-valid calibrated input; negative never expires early.
    * `calibratedChartTime` defaults to `chartTime` (raw) for single-domain callers.
    * A missed head never touches its tail (Review Focus 5).
+   *
+   * A3 fix 1 (incremental per-note state): the per-note cross-product of the old
+   * syncStates (O(notes×targets)) is gone. This expiry sweep still *iterates* every
+   * target to find overdue work — that is a different loop than the defect named by
+   * A3; only the per-note cross-product was removed. State recomputation now happens
+   * per changed target only (via setTargetState).
    */
   protected markExpiredPendingNotes(chartTime: number, calibratedChartTime = chartTime): JudgementEvent[] {
     const events: JudgementEvent[] = [];
@@ -201,7 +210,7 @@ export class GameEngine {
       if (target.state !== "pending") continue;
       const expiryMs = target.targetMs + (target.kind === "tail" ? TAIL_WINDOW_MS : AUTO_MISS_MS);
       if (chartTime > expiryMs && calibratedChartTime > expiryMs) {
-        target.state = "missed";
+        this.setTargetState(target, "missed");
         this.combo = 0;
         events.push({ type: "miss", lane: target.lane, chartTime });
       }
@@ -209,18 +218,32 @@ export class GameEngine {
     return events;
   }
 
-  /** Per-NOTE states for the renderer: pending if any target pending; hit iff all hit; else missed. */
-  private syncStates(): void {
-    for (let i = 0; i < this.states.length; i++) {
-      let pending = false;
-      let allHit = true;
-      for (const target of this.targets) {
-        if (target.noteIdx !== i) continue;
-        if (target.state === "pending") pending = true;
-        if (target.state !== "hit") allHit = false;
-      }
-      this.states[i] = pending ? "pending" : allHit ? "hit" : "missed";
+  /** A3 fix 1 diagnostic counter: number of per-note state recomputes (operation-count tests; O(1) cost). */
+  get noteStateRecomputes(): number {
+    return this.recomputes;
+  }
+
+  /** Diagnostic view of the internal per-note states array; T6 removes `noteStates` from the snapshot. */
+  noteStates(): readonly NoteState[] {
+    return this.states;
+  }
+
+  /** THE ONLY mutation path for target state: assign + recompute that one note's derived state. */
+  private setTargetState(target: Target, state: NoteState): void {
+    target.state = state;
+    this.recomputeNote(target.noteIdx);
+  }
+
+  /** Derive `states[noteIdx]` from that note's own targets only — O(≤2), O(1) vs O(notes×targets). */
+  private recomputeNote(noteIdx: number): void {
+    this.recomputes++;
+    let pending = false;
+    let allHit = true;
+    for (const t of this.targetsByNote[noteIdx] ?? []) {
+      if (t.state === "pending") pending = true;
+      if (t.state !== "hit") allHit = false;
     }
+    this.states[noteIdx] = pending ? "pending" : allHit ? "hit" : "missed";
   }
 
   protected emit(chartTime: number, events: JudgementEvent[]): GameSnapshot {

@@ -76,9 +76,12 @@ export class AudioClock implements GameClock {
     throw new Error("clock not started");
   }
 
-  chartTimeAt(timeStampMs: number): number {
+  chartTimeAt(timeStampMs: number, pair?: ClockPair): number {
     if (this.state !== "running") throw new Error("clock not started");
-    return inputChartTimeMs(timeStampMs, this.pairKeeper.get(this.nowMs()), {
+    // W3 T2 (D21 real-input probe): the caller may pass the EXACT pair it mapped through
+    // (one keeper.get shared by conversion and the e2e recorder); omitted → keeper (backward compatible).
+    const p = pair ?? this.pairKeeper.get(this.nowMs());
+    return inputChartTimeMs(timeStampMs, p, {
       sourceStartCtxTime: this.sourceStartCtxTime,
       audioSourceOffsetMs: this.audioSourceOffsetMs,
       audioOffsetMs: this.audioOffsetMs,

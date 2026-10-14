@@ -8,7 +8,8 @@ import { parseBeatmap, type Beatmap } from "@airhythm/shared";
 import { PerfMonitor, RENDER_BUDGET_MS } from "../../engine/perf.js";
 import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
-import { ClockPairKeeper } from "../../engine/clock-pair.js";
+import { ClockPairKeeper, samplePair } from "../../engine/clock-pair.js";
+import type { ClockPair } from "../../engine/time-math.js";
 import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, laneForKey } from "../../engine/controller.js";
 import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
@@ -19,6 +20,47 @@ import { Hud } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
 
+// W3 T2 (D21, round 10 P1-1 regression target): pure extraction of inputProbeRecord's
+// calculation — no React state, no side effects — so the recorder is unit-testable
+// without a running AudioContext. Kept module-private: the play page is a Next client
+// component and its generated .next/types OmitWithTag constraint forbids extra named
+// exports (TS2344); the e2e reads the buffer through __w2.inputErrorLog() instead.
+interface InputProbeEntry {
+  e: number; handlerNow: number; ageMs: number; dispatchDelayMs: number;
+  errMs: number; source: string; refUncertaintyMs: number;
+  refPerfBefore: number; refPerfAfter: number; refCtxNow0: number;
+}
+
+const computeProbeEntry = (
+  e: KeyboardEvent,
+  cached: ClockPair,
+  handlerNow: number,
+  ref: { perfBefore: number; perfAfter: number; ctxNow0: number },
+): InputProbeEntry => {
+  const cachedCtxAtE = cached.contextTimeSeconds + (e.timeStamp - cached.performanceTimeMs) / 1000;
+  // The reference anchor is the MIDPOINT of the perfBefore/perfAfter bracket — the ctx
+  // read brackets the handler entry, not post-processing time (round 10 P1-1).
+  const refPerfMid = (ref.perfBefore + ref.perfAfter) / 2;
+  const refCtxAtE = ref.ctxNow0 + (e.timeStamp - refPerfMid) / 1000;
+  // Bounded reference uncertainty (round 11 P2-19 + round 12 P2-6): (a) clock-advance
+  // uncertainty = bracket width; (b) render-quantum floor ≈ 2.8 ms (48 kHz quantum 2.7,
+  // 44.1 kHz 2.9 — repeated reads of currentTime within one quantum return the same value).
+  // Do NOT add |e.timeStamp − refPerfMid| — that anchoring offset the formula accounts for.
+  const refUncertaintyMs = Math.max(ref.perfAfter - ref.perfBefore, 2.8);
+  return {
+    e: e.timeStamp,
+    handlerNow,
+    ageMs: handlerNow - cached.sampledAt,
+    dispatchDelayMs: handlerNow - e.timeStamp,
+    errMs: Math.abs(cachedCtxAtE - refCtxAtE) * 1000,
+    source: cached.source,
+    refUncertaintyMs,
+    refPerfBefore: ref.perfBefore,
+    refPerfAfter: ref.perfAfter,
+    refCtxNow0: ref.ctxNow0,
+  };
+};
+
 // Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume)
 type Phase = "idle" | "loading" | "countdown" | "playing" | "paused";
 
@@ -27,6 +69,11 @@ type Phase = "idle" | "loading" | "countdown" | "playing" | "paused";
 const MAX_IMPORT_JSON_CHARS = 10 * 1024 * 1024;
 
 // debug hook for e2e (w2-sync) — set on mount, reads live refs
+type ProbePairResult = {
+  source: string;
+  residualMs: number | null;
+  reason: "accepted" | "missing-timestamp" | "invalid-latency" | "residual-guard";
+};
 declare global {
   interface Window {
     __w2?: {
@@ -34,6 +81,17 @@ declare global {
       playbackPositionMs(): number;
       phase(): string;
       noteCount(): number;
+      // W3 T2 (D21) invariant probes
+      ctxSnapshot(): {
+        currentTime: number;
+        baseLatency: number;
+        outputLatency: number;
+        tsContextTime: number | null;
+        tsPerformanceTime: number | null;
+      };
+      probePair(): ProbePairResult;
+      pairSampledAt(): number;
+      inputErrorLog(): InputProbeEntry[];
     };
   }
 }
@@ -70,6 +128,8 @@ export default function PlayPage() {
   const mountedRef = useRef(true); // false after unmount — aborts startGame's await chain
   const pauseCtlRef = useRef<SoloPauseController | null>(null);
   if (pauseCtlRef.current === null) pauseCtlRef.current = new SoloPauseController();
+  const pairKeeperRef = useRef<ClockPairKeeper | null>(null); // D21: lifecycle invalidation + e2e pairSampledAt
+  const inputProbeBufferRef = useRef<InputProbeEntry[]>([]); // D21 real-input mapping probe (E2E builds)
 
   const applyPhase = (p: Phase): void => {
     phaseRef.current = p; // sync first — guards re-entry before React re-renders
@@ -109,6 +169,7 @@ export default function PlayPage() {
         store.set(engine.snapshot());
       },
       pause: () => {
+        pairKeeperRef.current?.invalidate(); // D21 round 5 P0-1: BEFORE clock.pause() — no stale pair survives suspend
         clock.pause(); // T7: freezes chartTime/playbackPosition — never throws
         const pausedAt = clock.chartTimeMs(); // frozen value, not a live reading
         pauseCtlRef.current?.pause(pausedAt);
@@ -125,6 +186,7 @@ export default function PlayPage() {
     setResuming(true);
     runCountdown(() => {
       clock.start(at);
+      pairKeeperRef.current?.invalidate(); // D21 round 5 P0-1: after clock.start() (resume path)
       pauseCtlRef.current?.clear();
       setResuming(false);
       applyPhase("playing");
@@ -188,6 +250,60 @@ export default function PlayPage() {
         },
         phase: () => phaseRef.current,
         noteCount: () => chart.notes.length,
+        ctxSnapshot: () => {
+          const audioCtx = audioCtxRef.current;
+          if (!audioCtx) return { currentTime: 0, baseLatency: 0, outputLatency: 0, tsContextTime: null, tsPerformanceTime: null };
+          const ts = audioCtx.getOutputTimestamp?.() ?? null;
+          return {
+            currentTime: audioCtx.currentTime,
+            baseLatency: audioCtx.baseLatency,
+            outputLatency: audioCtx.outputLatency,
+            tsContextTime: ts?.contextTime ?? null,
+            tsPerformanceTime: ts?.performanceTime ?? null,
+          };
+        },
+        // probePair runs the REAL samplePair against live ctx state (round 4: the e2e must verify
+        // fallback SELECTION, not just raw residuals — one consistent accept/reject contract)
+        probePair: () => {
+          const audioCtx = audioCtxRef.current;
+          if (!audioCtx) return { source: "fallback", residualMs: null, reason: "missing-timestamp" as const };
+          // ONE clock snapshot for the whole probe (round 10 P2-7 + round 11 P2-18): the diagnostic
+          // residual and the samplePair call MUST use the same captured currentTime.
+          const ts = audioCtx.getOutputTimestamp?.() ?? null;
+          // AudioTimestamp fields are optional (lib.dom) — normalize so the reader type
+          // matches samplePair's contract (incomplete readings fall back inside samplePair)
+          const reading = ts && ts.performanceTime !== undefined && ts.contextTime !== undefined
+            ? { performanceTime: ts.performanceTime, contextTime: ts.contextTime }
+            : null;
+          const perfNow = performance.now();
+          const ctxNow = audioCtx.currentTime; // captured ONCE, used for both paths
+          const lat = { baseLatencySeconds: audioCtx.baseLatency, outputLatencySeconds: audioCtx.outputLatency };
+          // Validate BOTH latency components before computing any residual (round 10 P2-7):
+          // a partial sum (one valid, one invalid) is NEVER reported as a residual — it would
+          // be fabricated, not a measurement.
+          const base = lat.baseLatencySeconds, out = lat.outputLatencySeconds;
+          const latOk = base !== undefined && Number.isFinite(base) && base >= 0 && out !== undefined && Number.isFinite(out) && out >= 0;
+          const pair = samplePair(audioCtx, perfNow, () => reading, lat, { currentTime: ctxNow }); // round 11 P2-18: pass snapshot
+          let residualMs: number | null = null;
+          let reason: ProbePairResult["reason"];
+          if (!reading) {
+            reason = "missing-timestamp";
+          } else if (!latOk) {
+            reason = "invalid-latency"; // residualMs stays null — no fabricated partial sum
+          } else {
+            // Only now is the residual valid: both latency components present; same ctxNow as samplePair
+            residualMs = (ctxNow - (reading.contextTime + (perfNow - reading.performanceTime) / 1000 + base! + out!)) * 1000;
+            if (pair.source === "getOutputTimestamp") reason = "accepted";
+            else reason = "residual-guard"; // conversion available but rejected by the 25 ms guard
+          }
+          return { source: pair.source, residualMs, reason };
+        },
+        pairSampledAt: () => {
+          const keeper = pairKeeperRef.current;
+          if (!keeper) return 0;
+          return keeper.get(performance.now()).sampledAt;
+        },
+        inputErrorLog: () => inputProbeBufferRef.current.map((x) => ({ ...x })),
       };
     }
     const onResize = () => renderer.resize();
@@ -283,7 +399,10 @@ export default function PlayPage() {
             ? { performanceTime: t.performanceTime, contextTime: t.contextTime }
             : null;
         },
+        readLatency: () => ({ baseLatencySeconds: audioCtx.baseLatency, outputLatencySeconds: audioCtx.outputLatency }), // D21: pair conversion only — both components
       });
+      pairKeeperRef.current = pairKeeper;
+      inputProbeBufferRef.current = [];
       const clock = new AudioClock(audioCtx, pairKeeper);
       clock.load(buffer, chart.song.audioOffsetMs);
       clockRef.current = clock;
@@ -299,12 +418,34 @@ export default function PlayPage() {
       engineRef.current = engine;
       heldLanesRef.current = new Set();
 
+      // D21 lifecycle invalidation (round 5 P0-1): a pair sampled before a suspension
+      // must never map inputs after it (suspended time breaks the perf↔ctx linear
+      // extrapolation). AudioContext statechange (both directions) and visibilitychange
+      // invalidate the pair keeper.
+      const onCtxStateChange = (): void => {
+        pairKeeper.invalidate();
+      };
+      audioCtx.addEventListener?.("statechange", onCtxStateChange);
+      const onVisibilityForPair = (): void => {
+        pairKeeper.invalidate(); // hidden or visible: re-sample so suspended time never enters extrapolation
+      };
+      document.addEventListener("visibilitychange", onVisibilityForPair);
+
       // 3-2-1 countdown (wall-clock, solo form), then AudioClock.start(0)
       runCountdown(() => {
         clock.start(0);
+        pairKeeper.invalidate(); // after clock.start() (start path — round 5 P0-1)
         applyPhase("playing");
+        // Per-event probe state: the handler's inputChartTime closure records the EXACT
+        // pair it mapped through, and the onKey wrapper's recorder reads that same pair
+        // (one keeper.get per event, shared by conversion and recorder — round 9 P1-2).
+        const probeRef: { pairUsed: ClockPair | null } = { pairUsed: null };
         const rawKey = createKeyHandler({
-          inputChartTime: (ts) => clock.chartTimeAt(ts),
+          inputChartTime: (ts) => {
+            const pair = pairKeeperRef.current!.get(performance.now()); // D21: exact pair at mapping time
+            probeRef.pairUsed = pair; // recorder measures the EXACT mapped pair
+            return clock.chartTimeAt(ts, pair);
+          },
           engine: {
             // wrap judge: emit snapshot at keydown so HUD updates without waiting a frame (§2.3)
             isFrozen: () => engine.isFrozen(),
@@ -334,9 +475,39 @@ export default function PlayPage() {
             },
           },
         });
+        // D21 real-input probe (rounds 8–9, round 10 P1-1): the onKey wrapper obtains the
+        // pair ONCE per event (pairKeeper.get(handlerNow)), passes THAT pair to both the
+        // conversion (clock.chartTimeAt(ts, pairUsed)) and the recorder — the measured
+        // pair is provably the one the game used. The reference snapshot is captured
+        // BEFORE rawKey(e) runs so the handler-internal time never contaminates it.
+        // D21 real-input probe (rounds 8–9, round 10 P1-1): the onKey wrapper captures the
+        // reference snapshot BEFORE rawKey(e) runs so handler-internal time + clock
+        // advancement never contaminate it. The mapping itself goes through the KEY HANDLER's
+        // inputChartTime closure (clock.chartTimeAt(ts, pairKeeper.get(...)) — same fresh
+        // pair every call); the recorder's `cached` pair is the handlerNow pair, the exact
+        // object the mapping used at handler entry (keeper cache: same object until expiry).
+        const inputProbeRecord = (ev: KeyboardEvent, cached: ClockPair, handlerNow: number, ref: { perfBefore: number; perfAfter: number; ctxNow0: number }): void => {
+          if (phaseRef.current !== "playing") return;
+          const buf = inputProbeBufferRef.current;
+          buf.push(computeProbeEntry(ev, cached, handlerNow, ref));
+          if (buf.length > 200) buf.shift();
+        };
+        // Per-event probe state (one get per event, shared by conversion + recorder — round 9 P1-2)
+        const pendingInputProbeRef: { pairUsed: ClockPair | null } = { pairUsed: null };
         const onKey = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return; // paused/countdown: no judging (T10); chartTimeAt would throw
-          rawKey(e);
+          const handlerNow = performance.now();
+          probeRef.pairUsed = null;
+          const ref = {
+            perfBefore: handlerNow,
+            perfAfter: 0,
+            ctxNow0: 0,
+          };
+          ref.ctxNow0 = audioCtx.currentTime; // captured BEFORE rawKey (round 10 P1-1)
+          ref.perfAfter = performance.now(); // bracket width bounds the clock-advance uncertainty
+          rawKey(e); // the handler's inputChartTime closure records the EXACT pair it mapped through
+          const pairUsed = probeRef.pairUsed;
+          if (pairUsed) inputProbeRecord(e, pairUsed, handlerNow, ref);
         };
         const onKeyUp = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return;

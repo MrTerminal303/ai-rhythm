@@ -36,7 +36,7 @@ describe("integration invariants (each arrow pinned once)", () => {
     src.t = 1111; // past miss window
     store.set(engine.update());
     expect(renderer.last[0]).toBe("missed"); // engine → renderer (expired BEFORE render)
-    expect(store.getSnapshot()?.noteStates[0]).toBe("missed"); // engine → snapshot → store
+    expect(engine.noteStates()[0]).toBe("missed"); // engine → snapshot → store
   });
 
   it("judge → snapshot (keydown path)", () => {
@@ -47,7 +47,7 @@ describe("integration invariants (each arrow pinned once)", () => {
     clock.start(0);
     engine.judge(0, 1000);
     store.set(engine.snapshot());
-    expect(store.getSnapshot()?.noteStates[0]).toBe("hit");
+    expect(engine.noteStates()[0]).toBe("hit");
     expect(store.getSnapshot()?.combo).toBe(1);
   });
 

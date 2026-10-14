@@ -13,7 +13,6 @@ export interface GameSnapshot {
   accuracy: number;
   frozen: boolean;
   endTimeMs: number;
-  noteStates: readonly NoteState[]; // index = chart.notes index (aligned with chart.notes[i], NOT note.id)
   events: readonly JudgementEvent[];
 }
 

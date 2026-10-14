@@ -2,7 +2,7 @@ import type { Beatmap } from "@airhythm/shared";
 import { accuracyFraction, scoreFromWeights, grade, SCORE_WEIGHTS, JUDGE_WINDOWS } from "@airhythm/shared";
 import type { GameClock } from "./clock.js";
 import { judgeDt } from "./time-math.js";
-import { asCalibMs, asChartMs } from "./branded.js";
+import { asCalibMs, asChartMs, type ChartMs } from "./branded.js";
 import type { GameSnapshot, JudgementEvent, NoteState, Renderer } from "./types.js";
 import type { PerfMonitor } from "./perf.js";
 
@@ -76,7 +76,7 @@ export class GameEngine {
       this.totalTargets === 0
         ? opts.chart.song.durationMs
         : Math.max(...this.targets.map((t) => t.targetMs + (t.kind === "tail" ? TAIL_WINDOW_MS : AUTO_MISS_MS)));
-    this.current = this.emit(0, []);
+    this.current = this.emit(asChartMs(0), []);
     this.prev = this.current;
   }
 
@@ -114,7 +114,7 @@ export class GameEngine {
     // head miss-by-window: nothing marked — stays pending; update() expiry owns it (Review Focus 5)
 
     // emit immediately at keydown: rotation prev ← current ← new
-    const next = this.emit(inputMs, events);
+    const next = this.emit(asChartMs(inputMs), events);
     this.prev = this.current;
     this.current = next;
   }
@@ -151,7 +151,7 @@ export class GameEngine {
       // dt > 150 → ignore; the deadline already passed — update() owns expiry
     }
 
-    const next = this.emit(inputMs, events);
+    const next = this.emit(asChartMs(inputMs), events);
     this.prev = this.current;
     this.current = next;
   }
@@ -168,7 +168,7 @@ export class GameEngine {
     // length check: an empty chart has no targets and must NOT freeze via every() (vacuous true).
     const allResolved = this.targets.length > 0 && this.targets.every((t) => t.state !== "pending");
     if (allResolved || (chartTime > this.endTimeMs && chartTime - this.deviceCalibrationOffsetMs > this.endTimeMs)) this.freeze();
-    const next = this.emit(chartTime, events);
+    const next = this.emit(asChartMs(chartTime), events);
     this.prev = this.current;
     this.current = next;
     return next;
@@ -246,16 +246,42 @@ export class GameEngine {
     this.states[noteIdx] = pending ? "pending" : allHit ? "hit" : "missed";
   }
 
-  protected emit(chartTime: number, events: JudgementEvent[]): GameSnapshot {
+  protected emit(chartTime: ChartMs, events: JudgementEvent[]): GameSnapshot {
+    const score = scoreFromWeights(this.sumWeights, this.totalTargets, this.maxCombo);
+    const combo = this.combo;
+    const accuracy = accuracyFraction(this.sumWeights, this.totalTargets);
+    const frozen = this.frozen;
+    const endTimeMs = this.endTimeMs;
+    const cur = this.current;
+    // First emit (constructor) has no current yet — just allocate
+    if (cur === undefined) {
+      return {
+        chartTimeMs: chartTime,
+        score,
+        combo,
+        accuracy,
+        frozen,
+        endTimeMs,
+        events: events.slice(),
+      };
+    }
+    // observable-change check FIRST — no allocation on the unchanged path, and a previously
+    // published judgement flash must clear (cur.events non-empty → new snapshot with [])
+    if (
+      events.length === 0 && cur.events.length === 0 &&
+      cur.chartTimeMs === chartTime && cur.score === score && cur.combo === combo &&
+      cur.accuracy === accuracy && cur.frozen === frozen && cur.endTimeMs === endTimeMs
+    ) {
+      return cur; // stable identity — useSyncExternalStore's React infinite-render guard
+    }
     return {
       chartTimeMs: chartTime,
-      score: scoreFromWeights(this.sumWeights, this.totalTargets, this.maxCombo),
-      combo: this.combo,
-      accuracy: accuracyFraction(this.sumWeights, this.totalTargets),
-      frozen: this.frozen,
-      endTimeMs: this.endTimeMs,
-      noteStates: this.states.slice(), // copy — snapshot immutability (§2.7)
-      events: events.slice(),
+      score,
+      combo,
+      accuracy,
+      frozen,
+      endTimeMs,
+      events: events.slice(), // judgement flash — small, per-event only; NO per-note array (A3)
     };
   }
 }

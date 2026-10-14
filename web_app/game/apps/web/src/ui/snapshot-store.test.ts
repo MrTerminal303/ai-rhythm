@@ -4,7 +4,7 @@ import type { GameSnapshot } from "../engine/types.js";
 
 const snap = (score: number): GameSnapshot => ({
   chartTimeMs: 0, score, combo: 0, accuracy: 0, frozen: false,
-  endTimeMs: 1000, noteStates: [], events: [],
+  endTimeMs: 1000, events: [],
 });
 
 describe("SnapshotStore", () => {

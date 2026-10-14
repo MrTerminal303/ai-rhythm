@@ -43,11 +43,11 @@ describe("chart end + freeze ordering (§2.9)", () => {
     let snap = engine.update();
     expect(snap.frozen).toBe(false);
     expect(engine.isFrozen()).toBe(false);
-    expect(snap.noteStates[0]).toBe("pending"); // dt = 110 still judgeable
+    expect(engine.noteStates()[0]).toBe("pending"); // dt = 110 still judgeable
     src.t = 5111;
     snap = engine.update();
     expect(snap.frozen).toBe(true);
-    expect(snap.noteStates[0]).toBe("missed"); // expiry ran BEFORE freeze in same update
+    expect(engine.noteStates()[0]).toBe("missed"); // expiry ran BEFORE freeze in same update
     expect(snap.events).toEqual([{ type: "miss", lane: 0, chartTime: 5111 }]);
   });
 
@@ -58,7 +58,7 @@ describe("chart end + freeze ordering (§2.9)", () => {
     expect(engine.isFrozen()).toBe(false);
     engine.judge(0, 5111);
     const snap = engine.snapshot();
-    expect(snap.noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
     expect(snap.score).toBe(0);
     expect(snap.combo).toBe(0);
   });
@@ -106,6 +106,6 @@ describe("chart end + freeze ordering (§2.9)", () => {
     src.t = 2200;
     const snap = engine.update(); // endTime 2110 → frozen, note1 missed
     expect(snap.frozen).toBe(true);
-    expect(snap.noteStates).toEqual(["hit", "missed"]);
+    expect(engine.noteStates()).toEqual(["hit", "missed"]);
   });
 });

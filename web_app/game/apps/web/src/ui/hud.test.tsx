@@ -15,7 +15,6 @@ const snap: GameSnapshot = {
   accuracy: 0.95,
   frozen: false,
   endTimeMs: 60_000,
-  noteStates: [],
   events: [{ type: "hit", grade: "perfect", lane: 0, dt: 5, noteId: 3 }],
 };
 

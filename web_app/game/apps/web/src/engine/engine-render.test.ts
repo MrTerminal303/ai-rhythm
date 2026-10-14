@@ -62,8 +62,8 @@ describe("GameEngine update ordering (§2.9)", () => {
     // renderer already saw the expired state — pins expire → render, not just expire → emit
     expect(renderer.calls[0]?.states[0]).toBe("missed");
     expect(renderer.calls[0]?.states[1]).toBe("pending");
-    expect(snap.noteStates[0]).toBe("missed");
-    expect(snap.noteStates[1]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("missed");
+    expect(engine.noteStates()[1]).toBe("pending");
     expect(snap.events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
     expect(snap.score).toBe(0);
     expect(snap.combo).toBe(0);
@@ -74,7 +74,7 @@ describe("GameEngine update ordering (§2.9)", () => {
     clock.start(0);
     src.t = 1110;
     const snap = engine.update();
-    expect(snap.noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
   });
 
   it("no duplicate miss: second update +50ms after expiry re-emits nothing (pending guard)", () => {
@@ -83,12 +83,12 @@ describe("GameEngine update ordering (§2.9)", () => {
     src.t = 1111; // note0 (t=1000) expires: 1111 > 1000 + 110
     const first = engine.update();
     expect(first.events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
-    expect(first.noteStates).toEqual(["missed", "pending"]);
+    expect(engine.noteStates()).toEqual(["missed", "pending"]);
     expect(first.frozen).toBe(false);
     src.t = 1161; // +50ms — guard must skip the already-missed note0, no re-emission
     const second = engine.update();
     expect(second.events).toEqual([]);
-    expect(second.noteStates).toEqual(["missed", "pending"]);
+    expect(engine.noteStates()).toEqual(["missed", "pending"]);
     expect(second.frozen).toBe(false);
   });
 

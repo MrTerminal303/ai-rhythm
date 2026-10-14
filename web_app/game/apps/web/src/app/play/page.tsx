@@ -13,6 +13,7 @@ import type { ClockPair } from "../../engine/time-math.js";
 import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, laneForKey } from "../../engine/controller.js";
 import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
+import { ResyncController } from "../../engine/resync.js";
 import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
@@ -62,8 +63,11 @@ const computeProbeEntry = (
   };
 };
 
-// Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume)
-type Phase = "idle" | "loading" | "countdown" | "playing" | "paused";
+// Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume);
+// recovering (W3 T7 / A11) → countdown → playing (recovery resume) — T8 lands the `recovering`
+// PHASE enum entry in play-phase.ts; T7 wires the resync machine against the current Phase type
+// and replaces "paused"-string comparisons so T8's type swap is logic-neutral.
+type Phase = "idle" | "loading" | "countdown" | "playing" | "paused" | "recovering";
 
 // I5: cap the stored chart JSON before JSON.parse (mirrors MAX_TEXT_FILE_BYTES in
 // import/page.tsx — different file, same value; beatmaps are KB-scale).
@@ -93,6 +97,10 @@ declare global {
       probePair(): ProbePairResult;
       pairSampledAt(): number;
       inputErrorLog(): InputProbeEntry[];
+      // W3 T7 (A11): E2E-gated device-change simulation — forces one continuity check with an
+      // optional fake chart jump; returns true when the check completed and a recovery pause
+      // was entered, false on alignment-ok.
+      simulateDeviceChange(fakeJump?: boolean): Promise<boolean>;
     };
   }
 }
@@ -131,6 +139,49 @@ export default function PlayPage() {
   if (pauseCtlRef.current === null) pauseCtlRef.current = new SoloPauseController();
   const pairKeeperRef = useRef<ClockPairKeeper | null>(null); // D21: lifecycle invalidation + e2e pairSampledAt
   const inputProbeBufferRef = useRef<InputProbeEntry[]>([]); // D21 real-input mapping probe (E2E builds)
+  const resyncRef = useRef<ResyncController | null>(null); // A11 resync machine (T7); created next to pauseCtlRef
+  if (resyncRef.current === null) resyncRef.current = new ResyncController();
+  // A11 shared handler body: the 2 s poll and the __w2.simulateDeviceChange E2E hook both run
+  // this ONE function (review P0: page-level continuity is proven by the hook, not units).
+  // Returns true when the alignment-lost verdict entered the recovery pause; false on
+  // alignment-ok. Gated on "aligned" + "playing" — the resync table throws otherwise, so the
+  // raw poll must not dispatch blindly.
+  const resyncCheckRef = useRef<{
+    run: (fakeJump?: boolean) => Promise<boolean>;
+  } | null>(null);
+  if (resyncCheckRef.current === null) {
+    resyncCheckRef.current = {
+      run: (fakeJump = false): Promise<boolean> => {
+        const resync = resyncRef.current!;
+        const clock = clockRef.current;
+        if (!clock) return Promise.resolve(false);
+        if (resync.current !== "aligned") return Promise.resolve(false);
+        if (phaseRef.current !== "playing") return Promise.resolve(false);
+        const chartBefore = clock.chartTimeMs();
+        const wallBefore = performance.now(); // declared measurement interval (review P0)
+        resync.dispatch("device-change"); // aligned → resyncing (legal only from aligned)
+        return new Promise((resolve) => {
+          requestAnimationFrame(() => {
+            const wall = performance.now() - wallBefore;
+            const jump = fakeJump ? 500 : 0; // fakeJump simulates a discontinuous chart reading
+            const chartAfter = clock.chartTimeMs() + jump;
+            const ok = Number.isFinite(chartAfter) &&
+              chartAfter >= chartBefore &&
+              Math.abs(chartAfter - chartBefore - wall) <= 100;
+            if (ok) resync.dispatch("alignment-ok"); // resyncing → aligned — stay playing
+            else resync.dispatch("alignment-lost"); // resyncing → recovery-paused
+            if (ok) {
+              setDeviceToast(true); // latency may have shifted — still hint recalibrate
+              resolve(false);
+            } else {
+              enterPause("recovering"); // flush-then-freeze (D7 ordering) into the recovery phase
+              resolve(true);
+            }
+          });
+        });
+      },
+    };
+  }
 
   const applyPhase = (p: Phase): void => {
     phaseRef.current = p; // sync first — guards re-entry before React re-renders
@@ -156,8 +207,12 @@ export default function PlayPage() {
   };
 
   // blur / visibilitychange → hidden while playing: flush held-lane releases FIRST,
-  // then freeze clock, record position once, show overlay (Review Focus 4, W2 T17)
-  const pauseGame = (): void => {
+  // then freeze clock, record position once, show overlay (Review Focus 4, W2 T17).
+  // W3 T7 (A11): extracted into enterPause(target) — the flush-then-freeze order
+  // (flushHeldLanesBeforePause → clock.pause() → record → applyPhase(target)) is unchanged;
+  // target selects the post-pause phase: "paused" for user/blur pause, "recovering" for
+  // device-change / AudioContext-interruption recovery.
+  const enterPause = (target: "paused" | "recovering"): void => {
     if (phaseRef.current !== "playing") return;
     const clock = clockRef.current;
     const engine = engineRef.current;
@@ -174,16 +229,23 @@ export default function PlayPage() {
         clock.pause(); // T7: freezes chartTime/playbackPosition — never throws
         const pausedAt = clock.chartTimeMs(); // frozen value, not a live reading
         pauseCtlRef.current?.pause(pausedAt);
-        applyPhase("paused");
+        applyPhase(target);
       },
     });
   };
+  const pauseGame = (): void => enterPause("paused");
 
   const resumeGame = (): void => {
-    if (phaseRef.current !== "paused") return;
+    // W3 T7 (A11): resume accepts BOTH "paused" (user pause) and "recovering" (device-change /
+    // interruption recovery) — both render the resume overlay; data-testid distinguishes them.
+    if (phaseRef.current !== "paused" && phaseRef.current !== "recovering") return;
     const clock = clockRef.current;
     if (!clock) return;
     const at = pauseCtlRef.current?.pausedAtMs ?? 0;
+    // A11: user-resume is dispatched BEFORE the 3-2-1 (recovery-paused → resyncing is legal
+    // only from recovery-paused; it must NOT run from "paused" — user pause stays off-machine)
+    const fromRecovery = phaseRef.current === "recovering";
+    if (fromRecovery) resyncRef.current!.dispatch("user-resume");
     setResuming(true);
     runCountdown(() => {
       clock.start(at);
@@ -191,6 +253,7 @@ export default function PlayPage() {
       pauseCtlRef.current?.clear();
       setResuming(false);
       applyPhase("playing");
+      if (fromRecovery) resyncRef.current!.dispatch("alignment-ok"); // resyncing → aligned
     });
   };
 
@@ -305,6 +368,12 @@ export default function PlayPage() {
           return keeper.get(performance.now()).sampledAt;
         },
         inputErrorLog: () => inputProbeBufferRef.current.map((x) => ({ ...x })),
+        // W3 T7 (A11) E2E hook: same handler body the 2 s poll runs — forced variant with an
+        // optional fake latency jump. Returns true only when the alignment-lost verdict entered
+        // the recovery pause; false on alignment-ok or when no check ran (already resyncing or
+        // not playing). The continuity check + dispatch sequence is a pure function of clock +
+        // resync machine, so both the poll and this hook drive ONE shared body.
+        simulateDeviceChange: (fakeJump?: boolean) => resyncCheckRef.current?.run(fakeJump ?? false) ?? Promise.resolve(false),
       };
     }
     const onResize = () => renderer.resize();
@@ -317,7 +386,7 @@ export default function PlayPage() {
       if (e.repeat) return; // OS auto-repeat while held must not cycle pause↔resume
       if (e.key !== "Escape") return;
       if (phaseRef.current === "playing") pauseGame();
-      else if (phaseRef.current === "paused") resumeGame();
+      else if (phaseRef.current === "paused" || phaseRef.current === "recovering") resumeGame();
     };
     window.addEventListener("keydown", onEscape);
     const onVisibility = () => {
@@ -352,9 +421,14 @@ export default function PlayPage() {
     };
   }, [store]);
 
-  // output-device change (spec §4.7): poll observe() every 2 s while playing; sinkchange
-  // (best-effort, Chromium) marks dirty so the next poll fires even without a latency shift.
-  // Polling runs only while playing — paused sessions don't poll (minimal choice, T12).
+  // W2 T12 + W3 T7 (A11): output-device change detection — poll observe() every 2 s while
+  // playing. POLL-FALLBACK RATIONALE: no reliable cross-browser output-device-change event
+  // exists (sinkchange is Chromium-only and best-effort), so the 2 s poll is retained and
+  // subsumed into the A11 resync state machine: the poll only probes from "aligned",
+  // coalesces repeats while a check is in flight, and a detected change runs the declared
+  // continuity measurement (|ΔchartTime − Δwall| ≤ 100 ms across one frame, no NaN, no
+  // backwards jump) — ok → alignment-ok (stay playing, hint recalibrate), lost → recovery
+  // pause. sinkchange stays best-effort: it only marks the detector dirty.
   useEffect(() => {
     if (phase !== "playing") return;
     const audioCtx = audioCtxRef.current;
@@ -362,8 +436,14 @@ export default function PlayPage() {
     const detector = new DeviceChangeDetector(() => audioCtx.outputLatency);
     const onSink = (): void => detector.markDirty();
     audioCtx.addEventListener?.("sinkchange", onSink);
+    let checkInFlight = false;
+    const resync = resyncRef.current!;
+    const check = resyncCheckRef.current!;
     const id = window.setInterval(() => {
-      if (detector.observe()) setDeviceToast(true);
+      if (checkInFlight || resync.current !== "aligned") return; // coalesce + skip resyncing/recovery states
+      if (!detector.observe()) return; // no device change detected
+      checkInFlight = true;
+      void check.run(false).finally(() => { checkInFlight = false; });
     }, 2000);
     return () => {
       window.clearInterval(id);
@@ -424,6 +504,14 @@ export default function PlayPage() {
       // invalidate the pair keeper.
       const onCtxStateChange = (): void => {
         pairKeeper.invalidate();
+        // W3 T7 (A11): AudioContext statechange away from "running" while playing is an
+        // interruption — dispatch into the recovery machine, then enter the recovery pause.
+        // enterPause's phase guard makes re-entry from the recovery-paused state a no-op,
+        // so the repeated "interruption" self-loop is safe.
+        if (audioCtx.state !== "running" && phaseRef.current === "playing") {
+          resyncRef.current!.dispatch("interruption"); // legal from aligned, resyncing, and recovery-paused
+          enterPause("recovering");
+        }
       };
       audioCtx.addEventListener?.("statechange", onCtxStateChange);
       const onVisibilityForPair = (): void => {
@@ -614,7 +702,7 @@ export default function PlayPage() {
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}
-          data-testid={phase === "paused" ? "pause-overlay" : "start-overlay"}
+          data-testid={phase === "paused" ? "pause-overlay" : phase === "recovering" ? "recovering-overlay" : "start-overlay"}
         >
           {phase === "loading" && (
             <p style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>Preparing…</p>
@@ -627,10 +715,11 @@ export default function PlayPage() {
               {countdown}
             </p>
           )}
-          {phase === "paused" && (
+          {(phase === "paused" || phase === "recovering") && (
             <button
               type="button"
               onClick={resumeGame}
+              data-testid={phase === "recovering" ? "recovering-resume-button" : undefined}
               className="cursor-pointer rounded-[6px] border px-6 py-3 text-lg"
               style={{
                 borderColor: "var(--line)",
@@ -639,7 +728,7 @@ export default function PlayPage() {
                 fontFamily: "var(--font-mono)",
               }}
             >
-              Paused — click to resume
+              {phase === "recovering" ? "Recovering — click to resume" : "Paused — click to resume"}
             </button>
           )}
           {startError && (

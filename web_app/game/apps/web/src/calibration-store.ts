@@ -1,15 +1,12 @@
 // apps/web/src/calibration-store.ts
 export const CALIBRATION_KEY = "deviceCalibrationOffsetMs";
 
-export function readCalibrationValue(stored: string | null, outputLatencySeconds: number | undefined): number {
+export function readCalibrationValue(stored: string | null): number {
   if (stored !== null) {
     const v = Number.parseFloat(stored);
-    if (isValidCalibration(v)) return v; // finite AND within ±500 ms — corrupt/absent localStorage can never become the gameplay offset silently
+    if (isValidCalibration(v)) return v; // finite AND within ±500 ms
   }
-  if (outputLatencySeconds !== undefined && Number.isFinite(outputLatencySeconds) && outputLatencySeconds > 0) {
-    return outputLatencySeconds * 1000;
-  }
-  return 0;
+  return 0; // A2 (D21): contract-implied fallback — device latency is NEVER a calibration value
 }
 
 /** Plausible human-device range (spec-review guard). */
@@ -18,9 +15,9 @@ export function isValidCalibration(v: number): boolean {
   return Number.isFinite(v) && v >= -CALIBRATION_RANGE_MS && v <= CALIBRATION_RANGE_MS;
 }
 
-export function loadCalibration(outputLatencySeconds?: number): number {
-  if (typeof localStorage === "undefined") return readCalibrationValue(null, outputLatencySeconds);
-  return readCalibrationValue(localStorage.getItem(CALIBRATION_KEY), outputLatencySeconds);
+export function loadCalibration(): number {
+  if (typeof localStorage === "undefined") return readCalibrationValue(null);
+  return readCalibrationValue(localStorage.getItem(CALIBRATION_KEY));
 }
 
 export function saveCalibration(ms: number): void {

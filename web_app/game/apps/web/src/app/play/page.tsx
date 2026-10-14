@@ -407,13 +407,12 @@ export default function PlayPage() {
       const clock = new AudioClock(audioCtx, pairKeeper);
       clock.load(buffer, asAudioOffsetMs(chart.song.audioOffsetMs));
       clockRef.current = clock;
-      // outputLatency → first-run default guess (spec §4.5); stored calibration wins inside loadCalibration
       const engine = new GameEngine({
         chart,
         clock,
         renderer,
         perf,
-        deviceCalibrationOffsetMs: loadCalibration(audioCtx.outputLatency),
+        deviceCalibrationOffsetMs: loadCalibration(),
       });
       store.set(engine.snapshot()); // HUD shows 0s once the game is built
       engineRef.current = engine;

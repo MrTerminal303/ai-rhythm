@@ -16,6 +16,9 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm build && pnpm start",
+    // Weak-PC note (W3 T7): the Next build can OOM on <4 GB heaps — run with
+    // NODE_OPTIONS=--max-old-space-size=4096 set in the calling shell if the
+    // webServer times out. No in-tree env knob; CI/operator memory is the lever.
     url: "http://localhost:3000",
     reuseExistingServer: false,
     timeout: 120_000,

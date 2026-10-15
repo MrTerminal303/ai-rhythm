@@ -609,6 +609,9 @@ export default function PlayPage() {
           rawKey(e); // the handler's inputChartTime closure records the EXACT pair it mapped through
           const pairUsed = probeRef.pairUsed;
           if (pairUsed) inputProbeRecord(e, pairUsed, handlerNow, ref);
+          // A13: record input latency on accepted lane keys (real event time, not handler-local
+          // timing) — dispatch → handler completion; non-lane keys (Escape etc.) don't count
+          if (laneForKey(e.key) !== undefined) perf.recordInputLatency(performance.now() - e.timeStamp);
         };
         const onKeyUp = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return;
@@ -634,11 +637,19 @@ export default function PlayPage() {
               p95RenderDurationMs: perf.p95RenderDurationMs(),
               p95UpdateDurationMs: perf.p95UpdateDurationMs(),
               p95FrameIntervalMs: perf.p95FrameIntervalMs(),
+              p95InputLatencyMs: perf.p95InputLatencyMs(),
+              inputLatencySamples: perf.inputLatencyCount(),
+              heapUsedMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+                ? Math.round(((performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize) / 1048576)
+                : null,
               samples: perf.sampleCounts(),
-              pass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
+              // A6 gate field (T16): pass = FRAME-INTERVAL p95 ≤ 16.7 ms; render duration is data (renderPass)
+              pass: perf.p95FrameIntervalMs() <= RENDER_BUDGET_MS,
+              renderPass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
+              completion: "natural" as "natural" | "forced", // set to "forced" ONLY by __w2.forcePerfReport() (round 4)
               chart: benchmarkRef.current ? "benchmark" : "w1",
             };
-            console.log("[perf]", report);
+            console.log("[perf] " + JSON.stringify(report));
             store.set(engine.snapshot()); // final frozen snapshot reaches HUD
             return;
           }

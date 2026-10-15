@@ -5,6 +5,35 @@ import { canonicalizeBeatmap, canonicalJson } from "@airhythm/shared";
 
 const fix = (n: string) => readFileSync(new URL(`../fixtures/${n}`, import.meta.url), "utf8");
 
+// A8 (T11) helpers — all section-scoped: searches STOP at the next section
+// header, never skip over one; every data-line search is bounded to its section.
+function findSection(lines: string[], header: string): number {
+  return lines.findIndex((l) => l.trim() === header);
+}
+function sectionEnd(lines: string[], sectionIdx: number): number {
+  for (let i = sectionIdx + 1; i < lines.length; i++) {
+    if (lines[i]!.startsWith("[")) return i;
+  }
+  return lines.length;
+}
+function firstDataLineIn(lines: string[], sectionIdx: number): number {
+  const end = sectionEnd(lines, sectionIdx);
+  for (let i = sectionIdx + 1; i < end; i++) {
+    if (lines[i]!.trim() !== "") return i;
+  }
+  return -1;
+}
+function findLineInSection(lines: string[], sectionIdx: number, pred: (f: string[]) => boolean): number {
+  const end = sectionEnd(lines, sectionIdx);
+  for (let i = sectionIdx + 1; i < end; i++) {
+    const l = lines[i]!;
+    if (l.trim() !== "" && pred(l.split(","))) return i;
+  }
+  return -1;
+}
+
+const baseOsu = () => fix("basic-4k.osu");
+
 describe("parseOsu", () => {
   it("parses basic 4K: lanes, hold duration, timing bpm", () => {
     const p = parseOsu(fix("basic-4k.osu"));
@@ -25,10 +54,25 @@ describe("parseOsu", () => {
     expect([...p.timing].sort((a, b) => a.t - b.t)).toEqual(p.timing);
   });
 
-  it("SV line → sv-dropped warning, still imports", () => {
-    const p = parseOsu(fix("sv-warning.osu"));
-    expect(p.warnings.some((w) => w.code === "sv-dropped")).toBe(true);
-    expect(p.notes.length).toBeGreaterThan(0);
+  it("inherited (uninherited=0) timing point → sliderVelocity = -100/beatLength, bpm/meter inherited", () => {
+    // round 14 P1: official 8-field form time,beatLength,meter,sampleSet,sampleIndex,
+    // volume,uninherited,effects. Inherited point: uninherited (field 6) = 0 with
+    // a NEGATIVE beatLength; slider velocity = -100/beatLength.
+    const lines = fix("basic-4k.osu").split("\n");
+    const tpIdx = findSection(lines, "[TimingPoints]");
+    if (tpIdx === -1) throw new Error("test setup: no [TimingPoints] section in basic-4k.osu");
+    const end = sectionEnd(lines, tpIdx);
+    lines.splice(end, 0, "5000,-100,4,0,0,100,0,0", "6000,-50,4,0,0,100,0,0");
+    const r = parseOsu(lines.join("\n"));
+    expect(r.warnings).toEqual([]); // inherited rows are now first-class, not dropped
+    const inherited = r.timing.filter((t) => t.sliderVelocity !== undefined);
+    expect(inherited.map((t) => t.sliderVelocity)).toEqual([1.0, 2.0]);
+    expect(inherited.every((t) => t.bpm === r.timing[0]!.bpm)).toBe(true);
+    // a genuinely broken inherited row still fails the parse (guards against over-acceptance)
+    const linesBad = fix("basic-4k.osu").split("\n");
+    const endBad = sectionEnd(linesBad, findSection(linesBad, "[TimingPoints]"));
+    linesBad.splice(endBad, 0, "7000,xx,4,0,0,100,0,0"); // non-numeric beatLength
+    expect(() => parseOsu(linesBad.join("\n"))).toThrow(/timing points line \d+: inherited beatLength=xx/);
   });
 
   it("[Events] storyboard/background content → storyboard-dropped warning, still imports", () => {
@@ -92,17 +136,21 @@ describe("parseOsu", () => {
     expect(p.notes).toHaveLength(1); // tap kept, broken hold dropped
   });
 
-  it("malformed timing + hit-object lines → parse succeeds, one invalid-line warning per dropped line", () => {
-    const text = fix("basic-4k.osu")
-      .replace("0,500,4,2,0,60,1,0", "garbage,500,4,2,0,60,1,0")
-      .replace("64,192,1000,1,0,", "not-a-number,192,1000,1,0,");
+  it("malformed hit-object line → parse succeeds, one invalid-line warning; malformed time is a throw", () => {
+    // A8 (T11) split: non-numeric x still warns + drops (hit-object malformed-line
+    // contract kept); a non-numeric time is now a hard reject — the silent
+    // `0 → 1` coercion was indistinguishable from a real time 0.
+    const text = fix("basic-4k.osu").replace("64,192,1000,1,0,", "not-a-number,192,1000,1,0,");
     const p = parseOsu(text);
     const skipped = p.warnings.filter((w) => w.code === "invalid-line");
-    expect(skipped).toHaveLength(2);
-    expect(skipped[0]!.message).toMatch(/\[TimingPoints\] line \d+/);
-    expect(skipped[1]!.message).toMatch(/\[HitObjects\] line \d+/);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.message).toMatch(/\[HitObjects\] line \d+/);
     expect(p.notes).toHaveLength(1); // corrupted tap dropped, hold kept
-    expect(p.timing).toEqual([{ t: 0, bpm: 120, meter: 4 }]); // corrupted timing dropped → fallback
+    expect(p.timing).toEqual([{ t: 0, bpm: 120, meter: 4 }]);
+
+    expect(() =>
+      parseOsu(fix("basic-4k.osu").replace("64,192,1000,1,0,", "64,192,garbage,1,0,")),
+    ).toThrow(/hit objects line \d+: time=garbage must be an integer/);
   });
 
   it("no usable timing points → fallback { t: 0, bpm: 120, meter: 4 }", () => {
@@ -141,6 +189,101 @@ describe("parseOsu", () => {
   });
   it("rejects non-mania mode with clear error", () => {
     expect(() => parseOsu(fix("reject-standard.osu"))).toThrow(/osu!mania \(Mode 3\)/);
+  });
+
+  // A8 (T11): the silent clamp/soft drop paths are deleted — bad values reject
+  // with an actionable error naming section, line, and value.
+
+  it("REJECTS out-of-range x with an actionable error (no silent clamp)", () => {
+    const lines = baseOsu().split("\n");
+    const hoIdx = findSection(lines, "[HitObjects]");
+    if (hoIdx === -1) throw new Error("test setup: no [HitObjects] section in baseOsu()");
+    const hitLineIdx = firstDataLineIn(lines, hoIdx);
+    if (hitLineIdx === -1) throw new Error("test setup: no hit-object data line found");
+    const fields = lines[hitLineIdx]!.split(",");
+    const originalX = fields[0];
+    fields[0] = "600"; // x out of range
+    lines[hitLineIdx] = fields.join(",");
+    expect(fields[0]).toBe("600");
+    expect(fields[0]).not.toBe(originalX);
+    expect(() => parseOsu(lines.join("\n"))).toThrow(/hit objects line \d+: x=600 outside 0\.\.512/);
+  });
+
+  it("REJECTS zero beatLength on an UNINHERITED (BPM) timing point", () => {
+    const lines = baseOsu().split("\n");
+    const tpIdx = findSection(lines, "[TimingPoints]");
+    if (tpIdx === -1) throw new Error("test setup: no [TimingPoints] section in baseOsu()");
+    // round 14 P1: `uninherited` is FIELD 6 of the 8-field form (field 5 is
+    // volume — reading f[5] would classify ordinary BPM rows as inherited).
+    const bpmIdx = findLineInSection(lines, tpIdx, (f) => f.length === 8 && f[6] === "1");
+    if (bpmIdx === -1) {
+      const idx = firstDataLineIn(lines, tpIdx);
+      if (idx === -1) throw new Error("test setup: no timing-point data line found");
+      const f = lines[idx]!.split(",");
+      f[1] = "0";
+      lines[idx] = f.join(",");
+      expect(f[1]).toBe("0");
+      expect(() => parseOsu(lines.join("\n"))).toThrow(/timing points line \d+: beatLength=0 must be a finite positive number/);
+      return;
+    }
+    const f = lines[bpmIdx]!.split(",");
+    f[1] = "0";
+    lines[bpmIdx] = f.join(",");
+    expect(f[1]).toBe("0");
+    expect(() => parseOsu(lines.join("\n"))).toThrow(/timing points line \d+: beatLength=0 must be a finite positive number/);
+  });
+
+  it("REJECTS negative beatLength on an UNINHERITED (BPM) timing point", () => {
+    const lines = baseOsu().split("\n");
+    const tpIdx = findSection(lines, "[TimingPoints]");
+    if (tpIdx === -1) throw new Error("test setup: no [TimingPoints] section in baseOsu()");
+    let i = findLineInSection(lines, tpIdx, (f) => f.length === 8 && f[6] === "1");
+    if (i === -1) i = firstDataLineIn(lines, tpIdx);
+    if (i === -1) throw new Error("test setup: no uninherited timing point in baseOsu()");
+    const fields = lines[i]!.split(",");
+    fields[1] = "-100";
+    lines[i] = fields.join(",");
+    expect(fields[1]).toBe("-100");
+    expect(() => parseOsu(lines.join("\n"))).toThrow(/timing points line \d+: beatLength=-100 must be a finite positive number/);
+  });
+
+  it("REJECTS a non-negative beatLength on an inherited timing point", () => {
+    const lines = baseOsu().split("\n");
+    const tpIdx = findSection(lines, "[TimingPoints]");
+    if (tpIdx === -1) throw new Error("test setup: no [TimingPoints] section in baseOsu()");
+    const end = sectionEnd(lines, tpIdx);
+    lines.splice(end, 0, "5000,100,4,0,0,100,0,0"); // positive beatLength + uninherited=0
+    expect(() => parseOsu(lines.join("\n"))).toThrow(/timing points line \d+: inherited beatLength/);
+  });
+
+  it("REJECTS an invalid uninherited flag", () => {
+    const lines = baseOsu().split("\n");
+    const tpIdx = findSection(lines, "[TimingPoints]");
+    if (tpIdx === -1) throw new Error("test setup: no [TimingPoints] section in baseOsu()");
+    const i = firstDataLineIn(lines, tpIdx);
+    if (i === -1) throw new Error("test setup: no timing-point data line found");
+    const f = lines[i]!.split(",");
+    f[6] = "7"; // anything other than 0/1
+    lines[i] = f.join(",");
+    expect(() => parseOsu(lines.join("\n"))).toThrow(/timing points line \d+: invalid uninherited flag 7/);
+  });
+
+  it("does NOT coerce an invalid meter to 4 — drops the line with a warning instead", () => {
+    const lines = baseOsu().split("\n");
+    const tpIdx = findSection(lines, "[TimingPoints]");
+    if (tpIdx === -1) throw new Error("test setup: no [TimingPoints] section in baseOsu()");
+    const tpLineIdx = firstDataLineIn(lines, tpIdx);
+    if (tpLineIdx === -1) throw new Error("test setup: no timing-point data line found");
+    const fields = lines[tpLineIdx]!.split(",");
+    const originalMeter = fields[2];
+    fields[2] = "xx"; // meter = garbage
+    lines[tpLineIdx] = fields.join(",");
+    expect(fields[2]).toBe("xx");
+    expect(fields[2]).not.toBe(originalMeter);
+    const r = parseOsu(lines.join("\n"));
+    expect(JSON.stringify(r.warnings)).toMatch(/invalid-line/);
+    // no timing point carries a meter fabricated from the garbage field
+    expect(r.timing.every((t) => t.meter === 4 || t.meter === undefined)).toBe(true);
   });
 
   // Security caps (W2 final security review C2/I4): DoS guards, spec has no explicit cap
@@ -218,13 +361,27 @@ describe("candidateFromParsed → canonicalize", () => {
   });
 
   it("insane beatLength (sub-ms) → pulse derivation throws instead of hanging (C2 compound)", () => {
-    // beatLength 0.01 ms → 6 MHz "BPM" passes the finite/positive guard; without a
-    // pulses cap the nested loop iterates span/beatLength (or spins forever once
-    // float64 stops absorbing the increment)
+    // beatLength 0.01 ms → 6 MHz "BPM" — the MIN_EFF_BEAT_MS guard rejects
+    // before the pulse loop ever runs; MAX_PULSES is the backstop for anything
+    // that slips through.
     const p = parseOsu(
       `[General]\nMode: 3\n[Difficulty]\nCircleSize: 4\n[TimingPoints]\n0,0.01,4,2,0,60,1,0\n[HitObjects]\n64,192,5000,1,0,`,
     );
     expect(p.timing).toHaveLength(1);
-    expect(() => candidateFromParsed(p, "file:missing-audio")).toThrow(/too many pulses/);
+    expect(() => candidateFromParsed(p, "file:missing-audio")).toThrow(/beat rate too fast|too many pulses/);
+  });
+
+  it("inherited SV point → candidateFromParsed uses sliderVelocity for beat spacing", () => {
+    // beatLength -50 → sv = -100/-50 = 2.0 → beatMs = 100/2 = 50 ms.
+    // With bpm-only spacing the beat after 4000 would be at 4000 + 500
+    // (bpm=120 → 500 ms per beat), far outside the [4000,4200] window.
+    // With sv spacing: 4000, 4050, 4100, 4150, 4200.
+    // A later BPM point at 5000 extends durationMs so the sv window is covered.
+    const p = parseOsu(
+      `[General]\nMode: 3\n[Difficulty]\nCircleSize: 4\n[TimingPoints]\n0,500,4,2,0,60,1,0\n4000,-50,4,0,0,100,0,0\n5000,500,4,2,0,60,1,0\n[HitObjects]\n64,192,1000,1,0,`,
+    );
+    const c = candidateFromParsed(p, "file:missing-audio") as { pulses: { t: number }[] };
+    const inWindow = c.pulses.filter((x) => x.t >= 4000 && x.t <= 4200).map((x) => x.t);
+    expect(inWindow).toEqual([4000, 4050, 4100, 4150, 4200]);
   });
 });

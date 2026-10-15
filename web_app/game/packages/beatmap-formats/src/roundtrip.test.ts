@@ -30,7 +30,7 @@ for (const name of ["roundtrip-taps.osu", "roundtrip-holds-multibpm.osu", "round
       const parsed = parseOsu(exportOsu(first, "track.mp3"));
       expect(parsed.mode).toBe(3);
       expect(parsed.circleSize).toBe(4);
-      expect(parsed.warnings.filter((w) => w.code === "sv-dropped")).toHaveLength(0);
+      expect(parsed.warnings).toHaveLength(0); // A8: no drops remain — inherit/uninherited rows must be well-formed
     });
   });
 }

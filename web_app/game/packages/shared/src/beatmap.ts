@@ -3,50 +3,72 @@ import { KEY_COUNT, PULSE_DURATION_MS } from "./constants.js";
 
 const msInt = z.number().int();
 
-const noteSchema = z.object({
-  id: z.number().int().nonnegative(),
-  t: msInt.nonnegative(),
-  lane: z.number().int().min(0).max(3),
-  type: z.enum(["tap", "hold"]),
-  tier: z.enum(["primary", "secondary"]).optional(),
-  d: msInt.positive().optional(),
-});
+const noteSchema = z
+  .object({
+    id: z.number().int().nonnegative(),
+    t: msInt.nonnegative(),
+    lane: z.number().int().min(0).max(3),
+    type: z.enum(["tap", "hold"]),
+    tier: z.enum(["primary", "secondary"]).optional(),
+    d: msInt.positive().optional(),
+  })
+  .strict();
 
-const pulseSchema = z.object({
-  t: msInt.nonnegative(),
-  s: z.number().min(0).max(1),
-  k: z.string().optional(),
-  durationMs: msInt.positive().optional().default(PULSE_DURATION_MS), // D4: spec §2.2 — default derives from constants.ts, not a restated 80
-});
+const pulseSchema = z
+  .object({
+    t: msInt.nonnegative(),
+    s: z.number().min(0).max(1),
+    k: z.string().optional(),
+    durationMs: msInt.positive().optional().default(PULSE_DURATION_MS), // D4: spec §2.2 — default derives from constants.ts, not a restated 80
+  })
+  .strict();
 
 export const beatmapSchema = z
   .object({
     version: z.literal(1),
-    meta: z.object({
-      title: z.string(),
-      artist: z.string(),
-      creator: z.string(),
-      difficulty: z.string(),
-      tags: z.array(z.string()),
-      previewMs: msInt.nonnegative(),
-    }),
-    song: z.object({
-      songKey: z.string().min(1),
-      durationMs: msInt.positive(),
-      audioOffsetMs: msInt,
-    }),
+    meta: z
+      .object({
+        title: z.string(),
+        artist: z.string(),
+        creator: z.string(),
+        difficulty: z.string(),
+        tags: z.array(z.string()),
+        previewMs: msInt.nonnegative(),
+      })
+      .strict(),
+    song: z
+      .object({
+        songKey: z.string().min(1),
+        durationMs: msInt.positive(),
+        audioOffsetMs: msInt,
+      })
+      .strict(),
     timing: z
-      .array(z.object({ t: msInt.nonnegative(), bpm: z.number().positive(), meter: z.number().int().positive() }))
+      .array(
+        z
+          .object({
+            t: msInt.nonnegative(),
+            bpm: z.number().positive(),
+            meter: z.number().int().positive(),
+            // A8 (T11): inherited (uninherited=0) timing points carry slider
+            // velocity — osu beatLength is -100/velocity (e.g. -50 → 2.0)
+            sliderVelocity: z.number().positive().optional(),
+          })
+          // strict: unknown keys (e.g. re-exported extras) must still fail
+          .strict(),
+      )
       .min(1),
     keys: z.literal(KEY_COUNT),
     notes: z.array(noteSchema),
     pulses: z.array(pulseSchema),
-    gen: z.object({
-      source: z.enum(["manual", "import", "ai"]),
-      importedFrom: z.enum(["osu", "sm", "ssc", "mc", "qua", "json"]).optional(),
-      model: z.string().optional(),
-      timingSource: z.enum(["imported", "detected", "manual"]),
-    }),
+    gen: z
+      .object({
+        source: z.enum(["manual", "import", "ai"]),
+        importedFrom: z.enum(["osu", "sm", "ssc", "mc", "qua", "json"]).optional(),
+        model: z.string().optional(),
+        timingSource: z.enum(["imported", "detected", "manual"]),
+      })
+      .strict(),
   })
   .superRefine((b, ctx) => {
     const ids = new Set<number>();
@@ -89,6 +111,11 @@ export const beatmapSchema = z
     for (const [i, tm] of b.timing.entries()) {
       if (tm.t > b.song.durationMs) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["timing", i, "t"], message: "Timing time after song durationMs" });
+      }
+      // inherited (uninherited=0) points carry only scroll velocity — their bpm
+      // is inherited metadata, not a beat source; finite check suffices
+      if (tm.sliderVelocity !== undefined && !Number.isFinite(tm.bpm)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["timing", i, "bpm"], message: "Inherited timing point must carry a finite inherited bpm" });
       }
     }
   });

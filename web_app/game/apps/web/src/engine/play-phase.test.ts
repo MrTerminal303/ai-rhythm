@@ -37,7 +37,11 @@ describe("A12 grep gate — no ad-hoc phase sets in play/page.tsx", () => {
     expect(src).not.toMatch(/type\s+Phase\s*=/);
   });
   it("phaseRef is written only inside applyPhase (which delegates to the machine)", () => {
-    const writes = src.match(/phaseRef\.current\s*=/g) ?? [];
+    // `phaseRef.current =` is a write; `===`, `!==`, `==` are comparisons (the trailing
+    // `=` char of `===` would otherwise match `\s*=`). Exclude phaseMachineRef (the
+    // machine ref is a separate variable) and anchor the right-hand side to be sure.
+    const writes = src.replace(/phaseMachineRef\.current\s*=/g, "")
+      .match(/phaseRef\.current\s*=[^=]/g) ?? [];
     expect(writes.length).toBe(1); // exactly the one line inside applyPhase
   });
   it("page imports the machine", () => {

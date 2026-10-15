@@ -188,6 +188,7 @@ function makeFakeCanvas(): HTMLCanvasElement {
   const gl = makeFakeGL();
   return {
     getContext: (kind: string) => (kind === "webgl2" ? gl : null),
+    addEventListener: () => undefined, // A7 (W3 T10): constructor registers webglcontextlost/restored handlers
     clientWidth: 800,
     clientHeight: 600,
     width: 0,

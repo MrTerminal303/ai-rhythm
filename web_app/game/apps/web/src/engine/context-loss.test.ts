@@ -1,0 +1,113 @@
+// A7 (W3 T10): WebGL context-loss boundary — the thin attachContextHandlers path.
+// The renderer's GL listener registration + once-only onContextLost + initGL rebuild-on-restore
+// is covered here; the page-level pause-path (D7 ordering, score/position preservation) is
+// proven by e2e/w3-context-loss.spec.ts against a real browser.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Beatmap } from "@airhythm/shared";
+import { WebGLRenderer } from "./renderer-webgl.js";
+
+const chart: Beatmap = {
+  version: 1,
+  meta: { title: "t", artist: "a", creator: "c", difficulty: "d", tags: [], previewMs: 0 },
+  song: { songKey: "file:test", durationMs: 30_000, audioOffsetMs: 0 },
+  timing: [{ t: 0, bpm: 120, meter: 4 }],
+  keys: 4,
+  notes: [{ id: 0, t: 1000, lane: 0, type: "tap" }],
+  pulses: [{ t: 0, s: 1, durationMs: 80 }],
+  gen: { source: "manual", timingSource: "manual" },
+};
+
+// Minimal WebGL2 stub — mirrors engine-render.test.ts's makeFakeGL, plus a createBuffer
+// spy so the restore test can assert GL was re-initialized. The canvas stub records the
+// A7 lifecycle handlers (webglcontextlost/restored dispatch on the CANVAS element).
+function makeFakeGL(createBufferSpy: ReturnType<typeof vi.fn>): WebGL2RenderingContext {
+  const noop = () => undefined;
+  return {
+    createShader: () => ({}), shaderSource: noop, compileShader: noop,
+    getShaderParameter: () => true, getShaderInfoLog: () => null,
+    createProgram: () => ({}), attachShader: noop, linkProgram: noop,
+    getProgramParameter: () => true, getProgramInfoLog: () => null,
+    createBuffer: createBufferSpy,
+    bindBuffer: noop, bufferData: noop, bufferSubData: noop,
+    createTexture: () => ({}), bindTexture: noop, activeTexture: noop,
+    texImage2D: noop, texParameteri: noop,
+    getAttribLocation: (_p: unknown, name: string) => (name === "a_pos" ? 0 : 1),
+    getUniformLocation: () => ({}),
+    enableVertexAttribArray: noop, disableVertexAttribArray: noop, vertexAttribPointer: noop,
+    enable: noop, disable: noop, blendFunc: noop,
+    useProgram: noop, uniform2f: noop, uniform1i: noop,
+    viewport: noop, clearColor: noop, clear: noop, drawArrays: noop,
+    deleteBuffer: noop, deleteProgram: noop, deleteTexture: noop,
+    getExtension: () => null,
+    // enums
+    ARRAY_BUFFER: 34962, DYNAMIC_DRAW: 35044, FLOAT: 5126,
+    BLEND: 3042, SRC_ALPHA: 770, ONE_MINUS_SRC_ALPHA: 771,
+    COLOR_BUFFER_BIT: 16384, TRIANGLES: 4,
+    VERTEX_SHADER: 35633, FRAGMENT_SHADER: 35632,
+    COMPILE_STATUS: 35713, LINK_STATUS: 35714,
+    TEXTURE_2D: 3553, TEXTURE0: 33984,
+    TEXTURE_MIN_FILTER: 10241, TEXTURE_MAG_FILTER: 10240,
+    TEXTURE_WRAP_S: 10242, TEXTURE_WRAP_T: 10243,
+    LINEAR: 9729, CLAMP_TO_EDGE: 33071,
+  } as unknown as WebGL2RenderingContext;
+}
+
+type Handlers = Record<string, (e: { preventDefault(): void }) => void>;
+
+function makeFakeCanvas(gl: WebGL2RenderingContext, handlers: Handlers): HTMLCanvasElement {
+  return {
+    getContext: (kind: string) => (kind === "webgl2" ? gl : null),
+    addEventListener: (type: string, fn: (e: { preventDefault(): void }) => void) => { handlers[type] = fn; },
+    removeEventListener: () => undefined,
+    clientWidth: 800,
+    clientHeight: 600,
+    width: 0,
+    height: 0,
+    dataset: {},
+  } as unknown as HTMLCanvasElement;
+}
+
+describe("A7 renderer context-loss boundary", () => {
+  beforeEach(() => {
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("contextlost: preventDefault called (restore allowed), onContextLost fired exactly once", () => {
+    const handlers: Handlers = {};
+    const gl = makeFakeGL(vi.fn(() => ({})));
+    const onContextLost = vi.fn();
+    new WebGLRenderer(makeFakeCanvas(gl, handlers), chart, { onContextLost });
+
+    const ev = { preventDefault: vi.fn() };
+    handlers["webglcontextlost"]?.(ev);
+    expect(ev.preventDefault).toHaveBeenCalledTimes(1);
+    expect(onContextLost).toHaveBeenCalledTimes(1);
+    // second contextlost event (browser can re-fire) — no stacking
+    handlers["webglcontextlost"]?.(ev);
+    expect(onContextLost).toHaveBeenCalledTimes(1);
+  });
+
+  it("contextrestored: initGL runs again (createBuffer count increases), onContextRestored fired", () => {
+    const handlers: Handlers = {};
+    const createBuffer = vi.fn(() => ({}));
+    const gl = makeFakeGL(createBuffer);
+    const onContextLost = vi.fn();
+    const onContextRestored = vi.fn();
+    const renderer = new WebGLRenderer(makeFakeCanvas(gl, handlers), chart, { onContextLost, onContextRestored });
+
+    const afterCtor = createBuffer.mock.calls.length;
+    expect(afterCtor).toBe(2); // solid + textured buffer at construction
+
+    // drive the lost → restored lifecycle
+    handlers["webglcontextlost"]?.({ preventDefault: vi.fn() });
+    expect(onContextLost).toHaveBeenCalledTimes(1);
+    handlers["webglcontextrestored"]?.({ preventDefault: () => undefined });
+    expect(onContextRestored).toHaveBeenCalledTimes(1);
+    expect(createBuffer.mock.calls.length).toBeGreaterThan(afterCtor); // GL rebuilt on restore
+    renderer.dispose();
+  });
+});

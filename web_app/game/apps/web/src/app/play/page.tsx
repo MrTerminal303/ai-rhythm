@@ -283,7 +283,20 @@ export default function PlayPage() {
     } else {
       chart = parseBeatmap(benchmark ? benchChart : w1Chart);
     }
-    const renderer = new WebGLRenderer(canvas, chart);
+    // A7 (W3 T10): context loss takes the standard pause path — no second pause semantic.
+    // onContextLost → enterPause("paused") (D7 flush-then-freeze ordering, as user pause).
+    // onContextRestored → GL rebuild is renderer-internal; UI stays paused/resumable.
+    // Held-lanes were flushed at pause (heldLanesRef cleared); a still-held key re-syncs
+    // ONLY through normal input semantics on its next event (a still-held key produces no
+    // new keydown until re-pressed — no synthetic releases, no artificial keyup dispatch).
+    const renderer = new WebGLRenderer(canvas, chart, {
+      onContextLost: () => {
+        // only a RUNNING game pauses; loss while paused/recovering/completed is renderer-internal
+        // (phaseMachineRef is read-only here — the machine owns transitions; enterPause guards)
+        if (phaseMachineRef.current!.current === "playing") enterPause("paused");
+      },
+      onContextRestored: () => { /* GL rebuild is renderer-internal; UI already paused/resumable */ },
+    });
     // signal ONLY after the renderer's constructor succeeded (it throws if WebGL2 is
     // unavailable) — the B6 e2e waits on this attribute instead of calling getContext()
     // itself, which would succeed even if the app never initialized the renderer

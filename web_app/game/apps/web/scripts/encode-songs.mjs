@@ -4,10 +4,15 @@
 // re-pinning checksums in song-fixtures.test.ts (that is the intentional contract).
 // Mono contract (verified by probe, 2026-10-16): an <audio> element playing a mono WAV,
 // captured via el.captureStream(), records a GENUINELY MONO (1-channel) Opus webm
-// (data-URL probe: decodeAudioData → numberOfChannels 1; the track's channelCount
-// setting is undefined on data:/blob: URL tracks, so the decode check is the guard).
-// The createMediaStreamDestination() path is NOT usable — it always emits a 2-channel
-// MediaStream (track channelCount=2), which decodeAudioData then reports as stereo.
+// (probe: decodeAudioData → numberOfChannels 1; the track's channelCount setting is
+// undefined on data:/blob: URL tracks, so the post-encode decode check is the guard).
+// Rejected alternative: a MediaStreamAudioDestinationNode (createMediaStreamDestination)
+// is stereo BY DEFAULT (track channelCount 2 → decodeAudioData reports 2 channels), but it
+// CAN be made mono with `dest.channelCount = 1; dest.channelCountMode = "explicit"`.
+// The captureStream() route was chosen instead because it records the element's own output
+// (no context/stream wiring to keep in sync) and needs no channel-count override to obey.
+// (Earlier wording here claimed MediaStreamDestination "provably cannot produce mono" — that
+// was wrong.)
 // C2 ($0): no new dependency — uses @playwright/test's already-installed chromium.
 // Round 11 P1-5: .mjs is plain JavaScript — no TypeScript annotations allowed.
 // review P0: explicit autoplay permission — a muted element is the recording source, so

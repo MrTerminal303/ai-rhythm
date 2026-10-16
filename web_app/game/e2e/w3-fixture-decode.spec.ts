@@ -2,16 +2,20 @@
 // W3 T14: spec §8 default 1's provisional gate — the .webm/Opus fixture choice is only
 // confirmed when decodeAudioData succeeds on ALL THREE engines (chromium/firefox/webkit).
 // Per song: load raw bytes, decode in-page, assert mono, non-silent first 2 s, and duration
-// within ±1 s of nominal. The spec runs under every browser project in playwright.config.
+// within ±1 s of nominal.
 //
-// WEBKIT PLATFORM GAP (operator/CI environment, 2026-10-16): the Playwright WebKit build in
-// this environment exposes NO Web Audio API (AudioContext/webkitAudioContext both undefined;
-// MediaSource undefined), and its <audio> element returns MEDIA_ERR_SRC_NOT_SUPPORTED (code 4)
-// for our Opus-in-webm fixtures. decodeAudioData therefore cannot run under WebKit at all.
-// Chromium + Firefox both PASS (mono, peak>0.01, duration within ±1 s). When this runs in an
-// environment where WebKit has Web Audio (macOS-attached WebKit or a WebKit build with
-// libopus), the webkit project verifies the third engine. Per spec §8 default 1 the .webm
-// choice stays PROVISIONAL until all three engines verify; do not record WebKit as PASS here.
+// RUNNER: this spec needs the three-engine projects declared in the committed
+// `apps/web/w3-fixture-decode.config.ts` (chromium/firefox/webkit). The default
+// `apps/web/playwright.config.ts` declares no `projects`, so it runs chromium only.
+//
+// WEBKIT PLATFORM GAP (this environment, 2026-10-16): the Playwright WebKit build here
+// exposes NO Web Audio API (AudioContext/webkitAudioContext/MediaSource all undefined) and
+// its <audio> element rejects the Opus webm fixtures (MEDIA_ERR_SRC_NOT_SUPPORTED code 4),
+// so decodeAudioData cannot run under WebKit at all. When that happens this test THROWS —
+// it goes RED (no test.fail()/skip: an inverted expectation would report the gap as a
+// passing gate). Chromium + Firefox PASS the decode contract; per spec §8 default 1 the
+// .webm/Opus choice stays PROVISIONAL until a WebKit build WITH Web Audio (macOS-attached
+// WebKit, or a WebKit with libopus) confirms the third engine — that run turns this green.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
@@ -24,13 +28,11 @@ for (const [file, nominalSec] of Object.entries(NOMINAL)) {
   // the title expression at registration time throws. Use a static title + testInfo param.
   test(`decodeAudioData: ${file}`, async ({ page, browserName }, testInfo) => {
     if (browserName === "webkit") {
-      // Operator/CI platform gate: if this WebKit build has no Web Audio API at all,
-      // the decode contract cannot run. Fail loudly with an explicit platform-gap notice
-      // rather than a bare skip — spec §8 default 1 requires all three engines to PASS,
-      // and a silent skip would let a WebKit gap masquerade as a passing gate.
+      // A WebKit build with Web Audio is a hard requirement for this gate. If it is absent
+      // the test MUST go red (bare throw) — a `test.fail()` here would mark "failed" as the
+      // EXPECTED status and the run would report the gap as a passing gate.
       const hasAudio = await page.evaluate(() => !!(window.AudioContext ?? (window as { webkitAudioContext?: unknown }).webkitAudioContext));
       if (!hasAudio) {
-        test.fail();
         throw new Error(
           `[fixture-decode] WEBKIT PLATFORM GAP: no Web Audio API (AudioContext/webkitAudioContext both undefined) in this WebKit build, ` +
           `and <audio> element rejects the Opus webm fixtures (MEDIA_ERR_SRC_NOT_SUPPORTED code 4). ` +

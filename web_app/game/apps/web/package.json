@@ -11,7 +11,8 @@
     "gen:audio": "node scripts/gen-audio-fixture.mjs",
     "gen:songs": "node scripts/gen-audio-fixture.mjs --songs",
     "encode:songs": "node scripts/encode-songs.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:fixture-decode": "playwright test --config w3-fixture-decode.config.ts"
   },
   "dependencies": {
     "@airhythm/shared": "workspace:*",

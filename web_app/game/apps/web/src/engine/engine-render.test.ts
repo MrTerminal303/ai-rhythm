@@ -213,7 +213,7 @@ describe("atlas-textured note path (W2 T22)", () => {
   beforeEach(() => {
     // node env: no DOM — the renderer reads --you via getComputedStyle and dpr via window
     vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    vi.stubGlobal("window", { devicePixelRatio: 1, setTimeout: globalThis.setTimeout.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis) });
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -294,7 +294,7 @@ describe("flashAlpha fade helper", () => {
 describe("hit/missed note flash rendering (W1 deferral)", () => {
   beforeEach(() => {
     vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    vi.stubGlobal("window", { devicePixelRatio: 1, setTimeout: globalThis.setTimeout.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis) });
   });
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -73,6 +73,12 @@ export class WebGLRenderer implements Renderer {
   private atlasSize: { w: number; h: number } | null = null;
   private atlasInitStarted = false; // race guard: initAtlas transitions state at most once
   private atlasInitPromise: Promise<boolean> | null = null;
+  // A9: permanent atlas outcome — "loaded" (texture path active) or "fallback" (code-drawn,
+  // set once on timeout/error and NEVER retried per session). Public read-only seam for
+  // atlas-fallback.test.ts and the e2e "no unhandled rejection" check.
+  private _atlasState: "loaded" | "fallback" | null = null;
+  /** A9 test seam: current atlas outcome (null until initAtlas settles). */
+  get atlasState(): "loaded" | "fallback" | null { return this._atlasState; }
   private disposed = false;
   /** test seam (W2 T22): cumulative gl.drawArrays calls per pipeline since construction */
   readonly drawCounts = { solid: 0, textured: 0 };
@@ -382,22 +388,27 @@ export class WebGLRenderer implements Renderer {
   }
 
   private async loadAtlas(): Promise<boolean> {
+    // A9: bounded wait — a stuck/blocked atlas route must not hang the opportunistic load.
+    // Both fetches share ONE AbortController; a 5 s window aborts them and the renderer
+    // commits the permanent "fallback" state (code-drawn path, set once per session).
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 5000); // A9: bounded wait
     try {
-      const res = await fetch("/atlas/atlas.json");
-      if (!res.ok) return false;
+      const res = await fetch("/atlas/atlas.json", { signal: controller.signal });
+      if (!res.ok) throw new Error(`atlas.json HTTP ${res.status}`);
       const json = (await res.json()) as AtlasJson;
       const tapRect = json.frames[TAP_FRAME];
       const holdRect = json.frames[HOLD_FRAME];
       const size = json.meta?.size;
-      if (!tapRect || !holdRect || !size?.width || !size?.height) return false;
-      const imgRes = await fetch("/atlas/sprites.png");
-      if (!imgRes.ok) return false;
+      if (!tapRect || !holdRect || !size?.width || !size?.height) throw new Error("atlas.json missing required frames");
+      const imgRes = await fetch("/atlas/sprites.png", { signal: controller.signal });
+      if (!imgRes.ok) throw new Error(`sprites.png HTTP ${imgRes.status}`);
       const bitmap = await createImageBitmap(await imgRes.blob());
       const gl = this.gl;
       const tex = gl.createTexture();
       if (!tex) {
         bitmap.close();
-        return false;
+        throw new Error("texture creation failed");
       }
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
@@ -410,15 +421,20 @@ export class WebGLRenderer implements Renderer {
       if (this.disposed) {
         // Strict Mode remount can dispose the renderer mid-load — don't leak the texture
         gl.deleteTexture(tex);
+        this._atlasState = "fallback"; // aborted by teardown — permanent code-drawn path
         return false;
       }
       // commit LAST: success-only state transition (atlasFrames/atlasTex are never cleared)
       this.atlasTex = tex;
       this.atlasSize = { w: size.width, h: size.height };
       this.atlasFrames = { tap: withSlice(tapRect), hold: withSlice(holdRect) };
+      this._atlasState = "loaded";
       return true;
     } catch {
+      this._atlasState = "fallback"; // permanent for the session — code-drawn path (W2)
       return false;
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 

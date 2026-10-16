@@ -633,6 +633,7 @@ export default function PlayPage() {
             return;
           }
           if (engine.isFrozen()) {
+            if (phaseRef.current === "playing") applyPhase("completed"); // A9: distinct end-of-run state (machine-legal, T8)
             const report = {
               p95RenderDurationMs: perf.p95RenderDurationMs(),
               p95UpdateDurationMs: perf.p95UpdateDurationMs(),
@@ -724,7 +725,34 @@ export default function PlayPage() {
           </Link>
         </div>
       )}
-      {!importError && phase !== "playing" && (
+      {/* A9 (T13): end-of-run results overlay — DISTINCT from pause. T21 fills the body;
+          today it is minimal (title + final score + a way back). The start/pause overlay below
+          is excluded from "completed" so the two never share a block. */}
+      {!importError && phase === "completed" && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+          style={{ background: "var(--bg)" }}
+          data-testid="results-overlay"
+        >
+          <p
+            data-testid="results-title"
+            style={{ color: "var(--text)", fontFamily: "var(--font-mono)" }}
+          >
+            Run complete
+          </p>
+          <p style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            Final score: {snapshot ? snapshot.score : 0}
+          </p>
+          <Link
+            href="/"
+            className="rounded-[10px] border px-6 py-3 text-sm"
+            style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+          >
+            Back to library
+          </Link>
+        </div>
+      )}
+      {!importError && phase !== "playing" && phase !== "completed" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}

@@ -1722,3 +1722,8 @@ apps/web/public/atlas/frames/ui/button_rectangle_flat.png,generated from assets/
 apps/web/public/atlas/frames/ui/input_rectangle.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
 apps/web/public/atlas/frames/ui/slide_horizontal_grey_section_wide.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
 apps/web/public/atlas/sprites.png,generated from assets/src,Kenney,CC0,2026-10-07,,y
+apps/web/public/songs/short.webm,generated: apps/web/scripts/gen-audio-fixture.mjs + encode-songs.mjs,AIRhythm,owned,2026-10-16,,y
+apps/web/public/songs/medium.webm,generated: apps/web/scripts/gen-audio-fixture.mjs + encode-songs.mjs,AIRhythm,owned,2026-10-16,,y
+apps/web/public/songs/long.webm,generated: apps/web/scripts/gen-audio-fixture.mjs + encode-songs.mjs,AIRhythm,owned,2026-10-16,,y
+apps/web/public/songs/short.osu,generated: apps/web/scripts/gen-audio-fixture.mjs,AIRhythm,owned,2026-10-16,,y
+apps/web/public/songs/long.osu,generated: apps/web/scripts/gen-audio-fixture.mjs,AIRhythm,owned,2026-10-16,,y

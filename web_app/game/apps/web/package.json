@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "gen:audio": "node scripts/gen-audio-fixture.mjs",
+    "gen:songs": "node scripts/gen-audio-fixture.mjs --songs",
+    "encode:songs": "node scripts/encode-songs.mjs",
     "e2e": "playwright test"
   },
   "dependencies": {

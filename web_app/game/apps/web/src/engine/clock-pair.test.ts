@@ -133,6 +133,29 @@ describe("A1 contract (D21): getOutputTimestamp pairs convert output-stream → 
     expect(c).not.toBe(a);        // re-sampled despite age < maxAge
     expect(c.contextTimeSeconds).toBe(10.05);
   });
+  it("W3 T15 claim-1 gap: a visibility transition re-samples the pair — suspended time never enters extrapolation", () => {
+    // What the page does on `visibilitychange` (both directions) is ONE thing: keeper.invalidate(),
+    // so a pair sampled before the transition can never map an input after it (page.tsx
+    // onVisibilityForPair). This is the claim-1 visibility row: without the invalidate, the stale
+    // pair extrapolates the 20 s of wall time the suspended AudioContext never advanced.
+    let ctxTime = 40;
+    const keeper = new ClockPairKeeper({ get currentTime() { return ctxTime; } }, { maxAgeMs: 1000 });
+    const CTX = { sourceStartCtxTime: 40, audioSourceOffsetMs: asBufferMs(0), audioOffsetMs: asAudioOffsetMs(0) };
+    const before = keeper.get(5000);
+    expect(inputChartTimeMs(asPerfMs(5000), before, CTX)).toBeCloseTo(0, 6); // pair sample instant
+
+    // tab hidden: ctx.currentTime FREEZES (browser behavior) while wall time runs on — 20 s pass.
+    keeper.invalidate(); // ← the visibilitychange handler
+
+    const after = keeper.get(25000);
+    expect(after).not.toBe(before);              // re-sampled, not the pre-suspension pair
+    expect(after.sampledAt).toBe(25000);
+    expect(after.contextTimeSeconds).toBe(40);   // the frozen ctx value, re-read
+    // An input delivered at the post-resume instant maps to the FROZEN chart position, not to
+    // 5000 + (25000 − 5000) = 20 s of phantom playback.
+    expect(inputChartTimeMs(asPerfMs(25000), after, CTX)).toBeCloseTo(0, 6);
+    expect(inputChartTimeMs(asPerfMs(25000), before, CTX)).toBeCloseTo(20_000, 6); // the stale-pair bug this pins
+  });
   it("latency is applied by the pair sampler ONLY — inputChartTimeMs adds nothing extra", () => {
     const pair = samplePair({ currentTime: 40 }, 5000, () => READING, LAT);
     // same instant as sourceStart → 0 ms; 100 ms later → 100 ms (no extra latency term)

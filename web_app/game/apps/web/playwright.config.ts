@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "../../e2e", // apps/web → web_app/game/e2e (NOT "../e2e", which would resolve to apps/e2e)
@@ -27,4 +27,15 @@ export default defineConfig({
     // (Playwright merges this over process.env).
     env: { NEXT_PUBLIC_E2E: "1" },
   },
+  // W3 T15 (A5): the default chromium project runs EVERYTHING (unchanged behavior — verified by
+  // `playwright test --list`, whose count for the non-grep specs is unaffected).
+  // Firefox and webkit run ONLY the multi-engine evidence specs (grep matches the spec FILE PATH):
+  // the claim-2 timing suite, T14's decode gate, and T2's D21 conversion invariant — the D21
+  // invariant is claim-1 evidence on all three engines. The rest of the suite stays chromium-only
+  // so CI time does not multiply by three.
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] }, grep: /w3-timing|w3-fixture-decode|w3-clock-invariant/ },
+    { name: "webkit", use: { ...devices["Desktop Safari"] }, grep: /w3-timing|w3-fixture-decode|w3-clock-invariant/ },
+  ],
 });

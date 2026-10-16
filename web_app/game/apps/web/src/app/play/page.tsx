@@ -18,10 +18,15 @@ import { PlayPhaseMachine, PLAY_TRANSITIONS, type PlayPhase } from "../../engine
 import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
+import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSource } from "../../chart-source.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { Hud } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
+
+// W3 T15 (A5): ?fixtureAudio is a dev/E2E-only source (chart-source.ts holds the documented
+// precedence). Production builds ignore it — Vercel leaves NEXT_PUBLIC_E2E unset.
+const FIXTURE_PARAMS_ENABLED = process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
 
 // W3 T2 (D21, round 10 P1-1 regression target): pure extraction of inputProbeRecord's
 // calculation — no React state, no side effects — so the recorder is unit-testable
@@ -95,6 +100,11 @@ declare global {
       probePair(): ProbePairResult;
       pairSampledAt(): number;
       inputErrorLog(): InputProbeEntry[];
+      // W3 T15 (A5) claim-2 evidence hooks
+      notes(): { t: number; lane: number }[];
+      dts(): number[];
+      suspend(): Promise<void>;
+      resume(): Promise<void>;
       // W3 T7 (A11): E2E-gated device-change simulation — forces one continuity check with an
       // optional fake chart jump; returns true when the check completed and a recovery pause
       // was entered, false on alignment-ok.
@@ -139,6 +149,8 @@ export default function PlayPage() {
   if (pauseCtlRef.current === null) pauseCtlRef.current = new SoloPauseController();
   const pairKeeperRef = useRef<ClockPairKeeper | null>(null); // D21: lifecycle invalidation + e2e pairSampledAt
   const inputProbeBufferRef = useRef<InputProbeEntry[]>([]); // D21 real-input mapping probe (E2E builds)
+  const dtsRef = useRef<number[]>([]); // W3 T15 (A5) claim 2: hit-event dt collection (E2E builds)
+  const audioSourceRef = useRef<AudioSource>({ kind: "clickTrack" }); // resolved at mount: real .webm vs click track
   const resyncRef = useRef<ResyncController | null>(null); // A11 resync machine (T7); created next to pauseCtlRef
   if (resyncRef.current === null) resyncRef.current = new ResyncController();
   // A11 shared handler body: the 2 s poll and the __w2.simulateDeviceChange E2E hook both run
@@ -266,10 +278,26 @@ export default function PlayPage() {
     mountedRef.current = true; // re-arm on (Strict Mode) remount
     const params = new URLSearchParams(window.location.search);
     const benchmark = params.get("chart") === "benchmark";
+    const fixtureAudio = params.get("fixtureAudio");
+    // W3 T2/T15 source precedence (chart-source.ts) — one resolver, not two param reads:
+    //   chart: benchmark > ?import (sessionStorage "w2-import") > default w1
+    //   audio: fixtureAudio > click track
+    // ?fixtureAudio=<name> pairs /songs/<name>.webm with a chart from ANOTHER source (T15 claim 2
+    // runs the long.osu chart through ?import + long.webm here; A6 pairs the benchmark chart with
+    // long audio). The name is validated BEFORE any URL join; production builds cannot select it.
+    const sourceParams = { benchmark, fixtureAudio, importRequested: Boolean(params.get("import")) };
+    const chartSource = resolveChartSource(sourceParams);
+    const audioSource = resolveAudioSource(sourceParams, { fixtureEnabled: FIXTURE_PARAMS_ENABLED });
+    if (audioSource.kind === "fixture" && !isSafeFixtureName(audioSource.name)) {
+      console.error(`[play] refusing unsafe fixtureAudio source: /songs/${audioSource.name}.webm`);
+      setStartError(`Could not load the audio fixture: ${audioSource.name}`);
+      return; // no renderer / __w2 / listeners on the unsafe branch
+    }
+    audioSourceRef.current = audioSource;
     // W2 T18: truthy ?import= → resolve chart from sessionStorage before fixture selection;
     // missing/invalid → inline error + link to /import (no renderer, no start overlay)
     let chart: Beatmap;
-    if (!benchmark && params.get("import")) {
+    if (chartSource.kind === "import") {
       try {
         const raw = sessionStorage.getItem("w2-import");
         if (!raw) throw new Error("w2-import missing from sessionStorage");
@@ -281,7 +309,7 @@ export default function PlayPage() {
         return; // mount effect exits without renderer / __w2 / listeners
       }
     } else {
-      chart = parseBeatmap(benchmark ? benchChart : w1Chart);
+      chart = parseBeatmap(chartSource.kind === "benchmark" ? benchChart : w1Chart);
     }
     // A7 (W3 T10): context loss takes the standard pause path — no second pause semantic.
     // onContextLost → enterPause("paused") (D7 flush-then-freeze ordering, as user pause).
@@ -382,6 +410,19 @@ export default function PlayPage() {
           if (!keeper) return 0;
           return keeper.get(performance.now()).sampledAt;
         },
+        // W3 T15 (A5) claim 2: the committed fixture map (long.osu, 562 notes) and the dt of every
+        // hit this run produced (the judge wrapper below collects them), plus raw AudioContext
+        // suspend/resume so the standing suite can freeze the real audio clock.
+        notes: () => chart.notes.map((n) => ({ t: n.t, lane: n.lane })),
+        dts: () => dtsRef.current.slice(),
+        suspend: async () => {
+          const audioCtx = audioCtxRef.current;
+          if (audioCtx) await audioCtx.suspend();
+        },
+        resume: async () => {
+          const audioCtx = audioCtxRef.current;
+          if (audioCtx) await audioCtx.resume();
+        },
         inputErrorLog: () => inputProbeBufferRef.current.map((x) => ({ ...x })),
         // W3 T7 (A11) E2E hook: same handler body the 2 s poll runs — forced variant with an
         // optional fake latency jump. Returns true only when the alignment-lost verdict entered
@@ -477,8 +518,8 @@ export default function PlayPage() {
       audioCtxRef.current = audioCtx;
       await audioCtx.resume(); // user gesture from the click unlocks playback
       if (!mountedRef.current) return; // unmounted mid-await: cleanup already closed the ctx
-      const res = await fetch("/audio/click-track.wav");
-      if (!res.ok) throw new Error(`Could not load the click track (HTTP ${res.status})`);
+      const res = await fetch(audioSourceRef.current.kind === "fixture" ? `/songs/${audioSourceRef.current.name}.webm` : "/audio/click-track.wav");
+      if (!res.ok) throw new Error(`Could not load the audio track (HTTP ${res.status})`);
       const audioData = await res.arrayBuffer();
       if (!mountedRef.current) return;
       const buffer = await audioCtx.decodeAudioData(audioData); // "Preparing…" while decoding
@@ -499,6 +540,7 @@ export default function PlayPage() {
       });
       pairKeeperRef.current = pairKeeper;
       inputProbeBufferRef.current = [];
+      dtsRef.current = [];
       const clock = new AudioClock(audioCtx, pairKeeper);
       clock.load(buffer, asAudioOffsetMs(chart.song.audioOffsetMs));
       clockRef.current = clock;
@@ -555,6 +597,12 @@ export default function PlayPage() {
             judge: (lane, time) => {
               engine.judge(lane, time);
               store.set(engine.snapshot());
+              // A5 claim 2 (T15): collect the dt of every HIT this run produced. The snapshot the
+              // engine just published carries exactly this call's events (emit slices its own list),
+              // so the loop records this hit only — no second judging path, no stale-flash read.
+              for (const ev of engine.snapshot().events) {
+                if (ev.type === "hit") dtsRef.current.push(ev.dt);
+              }
             },
           },
           onAccepted: (lane) => {

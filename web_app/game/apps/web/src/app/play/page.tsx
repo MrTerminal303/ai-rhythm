@@ -24,6 +24,11 @@ import { Hud } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
 
+// W3 T16 (A6) protocol window: the run's first 5 s are discarded before ANY interval statistic is
+// recorded, so the gate and the tail cover the post-warm-up window only (decode / shader-compile
+// transients never enter the reported numbers) — evidence-templates/w3-perf-protocol.md.
+const PERF_WARMUP_MS = 5000;
+
 // W3 T15 (A5): ?fixtureAudio is a dev/E2E-only source (chart-source.ts holds the documented
 // precedence). Production builds ignore it — Vercel leaves NEXT_PUBLIC_E2E unset.
 const FIXTURE_PARAMS_ENABLED = process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
@@ -109,6 +114,10 @@ declare global {
       // optional fake chart jump; returns true when the check completed and a recovery pause
       // was entered, false on alignment-ok.
       simulateDeviceChange(fakeJump?: boolean): Promise<boolean>;
+      // W3 T16 (A6): logs the CURRENT [perf] report (same serialized `[perf] <json>` line the natural
+      // freeze emits) with `completion: "forced"`, and stops the frame loop. The CI-shaped perf run
+      // calls it at its force-cap; certification never does.
+      forcePerfReport(): void;
     };
   }
 }
@@ -150,6 +159,10 @@ export default function PlayPage() {
   const pairKeeperRef = useRef<ClockPairKeeper | null>(null); // D21: lifecycle invalidation + e2e pairSampledAt
   const inputProbeBufferRef = useRef<InputProbeEntry[]>([]); // D21 real-input mapping probe (E2E builds)
   const dtsRef = useRef<number[]>([]); // W3 T15 (A5) claim 2: hit-event dt collection (E2E builds)
+  // W3 T16 (A6): THE single [perf] report emitter, created with the frame loop (it closes over the
+  // run's PerfMonitor + reportLogged guard). Natural freeze calls it with "natural"; the E2E
+  // __w2.forcePerfReport() hook calls it with "forced". One emitter, one log contract.
+  const perfReportRef = useRef<((completion: "natural" | "forced") => void) | null>(null);
   const audioSourceRef = useRef<AudioSource>({ kind: "clickTrack" }); // resolved at mount: real .webm vs click track
   const resyncRef = useRef<ResyncController | null>(null); // A11 resync machine (T7); created next to pauseCtlRef
   if (resyncRef.current === null) resyncRef.current = new ResyncController();
@@ -430,6 +443,14 @@ export default function PlayPage() {
         // not playing). The continuity check + dispatch sequence is a pure function of clock +
         // resync machine, so both the poll and this hook drive ONE shared body.
         simulateDeviceChange: (fakeJump?: boolean) => resyncCheckRef.current?.run(fakeJump ?? false) ?? Promise.resolve(false),
+        // W3 T16 (A6) E2E hook (T12 carry-over): emit the current report once with completion
+        // "forced" and stop the loop. forcePerfReportRef is set only once the frame loop exists —
+        // before that there is no perf sample to report, so the call is a no-op rather than a
+        // fabricated all-zero report.
+        forcePerfReport: () => {
+          cancelAnimationFrame(rafRef.current);
+          perfReportRef.current?.("forced");
+        },
       };
     }
     const onResize = () => renderer.resize();
@@ -470,6 +491,7 @@ export default function PlayPage() {
       rendererRef.current = null;
       chartRef.current = null;
       perfRef.current = null;
+      perfReportRef.current = null; // the emitter closes over the run's PerfMonitor — do not outlive the effect
       engineRef.current = null;
       heldLanesRef.current = new Set();
       delete window.__w2;
@@ -672,8 +694,48 @@ export default function PlayPage() {
         window.addEventListener("keydown", onKey);
         window.addEventListener("keyup", onKeyUp);
         let lastRaf: number | undefined;
+        let loopStart = 0; // play-start wall clock; the first PERF_WARMUP_MS of intervals are discarded
+        // Report-once guard (T16): the frozen branch below stops the loop (no rAF re-arm), and this
+        // boolean makes a stray second entry (e.g. a force call after a natural freeze) log nothing.
+        let reportLogged = false;
+        const emitPerfReport = (completion: "natural" | "forced"): void => {
+          if (reportLogged) return;
+          reportLogged = true;
+          const tail = perf.frameIntervalsOver(16.7); // T12 helper — already carries the report's key names
+          const report = {
+            p95RenderDurationMs: perf.p95RenderDurationMs(),
+            p95UpdateDurationMs: perf.p95UpdateDurationMs(),
+            p95FrameIntervalMs: perf.p95FrameIntervalMs(),
+            p99FrameIntervalMs: perf.p99FrameIntervalMs(),
+            p95InputLatencyMs: perf.p95InputLatencyMs(),
+            inputLatencySamples: perf.inputLatencyCount(),
+            heapUsedMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+              ? Math.round(((performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize) / 1048576)
+              : null,
+            samples: perf.sampleCounts(),
+            // A6 gate field (T16): pass = FRAME-INTERVAL p95 ≤ 16.7 ms; render duration is data (renderPass)
+            pass: perf.p95FrameIntervalMs() <= RENDER_BUDGET_MS,
+            renderPass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
+            // Report-shape tail (T16). The T12 helper already returns the report's threshold-specific
+            // key names (a recorded T12 minor: they hardcode 16.7 while the method takes budgetMs —
+            // left alone here on purpose, not reshaped by T16); only p99 is added on this side.
+            tail: {
+              over16_7Count: tail.over16_7Count,
+              over16_7Share: tail.over16_7Share,
+              p99FrameIntervalMs: perf.p99FrameIntervalMs(),
+              maxFrameIntervalMs: tail.maxFrameIntervalMs,
+            },
+            completion,
+            chart: benchmarkRef.current ? "benchmark" : "w1",
+          };
+          console.log("[perf] " + JSON.stringify(report)); // one serialized line — natural and forced alike
+        };
+        perfReportRef.current = emitPerfReport;
         const frame = (rafMs: number) => {
-          if (lastRaf !== undefined) perf.recordFrameInterval(rafMs - lastRaf);
+          if (lastRaf !== undefined) {
+            // Protocol warm-up exclusion: only frames past PERF_WARMUP_MS enter the series.
+            if (loopStart !== 0 && rafMs - loopStart >= PERF_WARMUP_MS) perf.recordFrameInterval(rafMs - lastRaf);
+          }
           lastRaf = rafMs;
           if (phaseRef.current !== "playing") {
             // paused/resume-countdown: skip update + render (HUD frozen), keep the loop alive (T10)
@@ -682,24 +744,9 @@ export default function PlayPage() {
           }
           if (engine.isFrozen()) {
             if (phaseRef.current === "playing") applyPhase("completed"); // A9: distinct end-of-run state (machine-legal, T8)
-            const report = {
-              p95RenderDurationMs: perf.p95RenderDurationMs(),
-              p95UpdateDurationMs: perf.p95UpdateDurationMs(),
-              p95FrameIntervalMs: perf.p95FrameIntervalMs(),
-              p95InputLatencyMs: perf.p95InputLatencyMs(),
-              inputLatencySamples: perf.inputLatencyCount(),
-              heapUsedMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
-                ? Math.round(((performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize) / 1048576)
-                : null,
-              samples: perf.sampleCounts(),
-              // A6 gate field (T16): pass = FRAME-INTERVAL p95 ≤ 16.7 ms; render duration is data (renderPass)
-              pass: perf.p95FrameIntervalMs() <= RENDER_BUDGET_MS,
-              renderPass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
-              completion: "natural" as "natural" | "forced", // set to "forced" ONLY by __w2.forcePerfReport() (round 4)
-              chart: benchmarkRef.current ? "benchmark" : "w1",
-            };
-            console.log("[perf] " + JSON.stringify(report));
+            emitPerfReport("natural");
             store.set(engine.snapshot()); // final frozen snapshot reaches HUD
+            // no rAF re-arm: the loop stops, [perf] logs exactly once
             return;
           }
           const t0 = performance.now();
@@ -707,6 +754,7 @@ export default function PlayPage() {
           perf.recordUpdateDuration(performance.now() - t0);
           rafRef.current = requestAnimationFrame(frame);
         };
+        loopStart = performance.now(); // warm-up window starts at play start, not at module load
         rafRef.current = requestAnimationFrame(frame);
       });
     } catch (err) {

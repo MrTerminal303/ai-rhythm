@@ -30,11 +30,11 @@ with justification plus a FRESH run (spec §9).
 | Environment | OS, machine (CPU/RAM), browser build/version and the **filled evidence path** are recorded in the report |
 | Completion | the report carries `completion: "natural" | "forced"`; only a **natural** run determines the verdict |
 
-**Naming note (deliberate, do not "fix"):** the `PerfMonitor` helper returns the short generic shape
-`{ count, share, maxMs }`; the serialized `[perf]` report renames those to the threshold-specific keys
-`{ over16_7Count, over16_7Share, maxFrameIntervalMs }` and adds `p99FrameIntervalMs`. The helper is
-generic against future budgets, the report is stable against threshold changes. The page hook performs
-the mapping; the e2e type matches the REPORT shape, not the helper shape.
+**Naming note:** the `PerfMonitor.frameIntervalsOver(budgetMs)` helper returns the tail fields directly
+(`{ over16_7Count, over16_7Share, maxFrameIntervalMs }`, share = count / total); the report adds
+`p99FrameIntervalMs()` on the page side and emits all four under `tail`. The helper's keys are
+threshold-specific even though the method takes a budget argument (a recorded T12 minor — left as
+committed, NOT reshaped by T16); the REPORT shape is what consumers, including this protocol, bind to.
 
 **Log contract:** the report is emitted exactly once per run as
 `console.log("[perf] " + JSON.stringify(report))` — one serialized JSON string, identical for the

@@ -48,6 +48,15 @@ jobs:
       # (playwright.config.ts projects; firefox+webkit grep-scoped so the rest stays chromium-only).
       - run: pnpm --filter @airhythm/web exec playwright install --with-deps chromium firefox webkit
       - run: pnpm --filter @airhythm/web e2e
+      # W3 A5 (2026-10-17): the timing evidence specs are wall-clock sensitive — at workers:2 the
+      # scripted claim-2 loop loses the CPU and lands only ~27/160 presses in-window (vs 136/160
+      # serially). Run them in their own single-worker invocation.
+      - run: pnpm --filter @airhythm/web e2e:timing
+      # W3 T14 (spec §8 default 1): the §7 fixture-decode gate needs decodeAudioData proven on
+      # chromium + firefox + WEBKIT. WebKit's Web Audio availability differs by port — Playwright's
+      # Windows build compiles it out (microsoft/playwright#14105), so this Linux runner is the only
+      # place the third engine can be exercised. Uses the committed 3-engine config.
+      - run: pnpm --filter @airhythm/web e2e:fixture-decode
       - uses: actions/upload-artifact@v6
         if: always()
         with:

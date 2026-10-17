@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "sr": 22050,
+  "channels": 1,
+  "n_fft": 2048,
+  "hop": 220,
+  "n_mels": 128,
+  "fmin": 0.0,
+  "fmax": 11025.0,
+  "htk": false,
+  "norm": "slaney",
+  "power": 1.0,
+  "log": "power_to_db_ref_max",
+  "amin": 1e-10,
+  "top_db": 80.0,
+  "center": true,
+  "pad_mode": "constant",
+  "window": "hann"
+}

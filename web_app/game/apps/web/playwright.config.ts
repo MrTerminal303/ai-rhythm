@@ -13,6 +13,15 @@ export default defineConfig({
     baseURL: "http://localhost:3000", // spec calls page.goto("/play") — relative URLs need a baseURL
     viewport: { width: 1280, height: 800 },
     trace: "retain-on-failure",
+    // W3 A5 (2026-10-17, measured): a GPU-less machine renders WebGL through Chromium's
+    // degraded software fallback by default, which blocks the main thread long enough that a
+    // Playwright keyboard round trip costs 0.5–1.6 s — the scripted timing loop then falls
+    // behind the real-time song and only 16/160 presses land in-window. Pointing Chromium at
+    // ANGLE's SwiftShader explicitly restores a normal frame cadence: the same run then lands
+    // 160/160 presses (median 5.4 ms, p95Abs 21.6 ms). Ignored/cheaper on a real GPU;
+    // --enable-unsafe-swiftshader is required because modern Chromium otherwise refuses the
+    // software WebGL path.
+    launchOptions: { args: ["--enable-gpu", "--use-gl=angle", "--enable-unsafe-swiftshader"] },
   },
   webServer: {
     command: "pnpm build && pnpm start",

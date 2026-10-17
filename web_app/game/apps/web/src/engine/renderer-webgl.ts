@@ -127,7 +127,10 @@ export class WebGLRenderer implements Renderer {
    * A7: rebuild the GL resources on a fresh context. Called from the constructor and from
    * the `webglcontextrestored` handler — on restore the context is a NEW implementation with
    * zero prior state, so every program/buffer/attrib must be re-created and re-bound.
-   * The atlas TEXTURE is re-applied only if it was loaded (loadAtlas re-uploads it).
+   * The atlas state is CLEARED and its load RE-ARMED here (dead texture object, atlasInitStarted
+   * reset); the page's onContextRestored callback re-invokes initAtlas() to re-fetch and re-upload
+   * it — until that settles the textured path falls back to code-drawn, and a failed re-fetch
+   * (T13's 5 s timeout) commits the permanent code-drawn state instead of hanging.
    */
   private initGL(): void {
     const gl = this.gl;
@@ -153,8 +156,9 @@ export class WebGLRenderer implements Renderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.texBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.texVerts.byteLength, gl.DYNAMIC_DRAW);
     this.texSamplerLoc = gl.getUniformLocation(this.texProgram, "u_tex")!;
-    // On restore the prior texture object is dead — clear it so the textured path
-    // falls back to code-drawn until the atlas is re-applied (loadAtlas re-uploads).
+    // On restore the prior texture object is dead — clear the atlas state and RE-ARM the load
+    // (atlasInitStarted back to false) so the page's onContextRestored → initAtlas() re-fetches
+    // and re-uploads it; until then the textured path falls back to code-drawn.
     this.atlasTex = null;
     this.atlasSize = null;
     this.atlasFrames = null;
@@ -168,8 +172,9 @@ export class WebGLRenderer implements Renderer {
    * renderer must be constructible on unit-test stub contexts that lack addEventListener).
    *  - `webglcontextlost`: preventDefault() (required — without it the browser will not
    *    attempt to restore the context), then fire onContextLost ONCE per loss.
-   *  - `webglcontextrestored`: rebuild program/buffers via initGL(), re-apply the atlas
-   *    if it was loaded, then fire onContextRestored.
+   *  - `webglcontextrestored`: rebuild program/buffers via initGL() (which also clears the dead
+   *    atlas texture and re-arms its load), then fire onContextRestored — the page callback
+   *    re-invokes initAtlas() so the atlas is re-fetched and re-uploaded.
    */
   private attachContextHandlers(): void {
     this.canvas.addEventListener("webglcontextlost", ((e: Event) => {
@@ -378,7 +383,8 @@ export class WebGLRenderer implements Renderer {
    * via `atlasInitStarted`: a second call returns the in-flight/settled promise, so state
    * transitions at most once and concurrent calls can't race. Resolves false on any failure
    * → the renderer stays code-drawn permanently; a settled-true atlas is never cleared
-   * (no mid-play revert). Never rejects.
+   * (no mid-play revert) — the ONE exception is a context loss, where initGL discards the dead
+   * texture and re-arms this method for a fresh fetch. Never rejects.
    */
   initAtlas(): Promise<boolean> {
     if (this.atlasInitStarted && this.atlasInitPromise) return this.atlasInitPromise;

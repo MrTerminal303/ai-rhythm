@@ -1,8 +1,24 @@
 // apps/web/src/engine/perf.test.ts
 import { describe, expect, it } from "vitest";
-import { PerfMonitor } from "./perf.js";
+import { PerfMonitor, p95, RENDER_BUDGET_MS } from "./perf.js";
+
+// The percentile helper's own contract (restored in the Track A fix wave — the T16 rewrite of this
+// file dropped it along with the gate-constant assertion; both are re-asserted here).
+describe("p95", () => {
+  it("empty → 0; single → itself", () => {
+    expect(p95([])).toBe(0);
+    expect(p95([5])).toBe(5);
+  });
+  it("100 samples 1..100 → 95", () => {
+    const vals = Array.from({ length: 100 }, (_, i) => i + 1);
+    expect(p95(vals)).toBe(95); // sorted[ceil(100*0.95)-1] = sorted[94] = 95
+  });
+});
 
 describe("PerfMonitor", () => {
+  it("the render budget constant matches the spec", () => {
+    expect(RENDER_BUDGET_MS).toBe(16.7);
+  });
   it("A13: records input latency, exposes p95 + count", () => {
     const p = new PerfMonitor();
     for (const ms of [1, 2, 3, 4, 5, 6, 7, 8, 9, 100]) p.recordInputLatency(ms);

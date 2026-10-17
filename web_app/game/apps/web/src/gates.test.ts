@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 
 describe("A8 licence gate fails on missing roots (no vacuous walk)", () => {
   it("missing assets root → exit 1 with 'missing required root'", () => {
-    // assets/ deliberately absent; public/ and apps/web/public/ absent too
+    // assets/ deliberately absent — the ONE hard root (check-assets.mjs:72-73 walks public/ and
+    // apps/web/public/ only when present, so their absence is legitimate, not a gate failure)
     const dir = mkdtempSync(join(tmpdir(), "assets-gate-"));
     let out = "";
     try {

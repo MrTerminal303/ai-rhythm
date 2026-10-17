@@ -1,9 +1,11 @@
-// Committed runner config for the §7 fixture-decode gate (W3 T14): the spec must be
-// exercised on chromium + firefox + webkit — the default apps/web/playwright.config.ts
-// declares no `projects`, so it runs chromium only and cannot express the three-engine gate.
+// Committed runner config for the §7 fixture-decode gate (W3 T14): the spec must be exercised on
+// chromium + firefox + webkit — this config declares all THREE projects so the decode gate runs on
+// every engine in one command, including the standalone `e2e:fixture-decode` script.
 //
-// Kept as a SEPARATE config (not projects added to playwright.config.ts) so the existing
-// e2e specs (w1-*, w2-*, w3-*) keep their current single-engine behaviour unchanged.
+// The main apps/web/playwright.config.ts ALSO declares projects (chromium runs everything; firefox
+// and webkit are grep-scoped to the evidence specs, which includes w3-fixture-decode), so the gate
+// does run there too — this config is kept so the decode gate has a dedicated 3-engine runner whose
+// project list is NOT coupled to the main config's grep scoping.
 // Run: `pnpm --filter @airhythm/web e2e:fixture-decode` (builds+starts its own server, like
 // the main config; reuseExistingServer:false so a stale server cannot masquerade as a pass).
 import { defineConfig } from "@playwright/test";

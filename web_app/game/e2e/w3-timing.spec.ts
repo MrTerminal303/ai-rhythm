@@ -7,9 +7,11 @@
 //   per browser. Claim 3 (audible-output synchronization) is NOT acoustically certified in W3 —
 //   see apps/web/evidence-templates/w3-timing-report.md.
 //
-// RUNNER: the three engine projects live in the committed apps/web/playwright.config.ts; firefox and
-// webkit are grep-scoped to w3-timing|w3-fixture-decode|w3-clock-invariant so the REST of the suite
-// stays chromium-only (CI time). Run: `pnpm --filter @airhythm/web exec playwright test w3-timing`.
+// RUNNER: the committed apps/web/playwright.config.ts runs this spec under its default chromium
+// project like any other; firefox and webkit run it through the GREP-SCOPED project overrides at
+// apps/web/playwright.config.ts:38-39 (grep /w3-timing|w3-fixture-decode|w3-clock-invariant/), so
+// the REST of the suite stays chromium-only (CI time).
+// Run: `pnpm --filter @airhythm/web exec playwright test w3-timing`.
 //
 // Automation-scheduling limitations (spec §9; the evidence report quotes this verbatim): hit-offset
 // distributions under automation mix input-scheduling jitter with clock error — integration

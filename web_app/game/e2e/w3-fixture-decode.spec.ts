@@ -4,9 +4,10 @@
 // Per song: load raw bytes, decode in-page, assert mono, non-silent first 2 s, and duration
 // within ±1 s of nominal.
 //
-// RUNNER: this spec needs the three-engine projects declared in the committed
-// `apps/web/w3-fixture-decode.config.ts` (chromium/firefox/webkit). The default
-// `apps/web/playwright.config.ts` declares no `projects`, so it runs chromium only.
+// RUNNER: this spec runs on chromium + firefox + webkit. The standalone 3-engine runner is the
+// committed `apps/web/w3-fixture-decode.config.ts` (declares all three projects). The main
+// `apps/web/playwright.config.ts` also declares projects — chromium runs everything, and firefox /
+// webkit reach this spec through their grep overrides (`apps/web/playwright.config.ts:38-39`).
 //
 // WEBKIT PLATFORM GAP (this environment, 2026-10-16): the Playwright WebKit build here
 // exposes NO Web Audio API (AudioContext/webkitAudioContext/MediaSource all undefined) and
@@ -19,9 +20,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+// Nominal durations come from the app's own fixture manifest (single source of truth with the
+// checksum-pinned unit tests) — see apps/web/src/song-fixtures.ts.
+import { NOMINAL_SONG_SECONDS as NOMINAL } from "../apps/web/src/song-fixtures.js";
 
 const songsDir = path.join(__dirname, "..", "apps", "web", "public", "songs");
-const NOMINAL: Record<string, number> = { "short.webm": 30, "medium.webm": 90, "long.webm": 240 };
 
 for (const [file, nominalSec] of Object.entries(NOMINAL)) {
   // Round 11 P1-4: test.info() is only available inside a running test — calling it in

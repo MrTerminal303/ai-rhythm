@@ -326,7 +326,11 @@ export default function PlayPage() {
     }
     // A7 (W3 T10): context loss takes the standard pause path — no second pause semantic.
     // onContextLost → enterPause("paused") (D7 flush-then-freeze ordering, as user pause).
-    // onContextRestored → GL rebuild is renderer-internal; UI stays paused/resumable.
+    // onContextRestored → GL rebuild is renderer-internal; UI stays paused/resumable. The
+    // restored context has no texture, and renderer.initGL() re-armed the atlas load, so we
+    // re-invoke initAtlas() here to re-fetch + re-upload it — initAtlas stays idempotent via
+    // atlasInitStarted (cannot double-fetch) and a failed re-fetch degrades to the permanent
+    // code-drawn path (T13's 5 s timeout) rather than hanging.
     // Held-lanes were flushed at pause (heldLanesRef cleared); a still-held key re-syncs
     // ONLY through normal input semantics on its next event (a still-held key produces no
     // new keydown until re-pressed — no synthetic releases, no artificial keyup dispatch).
@@ -336,7 +340,7 @@ export default function PlayPage() {
         // (phaseMachineRef is read-only here — the machine owns transitions; enterPause guards)
         if (phaseMachineRef.current!.current === "playing") enterPause("paused");
       },
-      onContextRestored: () => { /* GL rebuild is renderer-internal; UI already paused/resumable */ },
+      onContextRestored: () => { renderer.initAtlas().catch(() => {}); },
     });
     // signal ONLY after the renderer's constructor succeeded (it throws if WebGL2 is
     // unavailable) — the B6 e2e waits on this attribute instead of calling getContext()

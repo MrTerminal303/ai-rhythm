@@ -51,7 +51,7 @@ export function d21FinalVerdict(input: {
 // inline rule is removed). The rule is pinned by the four FROZEN test rows (which are
 // the contract — a prose that contradicts them loses, review round 1):
 //   count ≥ 5  → (fine step → "normal"; all ≥16 → "degraded"; else → "inconclusive")
-//   count < 5  → (any fine step → "normal"; else → "inconclusive")
+//   count < 5  → (fine step mixed with a ≥16 step → "normal"; all-fine or otherwise → "inconclusive")
 // where "fine step" = d > 0 && d < GRANULARITY_FINE_MS. Under these rules the
 // four rows classify as: [2.8,16.7,16.7]→normal, [16.67×5]→degraded,
 // [16.7,12,16.7,16.7,16.7]→inconclusive, [2.8,2.8]→inconclusive.

@@ -52,10 +52,13 @@ test("A6 perf report: structure (+ certification: NATURAL completion + p95 gate)
   expect(report.p95FrameIntervalMs).toBeGreaterThanOrEqual(0);
   expect(Number.isFinite(report.tail.over16_7Share)).toBe(true);
   expect(report.inputLatencySamples).toBeGreaterThanOrEqual(0); // A13 present
+  // Attach BEFORE the certification assertions (T16 fix): a RED cert run throws at the gate below,
+  // and an attach placed after that throw never reaches the Playwright artifact — the numbers then
+  // had to be scraped from the trace. Every cert run now leaves its report behind.
+  testInfo.attach("perf-report", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
   if (cert) {
     expect(report.completion).toBe("natural");          // protocol match BEFORE the verdict (round 4)
     expect(report.p95FrameIntervalMs).toBeLessThanOrEqual(16.7); // THE GATE (report.pass must equal this)
     expect(report.pass).toBe(true);
   }
-  testInfo.attach("perf-report", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
 });

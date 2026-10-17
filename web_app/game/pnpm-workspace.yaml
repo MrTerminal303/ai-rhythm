@@ -5,3 +5,5 @@ allowBuilds:
   esbuild: true
   workerd: true
   protobufjs: true
+minimumReleaseAgeExclude:
+  - fake-indexeddb@6.2.6

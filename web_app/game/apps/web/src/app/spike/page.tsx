@@ -315,12 +315,6 @@ async function decodeToAnalysis(bytes: ArrayBuffer, sr: number): Promise<{ chann
   }
 }
 
-function average(channels: Float32Array[]): Float32Array {
-  const out = new Float32Array(channels[0]!.length);
-  for (const c of channels) for (let i = 0; i < out.length; i++) out[i]! += c[i]! / channels.length;
-  return out;
-}
-
 function verdict(v: number | null | undefined, tol: number): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return "-";
   return v <= tol ? "PASS" : "FAIL";

@@ -38,5 +38,11 @@ test("production CSP: play, import, and Worker/WASM probe run with zero violatio
   await page.goto("/spike-probe");
   await expect(page.getByTestId("probe-ok")).toBeVisible(); // worker+wasm ran
 
-  expect(violations).toEqual([]); // aggregated across ALL THREE routes
+  // B7 (T17): the /spike Worker + ORT-web WASM instantiation is the real exercise of
+  // 'wasm-unsafe-eval' + worker-src under the production CSP (D23).
+  await page.goto("/spike");
+  await page.getByRole("button", { name: /run spike/i }).click();
+  await expect(page.getByTestId("spike-done")).toBeVisible({ timeout: 120_000 });
+
+  expect(violations).toEqual([]); // aggregated across ALL routes
 });

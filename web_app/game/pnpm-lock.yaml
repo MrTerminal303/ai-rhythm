@@ -168,6 +168,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@airhythm/chartgen':
+        specifier: workspace:*
+        version: link:../../packages/chartgen
       '@airhythm/shared':
         specifier: workspace:*
         version: link:../../packages/shared

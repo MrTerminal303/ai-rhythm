@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { KEY_COUNT, PULSE_DURATION_MS } from "./constants.js";
 
+// CSP: zod 4's allowsEval() probes with `new Function("")`; a strict script-src logs that
+// as a securitypolicyviolation even though the throw is swallowed (zod #4461/#5041).
+// jitless makes the probe return early. MUST run before this module's first `z.` call —
+// zod caches the probe result, and schemas below are built at module load.
+z.config({ jitless: true });
+
 const msInt = z.number().int();
 
 const noteSchema = z

@@ -19,6 +19,7 @@ import { loadCalibration } from "../../calibration-store.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
 import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSource } from "../../chart-source.js";
+import { getChart, loadVerifiedAudio, markDamaged } from "../../library/db.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { Hud } from "../../ui/hud.js";
 
@@ -148,6 +149,9 @@ export default function PlayPage() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const rafRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined); // countdown chain
+  const onResizeRef = useRef<(() => void) | null>(null); // W3 T19 (B2): runMount's resize handler (cleanup scope)
+  const onEscapeRef = useRef<((e: KeyboardEvent) => void) | null>(null); // W3 T19 (B2)
+  const onVisibilityRef = useRef<(() => void) | null>(null); // W3 T19 (B2)
   const onKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const onKeyUpRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
@@ -164,6 +168,7 @@ export default function PlayPage() {
   // __w2.forcePerfReport() hook calls it with "forced". One emitter, one log contract.
   const perfReportRef = useRef<((completion: "natural" | "forced") => void) | null>(null);
   const audioSourceRef = useRef<AudioSource>({ kind: "clickTrack" }); // resolved at mount: real .webm vs click track
+  const libraryAudioBytesRef = useRef<ArrayBuffer | null>(null); // W3 T19 (B2): verified stored audio for ?libraryChartId
   const resyncRef = useRef<ResyncController | null>(null); // A11 resync machine (T7); created next to pauseCtlRef
   if (resyncRef.current === null) resyncRef.current = new ResyncController();
   // A11 shared handler body: the 2 s poll and the __w2.simulateDeviceChange E2E hook both run
@@ -307,10 +312,21 @@ export default function PlayPage() {
       return; // no renderer / __w2 / listeners on the unsafe branch
     }
     audioSourceRef.current = audioSource;
+    // W3 T19 (B2): the ?libraryChartId branch (highest chart-source precedence per T15's
+    // documented order) resolves the stored chartJson + verified audio bytes from the T18
+    // store. It is async, so it wraps the shared mount body (renderer, __w2, listeners,
+    // frame loop) which runs once the source is settled. On missing/corrupt state the
+    // record is marked damaged (review P0) and the inline error renders — no renderer,
+    // __w2, or listeners attach on that path.
+    const libraryChartId = params.get("libraryChartId");
+    const runMount = (resolvedLibraryChart: Beatmap | null, libraryAudio: ArrayBuffer | null): void => {
     // W2 T18: truthy ?import= → resolve chart from sessionStorage before fixture selection;
     // missing/invalid → inline error + link to /import (no renderer, no start overlay)
     let chart: Beatmap;
-    if (chartSource.kind === "import") {
+    if (resolvedLibraryChart !== null) {
+      chart = resolvedLibraryChart; // W3 T19 (B2): the ?libraryChartId branch won — highest precedence
+      libraryAudioBytesRef.current = libraryAudio; // startGame decodes THESE bytes, not the click track
+    } else if (chartSource.kind === "import") {
       try {
         const raw = sessionStorage.getItem("w2-import");
         if (!raw) throw new Error("w2-import missing from sessionStorage");
@@ -458,6 +474,7 @@ export default function PlayPage() {
       };
     }
     const onResize = () => renderer.resize();
+    onResizeRef.current = onResize;
     window.addEventListener("resize", onResize);
     window.addEventListener("blur", pauseGame); // tab/window blur while playing → pause (T10)
     // F-04: user-invokable pause. Its own listener — never routed through the lane key map.
@@ -470,20 +487,50 @@ export default function PlayPage() {
       else if (phaseMachineRef.current!.current === "paused" || phaseMachineRef.current!.current === "recovering") resumeGame();
     };
     window.addEventListener("keydown", onEscape);
+    onEscapeRef.current = onEscape;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") pauseGame();
     };
+    onVisibilityRef.current = onVisibility;
     document.addEventListener("visibilitychange", onVisibility);
+    }; // end runMount — the shared mount body is now callable for any resolved chart source
+    // W3 T19 (B2): dispatch by source. ?libraryChartId (highest precedence) resolves the
+    // stored chartJson + verified audio bytes from the T18 store (ASYNC — IndexedDB read);
+    // on missing/corrupt state it marks the record damaged (review P0) and renders the inline
+    // import-error UI instead of a renderer. The non-library path calls runMount straight-line
+    // (zero awaits — B6's renderer-readiness ordering is unchanged).
+    if (libraryChartId) {
+      void (async () => {
+        const rec = await getChart(libraryChartId);
+        const loaded =
+          rec && rec.state !== "damaged" ? await loadVerifiedAudio(libraryChartId) : null;
+        if (!rec || !loaded || !loaded.ok) {
+          await markDamaged(libraryChartId).catch(() => {}); // missing/corrupt → damaged (review P0)
+          setImportError(true);
+          return; // no renderer / __w2 / listeners on the error branch
+        }
+        if (!mountedRef.current) return; // unmounted mid-store-read
+        runMount(parseBeatmap(JSON.parse(rec.chartJson)), loaded.bytes);
+      })();
+      // The run-scoped listeners attached inside runMount are detached by the effect cleanup
+      // below (it runs regardless of which source resolved the chart).
+      // ponytail: runMount's cleanup captures the renderer/listener consts; on the async
+      // library path cleanup may run before runMount finished — those listeners attach
+      // after, and Strict Mode's second mount is aborted by mountedRef in the store-read
+      // chain before they re-attach. The non-library path (zero awaits) stays exact.
+    } else {
+      runMount(null, null);
+    }
     return () => {
       mountedRef.current = false; // abort startGame's in-flight awaits before tearing down
       cancelAnimationFrame(rafRef.current);
       if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
       if (onKeyRef.current) window.removeEventListener("keydown", onKeyRef.current);
       if (onKeyUpRef.current) window.removeEventListener("keyup", onKeyUpRef.current);
-      window.removeEventListener("resize", onResize);
+      if (onResizeRef.current) window.removeEventListener("resize", onResizeRef.current);
       window.removeEventListener("blur", pauseGame);
-      window.removeEventListener("keydown", onEscape);
-      document.removeEventListener("visibilitychange", onVisibility);
+      if (onEscapeRef.current) window.removeEventListener("keydown", onEscapeRef.current);
+      if (onVisibilityRef.current) document.removeEventListener("visibilitychange", onVisibilityRef.current);
       for (const t of activeTimers.current) window.clearTimeout(t); // key-flash timers must not outlive the effect
       activeTimers.current.clear();
       clockRef.current?.stop(); // teardown path — the only place stop() is used (T10)
@@ -491,15 +538,16 @@ export default function PlayPage() {
       audioCtxRef.current = null;
       if (audioCtx && audioCtx.state !== "closed") void audioCtx.close();
       // null the init-chain refs so a continuation that slips past mountedRef fails the init guard
+      rendererRef.current?.dispose(); // release GL program/buffer before nulling the ref
       clockRef.current = null;
       rendererRef.current = null;
       chartRef.current = null;
+      libraryAudioBytesRef.current = null; // W3 T19 (B2): stored bytes are run-scoped
       perfRef.current = null;
       perfReportRef.current = null; // the emitter closes over the run's PerfMonitor — do not outlive the effect
       engineRef.current = null;
       heldLanesRef.current = new Set();
       delete window.__w2;
-      renderer.dispose(); // release GL program/buffer (Strict Mode double-mount would leak them)
     };
   }, [store]);
 
@@ -544,9 +592,12 @@ export default function PlayPage() {
       audioCtxRef.current = audioCtx;
       await audioCtx.resume(); // user gesture from the click unlocks playback
       if (!mountedRef.current) return; // unmounted mid-await: cleanup already closed the ctx
-      const res = await fetch(audioSourceRef.current.kind === "fixture" ? `/songs/${audioSourceRef.current.name}.webm` : "/audio/click-track.wav");
-      if (!res.ok) throw new Error(`Could not load the audio track (HTTP ${res.status})`);
-      const audioData = await res.arrayBuffer();
+      const storedBytes = libraryAudioBytesRef.current; // W3 T19 (B2): ?libraryChartId decodes verified stored bytes
+      const audioData = storedBytes ?? await (async () => {
+        const res = await fetch(audioSourceRef.current.kind === "fixture" ? `/songs/${audioSourceRef.current.name}.webm` : "/audio/click-track.wav");
+        if (!res.ok) throw new Error(`Could not load the audio track (HTTP ${res.status})`);
+        return res.arrayBuffer();
+      })();
       if (!mountedRef.current) return;
       const buffer = await audioCtx.decodeAudioData(audioData); // "Preparing…" while decoding
       if (!mountedRef.current) return; // never schedule the countdown on a dead page

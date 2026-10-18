@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { canonicalizeBeatmap, type Beatmap } from "@airhythm/shared";
+import { canonicalizeBeatmap } from "@airhythm/shared";
 import { importChartWithAudio, type AudioMeta } from "../../library/db.js";
 
 type ImportWarning = { code: string; message: string };

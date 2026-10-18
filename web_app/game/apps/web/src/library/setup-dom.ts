@@ -65,10 +65,11 @@ import "fake-indexeddb/auto";
 // db.ts's `sha256Hex` calls `crypto.subtle.digest("SHA-256", bytes)` — the patch matches
 // the exact algorithm and input shape db.ts uses, so the digest value is byte-identical
 // to the real webcrypto; only the resolution task class changes.
+let origDigest: typeof SubtleCrypto.prototype["digest"] | null = null;
 {
   const subtle = (globalThis as { crypto?: Crypto }).crypto?.subtle;
   if (subtle) {
-    const origDigest = subtle.digest.bind(subtle);
+    origDigest = subtle.digest.bind(subtle);
     subtle.digest = async (algorithm: string, data: ArrayBuffer | ArrayBufferView) => {
       // db.ts only ever calls digest("SHA-256", bytes) on an ArrayBuffer-backed source;
       // route those through the sync Node hash (microtask resolve). Unknown algorithm or
@@ -80,9 +81,27 @@ import "fake-indexeddb/auto";
       }
       // ponytail: ArrayBufferView path not exercised by db.ts; cast keeps the real-webcrypto
       // fallback honest for any future caller that passes a view.
-      return origDigest(algorithm, data as ArrayBuffer);
+      if (!origDigest) throw new Error("origDigest not installed");
+      return origDigest(algorithm, data as unknown as BufferSource) as Promise<ArrayBuffer>;
     };
   }
 }
+
+// Containment for same-worker test files that run after library.test.tsx:
+// library.test.tsx (via vitest env setup) sets process.env.NEXT_PUBLIC_E2E="1" and imports
+// this module, which patches crypto.subtle.digest. Restore both in afterAll so the
+// digest patch and env var can't leak to subsequent test files in the same worker.
+// The jsdom DOM globals (window/document/self, etc.) are left installed: they are
+// inert in files that don't use RTL (the node env's absence of a DOM is the deviation,
+// not the presence of one), and restoring them risks breaking a later test that
+// assumes the jsdom install is ambient. Test files needing a pristine DOM should
+// manage their own env (T18 db.test.ts pattern).
+import { afterAll } from "vitest";
+afterAll(() => {
+  const subtle = (globalThis as { crypto?: Crypto }).crypto?.subtle;
+  if (subtle && origDigest) subtle.digest = origDigest;
+  origDigest = null;
+  delete process.env.NEXT_PUBLIC_E2E;
+});
 
 export {};

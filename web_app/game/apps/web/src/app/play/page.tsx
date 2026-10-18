@@ -135,6 +135,7 @@ export default function PlayPage() {
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
   const [importError, setImportError] = useState(false); // W2 T18: ?import= present but w2-import unusable
+  const [libraryError, setLibraryError] = useState(false); // W3 T19 (B2): ?libraryChartId unresolvable/corrupt
   const [startError, setStartError] = useState<string | null>(null); // startGame failure surfaced in the start overlay
 
   // refs bridging the mount effect, the click-start flow, and cleanup
@@ -506,18 +507,30 @@ export default function PlayPage() {
           rec && rec.state !== "damaged" ? await loadVerifiedAudio(libraryChartId) : null;
         if (!rec || !loaded || !loaded.ok) {
           await markDamaged(libraryChartId).catch(() => {}); // missing/corrupt → damaged (review P0)
-          setImportError(true);
+          setLibraryError(true);
           return; // no renderer / __w2 / listeners on the error branch
         }
         if (!mountedRef.current) return; // unmounted mid-store-read
-        runMount(parseBeatmap(JSON.parse(rec.chartJson)), loaded.bytes);
+        let resolved: Beatmap;
+        try {
+          resolved = parseBeatmap(JSON.parse(rec.chartJson));
+        } catch (err) {
+          // corrupt chartJson on a record still marked playable → flip it to damaged
+          // (consistent with the audio loadVerifiedAudio ok:false path above) and show
+          // the library inline error.
+          console.error("[play] library chartJson failed to parse:", err);
+          await markDamaged(libraryChartId).catch(() => {});
+          setLibraryError(true);
+          return;
+        }
+        if (!mountedRef.current) return; // unmounted mid-parse
+        runMount(resolved, loaded.bytes);
       })();
       // The run-scoped listeners attached inside runMount are detached by the effect cleanup
       // below (it runs regardless of which source resolved the chart).
-      // ponytail: runMount's cleanup captures the renderer/listener consts; on the async
-      // library path cleanup may run before runMount finished — those listeners attach
-      // after, and Strict Mode's second mount is aborted by mountedRef in the store-read
-      // chain before they re-attach. The non-library path (zero awaits) stays exact.
+      // ponytail: on the async library path runMount may finish after this effect's cleanup
+      // already ran; the mountedRef guard right before the runMount call (no await between
+      // them) prevents that late mount, so no listener leak on the async path.
     } else {
       runMount(null, null);
     }
@@ -879,7 +892,25 @@ export default function PlayPage() {
       {/* A9 (T13): end-of-run results overlay — DISTINCT from pause. T21 fills the body;
           today it is minimal (title + final score + a way back). The start/pause overlay below
           is excluded from "completed" so the two never share a block. */}
-      {!importError && phase === "completed" && (
+      {libraryError && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+          style={{ background: "var(--bg)" }}
+          data-testid="library-error"
+        >
+          <p role="alert" style={{ color: "var(--warn)", fontFamily: "var(--font-mono)" }}>
+            Could not load the library chart.
+          </p>
+          <Link
+            href="/library"
+            className="rounded-[10px] border px-6 py-3 text-sm"
+            style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+          >
+            Back to library
+          </Link>
+        </div>
+      )}
+      {!importError && !libraryError && phase === "completed" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}
@@ -903,7 +934,7 @@ export default function PlayPage() {
           </Link>
         </div>
       )}
-      {!importError && phase !== "playing" && phase !== "completed" && (
+      {!importError && !libraryError && phase !== "playing" && phase !== "completed" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}

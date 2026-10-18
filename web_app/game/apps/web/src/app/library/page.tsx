@@ -12,8 +12,10 @@ import { deleteChart, importChartWithAudio, listCharts, type ChartRecord, type A
 
 // W3 T19 (B2) E2E seam — same NEXT_PUBLIC_E2E gate as the calibrate page's __calibrateTest
 // and the play page's __w2 hook (inlined at build; the Playwright webServer sets it, prod
-// builds leave it unset → seam absent). Re-registered every render so the seam drives the
-// LATEST mount's import, and deleted on unmount (mirror of __w2's teardown).
+// builds leave it unset → seam absent). importChartWithAudio is a stable module-scope
+// import, so the seam is registered once on mount (not per-render) and never deleted:
+// e2e drives it before navigating away, and a later re-mount re-registers the same
+// reference (mirror of __w2's teardown, minus the delete since the binding is stable).
 declare global {
   interface Window {
     __lib?: {
@@ -31,17 +33,19 @@ export default function LibraryPage() {
   useEffect(() => {
     void listCharts().then(setRows);
   }, []);
-
-  if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_E2E === "1") {
-    window.__lib = {
-      importForTest: (chart, audioBytes, audioMeta) =>
-        importChartWithAudio({
-          chart,
-          audioBytes,
-          audioMeta: audioMeta ?? { durationMs: 60_000, sampleRate: 44_100, channels: 1 },
-        }).then((r) => r.chartId),
-    };
-  }
+  // E2E seam — stable importChartWithAudio reference, registered once per mount.
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_E2E === "1") {
+      window.__lib = {
+        importForTest: (chart, audioBytes, audioMeta) =>
+          importChartWithAudio({
+            chart,
+            audioBytes,
+            audioMeta: audioMeta ?? { durationMs: 60_000, sampleRate: 44_100, channels: 1 },
+          }).then((r) => r.chartId),
+      };
+    }
+  }, []);
 
   const remove = async (id: string): Promise<void> => {
     if (!window.confirm(`Delete "${id.slice(0, 8)}…"? This cannot be undone.`)) return;

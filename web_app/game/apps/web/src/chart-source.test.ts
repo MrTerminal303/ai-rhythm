@@ -1,27 +1,24 @@
 // apps/web/src/chart-source.test.ts
-// W3 T15 (A5): the ordering contract of /play's chart + audio source precedence. Each row pins ONE
-// precedence decision; a reordering in chart-source.ts fails exactly the affected rows.
+// W3 T15 (A5) ordering contract + T20 (B3): T20 removed the `?import` sessionStorage path, so
+// the chart source collapses to benchmark > default. Each row pins ONE precedence decision;
+// a reordering in chart-source.ts fails exactly the affected rows.
 import { describe, expect, it } from "vitest";
 import { isSafeFixtureName, resolveAudioSource, resolveChartSource, type SourceParams } from "./chart-source.js";
 
 const params = (over: Partial<SourceParams> = {}): SourceParams => ({
   benchmark: false,
   fixtureAudio: null,
-  importRequested: false,
   ...over,
 });
 const E2E = { fixtureEnabled: true };
 const PROD = { fixtureEnabled: false };
 
-describe("chart source precedence: benchmark > ?import > default w1", () => {
+describe("chart source precedence: benchmark > default w1 (T20 removed ?import)", () => {
   it("default: no params → w1", () => {
     expect(resolveChartSource(params())).toEqual({ kind: "default" });
   });
-  it("?import beats the default", () => {
-    expect(resolveChartSource(params({ importRequested: true }))).toEqual({ kind: "import" });
-  });
-  it("benchmark beats ?import (unchanged W2 semantics: benchmark wins the chart slot)", () => {
-    expect(resolveChartSource(params({ benchmark: true, importRequested: true }))).toEqual({ kind: "benchmark" });
+  it("benchmark beats the default", () => {
+    expect(resolveChartSource(params({ benchmark: true }))).toEqual({ kind: "benchmark" });
   });
 });
 
@@ -30,7 +27,7 @@ describe("audio source precedence: fixtureAudio > click track", () => {
     expect(resolveAudioSource(params(), E2E)).toEqual({ kind: "clickTrack" });
   });
   it("fixtureAudio selects the real .webm regardless of the chart source (A6 mix-and-match)", () => {
-    expect(resolveAudioSource(params({ fixtureAudio: "long", importRequested: true }), E2E)).toEqual({
+    expect(resolveAudioSource(params({ fixtureAudio: "long" }), E2E)).toEqual({
       kind: "fixture",
       name: "long",
     });
@@ -38,9 +35,6 @@ describe("audio source precedence: fixtureAudio > click track", () => {
       kind: "fixture",
       name: "long",
     });
-  });
-  it("?import alone keeps the click track (the import branch stores no audio bytes)", () => {
-    expect(resolveAudioSource(params({ importRequested: true }), E2E)).toEqual({ kind: "clickTrack" });
   });
   it("fixture audio is inert outside dev/E2E builds (production cannot select a fixture)", () => {
     expect(resolveAudioSource(params({ fixtureAudio: "long" }), PROD)).toEqual({ kind: "clickTrack" });

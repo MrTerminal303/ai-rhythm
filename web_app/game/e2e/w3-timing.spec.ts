@@ -31,27 +31,35 @@ type W2Timing = {
   resume(): Promise<void>;
 };
 
-// Claim 2 runs the committed fixture pair public/songs/long.osu + long.webm through the W2 import
-// path: the spec feeds the REAL .osu through the app's own /import UI (so the chart in sessionStorage
-// is the app-canonicalized one a user would get — no parser duplicated into the test), then re-opens
-// /play with ?fixtureAudio=long so long.webm supplies the audio from the fixture branch.
+// Claim 2 runs the committed fixture pair public/songs/long.osu + long.webm through the app's
+// OWN /import UI (W3 T20 B3: both files upload → importChartWithAudio stores the chart + the
+// decoded long.webm bytes in the T18 library store; the Play link opens /play?libraryChartId=<id>
+// where the play page decodes the STORED bytes — no sessionStorage, no fixtureAudio pairing
+// needed). The .osu is fed through the real importer so the stored chart is the app-canonicalized
+// one a user would get — no parser duplicated into the test.
 const LONG_OSU = path.join(__dirname, "..", "apps", "web", "public", "songs", "long.osu");
-const PLAY_URL = "/play?import=1&fixtureAudio=long"; // `import=1` — the param is truthy-tested, `import=` is falsy
+const LONG_WEBM = path.join(__dirname, "..", "apps", "web", "public", "songs", "long.webm");
 
-/** Import long.osu through the real importer, then open /play with the fixture audio attached. */
+/** Import long.osu + long.webm through the real /import uploader, then open the Play link. */
 async function openLongSong(page: Page): Promise<void> {
   await page.goto("/import");
-  await page.setInputFiles('input[type="file"]', {
+  await page.setInputFiles('[data-testid="import-audio-input"]', {
+    name: "long.webm",
+    mimeType: "video/webm",
+    buffer: readFileSync(LONG_WEBM),
+  });
+  await expect(page.getByTestId("audio-selected")).toBeVisible();
+  await page.setInputFiles('[data-testid="import-file-input"]', {
     name: "long.osu",
     mimeType: "text/plain",
     buffer: readFileSync(LONG_OSU),
   });
-  await expect(page.getByText(/imported/i)).toBeVisible();
-  await page.getByRole("button", { name: /^play$/i }).click();
-  await expect(page).toHaveURL(/\/play\?import/, { timeout: 30_000 }); // client-side route push; slow engines need longer than the 5 s default
-  // Same origin, so the chart /import just stored in sessionStorage survives this navigation;
-  // the added param only swaps the audio source (click track → /songs/long.webm).
-  await page.goto(PLAY_URL);
+  await page.getByTestId("import-submit").click();
+  await expect(page.getByTestId("import-done")).toBeVisible();
+  await page.getByRole("link", { name: /^play$/i }).click();
+  await expect(page).toHaveURL(/\/play\?libraryChartId=/, { timeout: 30_000 }); // client-side route push; slow engines need longer than the 5 s default
+  // Same origin, so the chart+audio just stored in the T18 library survive this navigation;
+  // the play page's library branch decodes the stored long.webm bytes (no ?fixtureAudio needed).
 }
 
 async function startPlaying(page: Page): Promise<void> {

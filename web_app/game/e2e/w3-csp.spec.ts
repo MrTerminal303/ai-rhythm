@@ -33,7 +33,10 @@ test("production CSP: play, import, and Worker/WASM probe run with zero violatio
   await page.waitForTimeout(1500);
 
   await page.goto("/import");
-  await expect(page.locator('input[type="file"]')).toBeVisible();
+  // T20 (B3): /import has TWO file inputs (audio + chart) — pin both by testid so the check
+  // survives the uploader's shape without a strict-mode collision.
+  await expect(page.getByTestId("import-audio-input")).toBeVisible();
+  await expect(page.getByTestId("import-file-input")).toBeVisible();
 
   await page.goto("/spike-probe");
   await expect(page.getByTestId("probe-ok")).toBeVisible(); // worker+wasm ran

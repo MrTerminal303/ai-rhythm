@@ -78,10 +78,6 @@ const computeProbeEntry = (
 // Play phases: driven by the A12 machine (play-phase.ts) — all movement goes through
 // applyPhase → machine.to; recovering (W3 T7 / A11) is a first-class machine state.
 
-// I5: cap the stored chart JSON before JSON.parse (mirrors MAX_TEXT_FILE_BYTES in
-// import/page.tsx — different file, same value; beatmaps are KB-scale).
-const MAX_IMPORT_JSON_CHARS = 10 * 1024 * 1024;
-
 // debug hook for e2e (w2-sync) — set on mount, reads live refs
 type ProbePairResult = {
   source: string;
@@ -134,7 +130,6 @@ export default function PlayPage() {
   const [countdown, setCountdown] = useState(3);
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
-  const [importError, setImportError] = useState(false); // W2 T18: ?import= present but w2-import unusable
   const [libraryError, setLibraryError] = useState(false); // W3 T19 (B2): ?libraryChartId unresolvable/corrupt
   const [startError, setStartError] = useState<string | null>(null); // startGame failure surfaced in the start overlay
 
@@ -298,13 +293,14 @@ export default function PlayPage() {
     const params = new URLSearchParams(window.location.search);
     const benchmark = params.get("chart") === "benchmark";
     const fixtureAudio = params.get("fixtureAudio");
-    // W3 T2/T15 source precedence (chart-source.ts) — one resolver, not two param reads:
-    //   chart: benchmark > ?import (sessionStorage "w2-import") > default w1
+    // W3 T2 (T15)/T20 source precedence (chart-source.ts) — one resolver, not two param reads:
+    //   chart: benchmark > default w1 (the W2 ?import sessionStorage path was removed in T20 —
+    //          /import now stores via the T18 library store and links ?libraryChartId below)
     //   audio: fixtureAudio > click track
     // ?fixtureAudio=<name> pairs /songs/<name>.webm with a chart from ANOTHER source (T15 claim 2
-    // runs the long.osu chart through ?import + long.webm here; A6 pairs the benchmark chart with
+    // runs the long.osu chart through /import + long.webm here; A6 pairs the benchmark chart with
     // long audio). The name is validated BEFORE any URL join; production builds cannot select it.
-    const sourceParams = { benchmark, fixtureAudio, importRequested: Boolean(params.get("import")) };
+    const sourceParams = { benchmark, fixtureAudio };
     const chartSource = resolveChartSource(sourceParams);
     const audioSource = resolveAudioSource(sourceParams, { fixtureEnabled: FIXTURE_PARAMS_ENABLED });
     if (audioSource.kind === "fixture" && !isSafeFixtureName(audioSource.name)) {
@@ -321,23 +317,11 @@ export default function PlayPage() {
     // __w2, or listeners attach on that path.
     const libraryChartId = params.get("libraryChartId");
     const runMount = (resolvedLibraryChart: Beatmap | null, libraryAudio: ArrayBuffer | null): void => {
-    // W2 T18: truthy ?import= → resolve chart from sessionStorage before fixture selection;
-    // missing/invalid → inline error + link to /import (no renderer, no start overlay)
+    // W3 T20: the W2 ?import sessionStorage branch is gone — library beats benchmark beats default
     let chart: Beatmap;
     if (resolvedLibraryChart !== null) {
       chart = resolvedLibraryChart; // W3 T19 (B2): the ?libraryChartId branch won — highest precedence
       libraryAudioBytesRef.current = libraryAudio; // startGame decodes THESE bytes, not the click track
-    } else if (chartSource.kind === "import") {
-      try {
-        const raw = sessionStorage.getItem("w2-import");
-        if (!raw) throw new Error("w2-import missing from sessionStorage");
-        if (raw.length > MAX_IMPORT_JSON_CHARS) throw new Error("w2-import exceeds size limit");
-        chart = parseBeatmap(JSON.parse(raw));
-      } catch (err) {
-        console.error("[play] imported chart failed to load:", err);
-        setImportError(true);
-        return; // mount effect exits without renderer / __w2 / listeners
-      }
     } else {
       chart = parseBeatmap(chartSource.kind === "benchmark" ? benchChart : w1Chart);
     }
@@ -871,24 +855,6 @@ export default function PlayPage() {
           Output device changed — <a href="/calibrate">recalibrate</a>
         </div>
       )}
-      {importError && (
-        <div
-          className="absolute inset-0 flex flex-col items-center justify-center gap-4"
-          style={{ background: "var(--bg)" }}
-          data-testid="import-error"
-        >
-          <p role="alert" style={{ color: "var(--warn)", fontFamily: "var(--font-mono)" }}>
-            Could not load the imported chart.
-          </p>
-          <Link
-            href="/import"
-            className="rounded-[10px] border px-6 py-3 text-sm"
-            style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
-          >
-            Import a chart
-          </Link>
-        </div>
-      )}
       {/* A9 (T13): end-of-run results overlay — DISTINCT from pause. T21 fills the body;
           today it is minimal (title + final score + a way back). The start/pause overlay below
           is excluded from "completed" so the two never share a block. */}
@@ -910,7 +876,7 @@ export default function PlayPage() {
           </Link>
         </div>
       )}
-      {!importError && !libraryError && phase === "completed" && (
+      {!libraryError && phase === "completed" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}
@@ -934,7 +900,7 @@ export default function PlayPage() {
           </Link>
         </div>
       )}
-      {!importError && !libraryError && phase !== "playing" && phase !== "completed" && (
+      {!libraryError && phase !== "playing" && phase !== "completed" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}

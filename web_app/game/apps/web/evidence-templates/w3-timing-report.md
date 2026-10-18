@@ -50,6 +50,13 @@ Known environmental caveat (recorded at T2/T15 time, this machine): T2's real-in
 observed ~13.4 ms > the frozen 5 ms budget → `mapping-error-fail`. That is an environment reading,
 not a widened budget: a budget change is a new D21 revision with a fresh run.
 
+W3 T20 (B3) rerun note (2026-10-18, same GPU-less machine): the D21 verdict is STILL `mapping-error-fail`
+on this environment — repeated runs observed maxAbsErrMs 7.3–8.5 ms vs the frozen 5 ms budget
+(round-8 cached-pair test, chromium). Same class as the recorded T2/T15 caveat: an environment
+reading on the weak machine, NOT a regression introduced by T20 (T20 touched the /import flow and
+the ?import branch only; the __w2 input-probe + pair-keeper paths are unchanged). A budget change
+remains out of scope for T20 — it would be a new D21 revision with a fresh run.
+
 ## Claim 2 — real-browser integration (real song, scripted lane keys)
 
 `pnpm --filter @airhythm/web exec playwright test w3-timing` — one line per engine project for the

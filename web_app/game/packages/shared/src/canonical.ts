@@ -1,11 +1,16 @@
 import { parseBeatmap, type Beatmap } from "./beatmap.js";
 
-function stableStringify(value: unknown): string {
+/**
+ * Code-unit-sorted JSON with `undefined` object values dropped — the stable key
+ * ordering every hash/seed path needs. Exported (T25a) because the lane-seed
+ * input is a different record that requires the same semantics.
+ */
+export function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort(); // code-unit sort (default <), never localeCompare
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`).join(",")}}`;
 }
 
 /** Code-unit string compare — locale-independent, required on canonical/hash paths. */
@@ -65,7 +70,7 @@ export function canonicalizeBeatmap(candidate: unknown): Beatmap {
 }
 
 export function canonicalJson(b: Beatmap): string {
-  return stableStringify(b);
+  return stableJson(b);
 }
 
 export async function hashBeatmap(canonical: string): Promise<string> {

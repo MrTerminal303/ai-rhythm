@@ -121,13 +121,12 @@ describe("B8a audio-samples: copy (never slice a view), own the ArrayBuffer", ()
     for await (const c of copySamplesForAnalysis(buf, { maxSeconds: 1 })) chunks.push(c);
     expect(chunks).toHaveLength(1);
     const owned = chunks[0]!.channels[0]!;
-    // Simulate the postMessage transfer: detach the owned buffer. The source
-    // (the fake's backing Float32Array) is a SEPARATE allocation — it survives.
-    (owned.buffer as ArrayBuffer).byteLength; // touch to prove it's a real ArrayBuffer
     const before = Array.from(raw);
-    owned.buffer.slice(0, 0); // no-op; the point is ownership, not mutation
-    expect(Array.from(owned)).toEqual(before.slice(0, owned.length)); // owned copy is self-consistent
-    expect(Array.from(raw)).toEqual(before); // source intact
+    // Really detach the owned buffer (the `postMessage` transfer semantics).
+    const clone = structuredClone(owned, { transfer: [owned.buffer] });
+    expect(owned.byteLength).toBe(0); // the owned buffer WAS detached
+    expect(Array.from(clone)).toEqual(before); // the transferred data survived intact
+    expect(Array.from(raw)).toEqual(before); // source (playback) data intact
   });
 
   it("clamps maxSeconds so ≤ 30 s of samples are ever resident (default + clamp)", async () => {

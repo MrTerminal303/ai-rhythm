@@ -5,7 +5,7 @@ import type { PreprocParams } from "./mel.js";
  * Spectral-flux core (B8, D30): the half-wave rectified first difference of
  * magnitude spectra, over the SHARED framing of `mel.ts` (same `n_fft`/`hop`/
  * Hann window + center padding — `computeLogMel`'s frame `f` reads absolute
- * samples `[f*hop - p, f*hop + 3p)` with `p = n_fft/2`). `fftInPlace` is the
+ * samples `[f*hop - p, f*hop + p)` with `p = n_fft/2`). `fftInPlace` is the
  * FFT shared with the mel path (exported from `mel.ts`, behavior unchanged).
  *
  * All magnitude/flux math is Float64 (mel's internal precision); the emitted

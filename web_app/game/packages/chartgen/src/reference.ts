@@ -52,6 +52,6 @@ export function melRows(flat: Float32Array, nMels: number): Float32Array[] {
   return rows;
 }
 
-// flux per-frame rows live in `flux.ts` (single definition) — re-exported here
-// so `reference` keeps its historical surface without duplicating `flux.ts`.
+// flux per-frame rows are defined once in `flux.ts` — re-exported here so the
+// reference module's consumers get rows/flattening from the same place.
 export { fluxRows, flattenFluxRows } from "./flux.js";

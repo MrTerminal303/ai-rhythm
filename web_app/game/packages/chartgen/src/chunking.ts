@@ -159,8 +159,8 @@ export interface StreamResult {
  *
  * Lost-wakeup-safe: an `ack` that arrives BEFORE the sender registers its
  * waiter (a synchronous Worker answers inside `post`) is absorbed into a
- * counter; `awaitAck` returns instantly when the counter is positive,
- * otherwise it queues exactly one waiter. Same shape for `done`.
+ * counter; `gate()` returns instantly when the counter already covers it,
+ * otherwise it queues a waiter — same shape for `done`.
  *
  * Brief contract: only chunk TRANSFERS are ack-gated — a chunk is released
  * by the gate, and an earlier released chunk is NEVER re-held by a later
@@ -192,9 +192,16 @@ export async function streamChunks(
     if (m.type === "ack") {
       acksSeen++;
       // Wake ONLY the gate waiting for this specific ack (FIFO — one ack per
-      // consumed chunk). No matching pending gate → absorbed; the loop's next
+      // consumed chunk), then drop it so the list cannot grow across a
+      // whole stream. No matching pending gate → absorbed; the loop's next
       // gate resolves instantly against the counter instead of advancing.
-      for (const w of ackWaiters) if (w.ackIndex === acksSeen - 1) w.release();
+      for (let w = ackWaiters.length - 1; w >= 0; w--) {
+        if (ackWaiters[w]!.ackIndex === acksSeen - 1) {
+          const release = ackWaiters[w]!.release;
+          ackWaiters.splice(w, 1);
+          release();
+        }
+      }
     } else if (m.type === "features") {
       const fm = m as unknown as { frames: Float32Array[]; startFrame: number };
       cbs.onFeatures?.(fm);

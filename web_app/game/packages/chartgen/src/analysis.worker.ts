@@ -1,6 +1,6 @@
 import { FluxChunker } from "./chunking.js";
 import { toMono, type PreprocParams } from "./mel.js";
-import { analyzeWhole, flattenFluxRows } from "./reference.js";
+import { analyzeWhole } from "./reference.js";
 
 /**
  * D30 frozen chunk rule (W3 T24) — the analysis-Worker protocol.
@@ -22,8 +22,9 @@ import { analyzeWhole, flattenFluxRows } from "./reference.js";
  * Worker testability (ruling c): `createAnalysisWorkerHandler` is a PURE
  * protocol handler — `message in → messages out + state` — that vitest unit
  * tests drive directly with a fake "Worker" (in-memory object, no
- * `new Worker`). The browser-side bootstrap (`attachAnalysisWorker`) is a
- * thin exported function that e2e covers.
+ * `new Worker`). The handler accumulates flux as NUMBERS, never as row
+ * references: the `features` rows are transferred (detached) by the caller,
+ * so holding them would make `done.flux` read zeroes (T24 review r1).
  */
 
 // ------------------------------------------------------------------ message types
@@ -58,14 +59,16 @@ export interface AnalysisWorkerHandler {
 
 /**
  * Create the pure protocol handler. Driven by vitest with a fake Worker
- * (no `new Worker`); the browser bootstrap `attachAnalysisWorker` wires it
- * to a real `Worker` instance.
+ * (no `new Worker`); T25's Worker entry wires it to a real `Worker`.
  */
 export function createAnalysisWorkerHandler(preproc: PreprocParams): AnalysisWorkerHandler {
   const chunker = new FluxChunker(preproc);
   let totalSamples = 0;
   let expectedStart = 0;
-  let fluxRows: Float32Array[] = [];
+  // Flux accumulated as NUMBERS: the per-frame rows handed to `features` are
+  // transferred (their buffers detached) by the caller, so any row reference
+  // held here would read as zeroes at flush time (T24 review r1, Critical 1).
+  const fluxValues: number[] = [];
 
   return {
     handle(msg: AnalysisWorkerInMessage): AnalysisWorkerOutMessage[] {
@@ -76,12 +79,13 @@ export function createAnalysisWorkerHandler(preproc: PreprocParams): AnalysisWor
         if (msg.sampleRate !== preproc.sr) {
           throw new Error(`analysis worker: sampleRate ${msg.sampleRate} !== preproc.sr ${preproc.sr}`);
         }
+        validateChannels(msg.channels, msg.channelCount);
         const mono = toMono(msg.channels);
         const batch = chunker.consume(mono, msg.startFrame);
         totalSamples += mono.length;
         expectedStart += mono.length;
         if (batch.frames.length > 0) {
-          fluxRows.push(...batch.frames);
+          for (const row of batch.frames) fluxValues.push(row[0] ?? 0);
         }
         const out: AnalysisWorkerOutMessage[] = [];
         if (batch.frames.length > 0) {
@@ -94,17 +98,18 @@ export function createAnalysisWorkerHandler(preproc: PreprocParams): AnalysisWor
       if (msg.type === "flush") {
         const batch = chunker.flush(totalSamples);
         if (batch.frames.length > 0) {
-          fluxRows.push(...batch.frames);
+          for (const row of batch.frames) fluxValues.push(row[0] ?? 0);
         }
         const out: AnalysisWorkerOutMessage[] = [];
         if (batch.frames.length > 0) {
           out.push({ type: "features", frames: batch.frames, startFrame: batch.firstFrame });
         }
-        out.push({ type: "done", flux: flattenFluxRows(fluxRows) });
+        out.push({ type: "done", flux: Float32Array.from(fluxValues) });
         return out;
       }
 
       // analyze-whole — reference mode (whole buffer, no chunking)
+      validateChannels(msg.channels, msg.channelCount);
       const mono = toMono(msg.channels);
       const ref = analyzeWhole(mono, msg.sampleRate, preproc, true);
       return [
@@ -119,30 +124,23 @@ export function createAnalysisWorkerHandler(preproc: PreprocParams): AnalysisWor
   };
 }
 
-// ------------------------------------------------------------------ browser bootstrap
 /**
- * The thin browser-side bootstrap (ruling c): wires a `Worker` instance to
- * the pure handler. Covered by e2e, not by the vitest unit suite. The
- * `Worker` is created by the caller (T25's `generate()` runs on the
- * Worker and loads `analysis.worker.ts` as its entry point).
+ * Reject a malformed chunk before any down-mix: `channelCount` must match
+ * `channels.length`, and every channel must carry the SAME length (`toMono`
+ * reads `right[i]` up to `first.length`; a short channel would yield
+ * `undefined` → NaN, which `chunkFrame` silently turns into 0 — plausibly
+ * shaped but wrong flux with no error). T24 review r1, R16.
  */
-export function attachAnalysisWorker(
-  preproc: PreprocParams,
-  worker: Worker,
-): void {
-  // T25's Worker entry imports `createAnalysisWorkerHandler` from this module
-  // and wires it to the `Worker`'s own `onmessage`/`postMessage`. This
-  // bootstrap is the thin main-thread side: it provides the `Worker`'s
-  // inbound `onmessage` + outbound `postMessage` with transfer lists.
-  const handler = createAnalysisWorkerHandler(preproc);
-
-  worker.onmessage = (ev: MessageEvent) => {
-    const msgs = handler.handle(ev.data as AnalysisWorkerInMessage);
-    for (const m of msgs) {
-      const transferables = workerTransferables(m);
-      worker.postMessage(m, transferables);
+function validateChannels(channels: Float32Array[], channelCount: number): void {
+  if (channelCount !== channels.length) {
+    throw new Error(`analysis worker: channelCount ${channelCount} != channels.length ${channels.length}`);
+  }
+  const first = channels[0]?.length ?? 0;
+  for (let ch = 0; ch < channels.length; ch++) {
+    if (channels[ch]!.length !== first) {
+      throw new Error(`analysis worker: channel ${ch} length ${channels[ch]!.length} != channel 0 length ${first}`);
     }
-  };
+  }
 }
 
 /** Extract `Transferable`s from an outbound Worker message (D30 transfer list). */
@@ -156,9 +154,3 @@ export function workerTransferables(m: AnalysisWorkerOutMessage): Transferable[]
   return [];
 }
 
-// ponytail: `AnalysisWorkerHandler`/`createAnalysisWorkerHandler`/
-// `attachAnalysisWorker`/`workerTransferables` are the D30 frozen protocol.
-// `chunkFrame`/`createFluxWindowState`/`FluxWindowState` are re-exported for
-// the chunking test (boundary-shifted framing) but are NOT part of the
-// frozen protocol — T25 does not import them. Upgrade path: if T25 needs
-// a different framing shift, add a protocol message here, not a new export.

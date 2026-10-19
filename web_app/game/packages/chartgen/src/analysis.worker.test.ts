@@ -1,4 +1,4 @@
-import { createAnalysisWorkerHandler } from "./analysis.worker.js";
+import { createAnalysisWorkerHandler, workerTransferables } from "./analysis.worker.js";
 import { analyzeWhole, CHUNK_FEATURE_TOL } from "./reference.js";
 import { toMono, type PreprocParams } from "./mel.js";
 import { describe, expect, it } from "vitest";
@@ -62,7 +62,7 @@ describe("B8a analysis worker protocol (ruling c — pure handler, fake Worker)"
       channelCount: 1,
       channels: [samples.slice(0, PREPROC.sr)],
     });
-    expect(out1).toHaveLength(2); // features + ack (1 s chunk at 22050 Hz → ~45 frames)
+    expect(out1).toHaveLength(2); // features + ack (1 s chunk at 22050 Hz → 96 frames)
     expect(out1[0]!.type).toBe("features");
     expect(out1[1]!.type).toBe("ack");
     const features = out1[0]!;
@@ -165,5 +165,74 @@ describe("B8a analysis worker protocol (ruling c — pure handler, fake Worker)"
     // The mono downmix is the D30 analysis boundary (round 4 P1-6 — `toMono`).
     const mono = toMono([l, r]);
     expect(mono.length).toBe(l.length);
+  });
+
+  it("`done.flux` survives the transfer of every emitted `features` row (review r1, Critical 1)", () => {
+    // The caller transfers each `features` row's ArrayBuffer (detaching it).
+    // Accumulating row REFERENCES would then flatten to zeroes at `flush`;
+    // `done.flux` must still equal `analyzeWhole`'s flux.
+    const samples = multiTone(2, PREPROC.sr, 41);
+    const handler = createAnalysisWorkerHandler(PREPROC);
+    const emitted: Float32Array[] = [];
+    const collect = (msgs: ReturnType<typeof handler.handle>): void => {
+      for (const m of msgs) {
+        if (m.type !== "features") continue;
+        emitted.push(...m.frames);
+        // Exactly what `workerTransferables` feeds into `postMessage`.
+        structuredClone(m.frames, { transfer: workerTransferables(m) });
+      }
+    };
+    collect(handler.handle({
+      type: "chunk",
+      startFrame: 0,
+      sampleRate: PREPROC.sr,
+      channelCount: 1,
+      channels: [samples.slice(0, PREPROC.sr)],
+    }));
+    collect(handler.handle({
+      type: "chunk",
+      startFrame: PREPROC.sr,
+      sampleRate: PREPROC.sr,
+      channelCount: 1,
+      channels: [samples.slice(PREPROC.sr)],
+    }));
+    const flushMsgs = handler.handle({ type: "flush" });
+    collect(flushMsgs);
+    // The rows are really detached — the test would be vacuous otherwise.
+    expect(emitted[0]!.byteLength).toBe(0);
+
+    const done = flushMsgs.find((m) => m.type === "done");
+    if (!done || done.type !== "done") throw new Error("not done");
+    const whole = analyzeWhole(samples, PREPROC.sr, PREPROC).flux;
+    expect(done.flux.length).toBe(whole.length);
+    for (let i = 0; i < whole.length; i++) {
+      expect(Math.abs(done.flux[i]! - whole[i]!)).toBeLessThanOrEqual(CHUNK_FEATURE_TOL);
+    }
+  });
+
+  it("rejects a chunk whose `channelCount` disagrees with `channels.length` (R16)", () => {
+    const handler = createAnalysisWorkerHandler(PREPROC);
+    expect(() =>
+      handler.handle({
+        type: "chunk",
+        startFrame: 0,
+        sampleRate: PREPROC.sr,
+        channelCount: 2,
+        channels: [new Float32Array(PREPROC.sr)],
+      }),
+    ).toThrow(/channelCount/);
+  });
+
+  it("rejects a chunk whose channels have unequal lengths (R16)", () => {
+    const handler = createAnalysisWorkerHandler(PREPROC);
+    expect(() =>
+      handler.handle({
+        type: "chunk",
+        startFrame: 0,
+        sampleRate: PREPROC.sr,
+        channelCount: 2,
+        channels: [new Float32Array(PREPROC.sr), new Float32Array(PREPROC.sr - 1)],
+      }),
+    ).toThrow(/length/);
   });
 });

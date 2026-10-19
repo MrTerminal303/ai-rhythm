@@ -258,8 +258,9 @@ describe("B8a backpressure (review P0): at most ONE outstanding un-acked chunk",
     }
     expect(fake.chunksSeen()).toBe(5);
 
-    // The last chunk's `ack` is released → the sender posts `flush`; the fake
-    // answers with `done` through the registered callback.
+    // The last chunk's `ack` is NEVER released — `flush` is posted precisely
+    // BECAUSE that ack is not awaited (the brief ack-gates transfers only);
+    // the fake's FIFO guarantees it consumed the last chunk first.
     const result = await promise;
     expect(fake.flushSeen()).toBe(true);
     expect(result.maxOutstanding).toBeLessThanOrEqual(1); // the invariant, whole stream

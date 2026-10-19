@@ -49,7 +49,6 @@ export {
 
 export {
   createAnalysisWorkerHandler,
-  attachAnalysisWorker,
   workerTransferables,
   type AnalysisWorkerInMessage,
   type AnalysisWorkerOutMessage,

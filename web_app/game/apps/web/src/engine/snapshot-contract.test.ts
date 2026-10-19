@@ -14,8 +14,9 @@ const chart = {
 describe("A3 fix 2 — compact snapshot", () => {
   it("snapshot shape has no per-note array", () => {
     const engine = new GameEngine({ chart, clock: new PerformanceClock(), renderer: noopRenderer });
+    // W3 T21: maxCombo + judgementCounts are additive scalar fields (NOT a per-note array).
     expect(Object.keys(engine.snapshot()).sort()).toEqual(
-      ["accuracy", "chartTimeMs", "combo", "endTimeMs", "events", "frozen", "score"],
+      ["accuracy", "chartTimeMs", "combo", "endTimeMs", "events", "frozen", "judgementCounts", "maxCombo", "score"],
     );
   });
 
@@ -63,7 +64,7 @@ describe("A3 fix 2 — compact snapshot", () => {
 
   it("store.set with the identical object notifies nothing (identity short-circuit already present)", () => {
     const store = new SnapshotStore();
-    const snap = { chartTimeMs: 0 as never, score: 0, combo: 0, accuracy: 0, frozen: false, endTimeMs: 1, events: [] };
+    const snap = { chartTimeMs: 0 as never, score: 0, combo: 0, accuracy: 0, frozen: false, endTimeMs: 1, events: [], maxCombo: 0, judgementCounts: { perfect: 0, great: 0, good: 0, miss: 0 } };
     store.set(snap);
     let calls = 0;
     store.subscribe(() => calls++);

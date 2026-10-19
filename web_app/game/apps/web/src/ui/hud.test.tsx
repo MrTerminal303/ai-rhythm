@@ -16,6 +16,8 @@ const snap: GameSnapshot = {
   frozen: false,
   endTimeMs: 60_000,
   events: [{ type: "hit", grade: "perfect", lane: 0, dt: 5, noteId: 3 }],
+  maxCombo: 7,
+  judgementCounts: { perfect: 1, great: 0, good: 0, miss: 0 },
 };
 
 describe("Hud (B4: engine event → HUD text)", () => {

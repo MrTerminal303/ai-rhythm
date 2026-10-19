@@ -3,6 +3,7 @@ import type { Beatmap } from "@airhythm/shared";
 import { GameEngine } from "./engine.js";
 import { PerformanceClock } from "./clock.js";
 import type { Renderer } from "./types.js";
+import type { Grade } from "@airhythm/shared";
 
 const mk = (notes: Beatmap["notes"], durationMs = 30_000): Beatmap => ({
   version: 1,
@@ -390,6 +391,40 @@ describe("hold judging (W2 T17)", () => {
     expect(engine.snapshot().combo).toBe(0);
     engine.judge(1, 3010); // next hit starts combo at 1
     expect(engine.snapshot().combo).toBe(1);
+  });
+
+  it("W3 T21: snapshot carries maxCombo (high-water) and judgementCounts; counts sum to totalTargets at freeze", () => {
+    // mixed chart: 2 taps + 1 hold (head+tail) = 4 targets
+    const { src, engine } = setup([
+      { id: 0, t: 1000, lane: 0, type: "tap" },
+      { id: 1, t: 2000, lane: 1, type: "tap" },
+      hold(2, 3000, 500),
+    ]);
+    engine.judge(0, 1010); // tap perfect → combo 1
+    engine.judge(1, 2010); // tap perfect → combo 2
+    engine.judge(0, 3010); // hold head perfect → combo 3
+    engine.release(0, 3520); // tail good (|dt| = 20 > 70? no: 3520-3500=20 → perfect… check: t+d = 3500, dt=+20 → perfect)
+    const full = engine.snapshot();
+    expect(full.maxCombo).toBe(4); // high-water: combo peaked at 4
+    const counts: Record<Grade, number> = full.judgementCounts;
+    expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(4); // all targets resolved
+    expect(counts.perfect).toBe(4);
+
+    // miss path resets combo but maxCombo keeps the high-water mark; counts accumulate all grades
+    const { src: src2, engine: e2 } = setup([
+      { id: 0, t: 1000, lane: 0, type: "tap" },
+      { id: 1, t: 2000, lane: 1, type: "tap" },
+    ]);
+    e2.judge(0, 1060); // great (|dt|=60) → combo 1
+    src2.t = 3000; // past both deadlines (1110 / 2110) → sweep marks both missed, then freezes
+    e2.update();
+    const snap2 = e2.snapshot();
+    expect(snap2.maxCombo).toBe(1); // high-water survives the reset
+    expect(snap2.combo).toBe(0);
+    expect(snap2.judgementCounts.great).toBe(1);
+    expect(snap2.judgementCounts.miss).toBe(1);
+    expect(snap2.judgementCounts.perfect).toBe(0);
+    expect(Object.values(snap2.judgementCounts).reduce((a, b) => a + b, 0)).toBe(2);
   });
 
   it("release on a tap lane is a no-op; release on a hold without judged head still hits tail", () => {

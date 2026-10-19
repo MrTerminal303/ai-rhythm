@@ -14,6 +14,9 @@ export interface GameSnapshot {
   frozen: boolean;
   endTimeMs: number;
   events: readonly JudgementEvent[];
+  // W3 T21 (B4): additive run-level aggregates (NOT a per-note array — T6 compact shape kept).
+  maxCombo: number;
+  judgementCounts: Record<Grade, number>;
 }
 
 export interface Renderer {

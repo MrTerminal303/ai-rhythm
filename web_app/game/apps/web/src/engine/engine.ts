@@ -1,4 +1,4 @@
-import type { Beatmap } from "@airhythm/shared";
+import type { Beatmap, Grade } from "@airhythm/shared";
 import { accuracyFraction, scoreFromWeights, grade, SCORE_WEIGHTS, JUDGE_WINDOWS } from "@airhythm/shared";
 import type { GameClock } from "./clock.js";
 import { judgeDt } from "./time-math.js";
@@ -43,6 +43,7 @@ export class GameEngine {
   private sumWeights = 0;
   private combo = 0;
   private maxCombo = 0;
+  private judgementCounts: Record<Grade, number> = { perfect: 0, great: 0, good: 0, miss: 0 }; // W3 T21: per-grade aggregates, bumped at the existing grade sites
   private frozen = false;
   private current: GameSnapshot;
   private prev: GameSnapshot;
@@ -109,6 +110,7 @@ export class GameEngine {
       this.combo += 1;
       if (this.combo > this.maxCombo) this.maxCombo = this.combo;
       this.sumWeights += SCORE_WEIGHTS[g];
+      this.bumpCount(g);
       events.push({ type: "hit", grade: g, lane, dt: bestDt, noteId: target.noteId });
     }
     // head miss-by-window: nothing marked — stays pending; update() expiry owns it (Review Focus 5)
@@ -139,6 +141,7 @@ export class GameEngine {
         // early release → tail Miss immediately
         this.setTargetState(tail, "missed");
         this.combo = 0;
+        this.bumpCount("miss");
         events.push({ type: "miss", lane, chartTime: inputMs });
       } else if (dt <= 150) {
         const g = gradeTail(dt); // |dt| ≤ 150 → perfect/great/good; miss unreachable via release
@@ -146,6 +149,7 @@ export class GameEngine {
         this.combo += 1;
         if (this.combo > this.maxCombo) this.maxCombo = this.combo; // successful tail increments maxCombo too (full-combo hold = totalTargets)
         this.sumWeights += SCORE_WEIGHTS[g];
+        this.bumpCount(g);
         events.push({ type: "hit", grade: g, lane, dt, noteId: tail.noteId });
       }
       // dt > 150 → ignore; the deadline already passed — update() owns expiry
@@ -212,6 +216,7 @@ export class GameEngine {
       if (chartTime > expiryMs && calibratedChartTime > expiryMs) {
         this.setTargetState(target, "missed");
         this.combo = 0;
+        this.bumpCount("miss");
         events.push({ type: "miss", lane: target.lane, chartTime });
       }
     }
@@ -226,6 +231,14 @@ export class GameEngine {
   /** Diagnostic view of the internal per-note states array; T6 removes `noteStates` from the snapshot. */
   noteStates(): readonly NoteState[] {
     return this.states;
+  }
+
+  /**
+   * W3 T21: bump one grade count by REPLACING the record wholesale — never mutate in place, so a
+   * snapshot already published keeps its own frozen counts object (Review Focus #4 immutability).
+   */
+  private bumpCount(g: Grade): void {
+    this.judgementCounts = { ...this.judgementCounts, [g]: this.judgementCounts[g] + 1 };
   }
 
   /** THE ONLY mutation path for target state: assign + recompute that one note's derived state. */
@@ -252,6 +265,8 @@ export class GameEngine {
     const accuracy = accuracyFraction(this.sumWeights, this.totalTargets);
     const frozen = this.frozen;
     const endTimeMs = this.endTimeMs;
+    const counts = this.judgementCounts; // stable object identity — replaced wholesale on each observable grade change
+    const maxCombo = this.maxCombo;
     const cur = this.current;
     // First emit (constructor) has no current yet — just allocate
     if (cur === undefined) {
@@ -263,6 +278,8 @@ export class GameEngine {
         frozen,
         endTimeMs,
         events: events.slice(),
+        maxCombo,
+        judgementCounts: counts, // engine-owned aggregate — carry the reference, not a copy
       };
     }
     // observable-change check FIRST — no allocation on the unchanged path, and a previously
@@ -270,7 +287,8 @@ export class GameEngine {
     if (
       events.length === 0 && cur.events.length === 0 &&
       cur.chartTimeMs === chartTime && cur.score === score && cur.combo === combo &&
-      cur.accuracy === accuracy && cur.frozen === frozen && cur.endTimeMs === endTimeMs
+      cur.accuracy === accuracy && cur.frozen === frozen && cur.endTimeMs === endTimeMs &&
+      cur.maxCombo === maxCombo && cur.judgementCounts === counts
     ) {
       return cur; // stable identity — useSyncExternalStore's React infinite-render guard
     }
@@ -282,6 +300,8 @@ export class GameEngine {
       frozen,
       endTimeMs,
       events: events.slice(), // judgement flash — small, per-event only; NO per-note array (A3)
+      maxCombo,
+      judgementCounts: counts, // engine-owned aggregate — carry the reference, not a copy
     };
   }
 }

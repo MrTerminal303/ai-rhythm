@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import w1Chart from "../../../fixtures/w1-chart.json";
 import benchChart from "../../../fixtures/w1-benchmark-chart.json";
-import { parseBeatmap, type Beatmap } from "@airhythm/shared";
+import { canonicalJson, hashBeatmap, parseBeatmap, rankFor, type Beatmap } from "@airhythm/shared";
 import { PerfMonitor, RENDER_BUDGET_MS } from "../../engine/perf.js";
 import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
@@ -21,6 +21,7 @@ import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js
 import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSource } from "../../chart-source.js";
 import { getChart, loadVerifiedAudio, markDamaged } from "../../library/db.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
+import { buildRunResult, lastRunStore } from "../../ui/last-run.js";
 import { Hud } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
@@ -797,7 +798,15 @@ export default function PlayPage() {
           if (engine.isFrozen()) {
             if (phaseRef.current === "playing") applyPhase("completed"); // A9: distinct end-of-run state (machine-legal, T8)
             emitPerfReport("natural");
-            store.set(engine.snapshot()); // final frozen snapshot reaches HUD
+            const finalSnap = engine.snapshot(); // frozen snapshot — single source of truth for B4 results
+            store.set(finalSnap); // final frozen snapshot reaches HUD + results overlay
+            // W3 T21 (B4): mint the RunResult ONCE at completion (round 3 P1-4) and hand it
+            // to B6's store. No auth layer yet → sessionOnly: true; B4 syncs nothing.
+            const finishedChart = chartRef.current;
+            void (async () => {
+              const chartHash = finishedChart ? await hashBeatmap(canonicalJson(finishedChart)) : "";
+              lastRunStore.set(buildRunResult(finalSnap, chartHash));
+            })();
             // no rAF re-arm: the loop stops, [perf] logs exactly once
             return;
           }
@@ -888,8 +897,22 @@ export default function PlayPage() {
           >
             Run complete
           </p>
-          <p style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-            Final score: {snapshot ? snapshot.score : 0}
+          <p data-testid="results-score" style={{ color: "var(--text)", fontFamily: "var(--font-mono)" }}>
+            Score {snapshot?.score ?? 0}
+          </p>
+          <p data-testid="results-max-combo" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            Max combo {snapshot?.maxCombo ?? 0}
+          </p>
+          <p data-testid="results-accuracy" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            Accuracy {((snapshot?.accuracy ?? 0) * 100).toFixed(1)}%
+          </p>
+          <p data-testid="results-rank" style={{ color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "2rem" }}>
+            {rankFor(snapshot?.accuracy ?? 0)}
+          </p>
+          <p data-testid="results-breakdown" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            {(["perfect", "great", "good", "miss"] as const)
+              .map((g) => `${g[0]!.toUpperCase()} ${snapshot?.judgementCounts[g] ?? 0}`)
+              .join("  ·  ")}
           </p>
           <Link
             href="/"

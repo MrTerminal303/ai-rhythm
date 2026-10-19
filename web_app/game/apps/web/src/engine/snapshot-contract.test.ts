@@ -64,7 +64,17 @@ describe("A3 fix 2 — compact snapshot", () => {
 
   it("store.set with the identical object notifies nothing (identity short-circuit already present)", () => {
     const store = new SnapshotStore();
-    const snap = { chartTimeMs: 0 as never, score: 0, combo: 0, accuracy: 0, frozen: false, endTimeMs: 1, events: [], maxCombo: 0, judgementCounts: { perfect: 0, great: 0, good: 0, miss: 0 } };
+    const snap = {
+      chartTimeMs: 0 as never,
+      score: 0,
+      combo: 0,
+      accuracy: 0,
+      frozen: false,
+      endTimeMs: 1,
+      events: [],
+      maxCombo: 0,
+      judgementCounts: { perfect: 0, great: 0, good: 0, miss: 0 },
+    };
     store.set(snap);
     let calls = 0;
     store.subscribe(() => calls++);

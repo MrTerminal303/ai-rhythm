@@ -403,7 +403,7 @@ describe("hold judging (W2 T17)", () => {
     engine.judge(0, 1010); // tap perfect → combo 1
     engine.judge(1, 2010); // tap perfect → combo 2
     engine.judge(0, 3010); // hold head perfect → combo 3
-    engine.release(0, 3520); // tail good (|dt| = 20 > 70? no: 3520-3500=20 → perfect… check: t+d = 3500, dt=+20 → perfect)
+    engine.release(0, 3520); // hold tail perfect: t+d = 3500, dt = +20
     const full = engine.snapshot();
     expect(full.maxCombo).toBe(4); // high-water: combo peaked at 4
     const counts: Record<Grade, number> = full.judgementCounts;

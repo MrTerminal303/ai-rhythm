@@ -22,7 +22,7 @@ import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSo
 import { getChart, loadVerifiedAudio, markDamaged } from "../../library/db.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { buildRunResult, lastRunStore } from "../../ui/last-run.js";
-import { Hud } from "../../ui/hud.js";
+import { Hud, JUDGE_LABEL } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
 
@@ -804,7 +804,13 @@ export default function PlayPage() {
             // to B6's store. No auth layer yet → sessionOnly: true; B4 syncs nothing.
             const finishedChart = chartRef.current;
             void (async () => {
-              const chartHash = finishedChart ? await hashBeatmap(canonicalJson(finishedChart)) : "";
+              let chartHash = "";
+              try {
+                if (finishedChart) chartHash = await hashBeatmap(canonicalJson(finishedChart));
+              } catch (err) {
+                // best-effort hand-off to B6: hash failure must not drop the run or go unhandled
+                console.error("[play] chart hash failed, publishing run without it:", err);
+              }
               lastRunStore.set(buildRunResult(finalSnap, chartHash));
             })();
             // no rAF re-arm: the loop stops, [perf] logs exactly once
@@ -911,7 +917,7 @@ export default function PlayPage() {
           </p>
           <p data-testid="results-breakdown" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
             {(["perfect", "great", "good", "miss"] as const)
-              .map((g) => `${g[0]!.toUpperCase()} ${snapshot?.judgementCounts[g] ?? 0}`)
+              .map((g) => `${JUDGE_LABEL[g]} ${snapshot?.judgementCounts[g] ?? 0}`)
               .join("  ·  ")}
           </p>
           <Link

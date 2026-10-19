@@ -96,7 +96,8 @@ function melFilterbank(nMels: number, nFft: number, sr: number, fmin: number, fm
 
 // ------------------------------------------------------------------------- FFT
 /** Radix-2 in-place iterative FFT (n_fft = 2048 here) — no dependency added. */
-function fftInPlace(re: Float64Array, im: Float64Array): void {
+// D30 (T24): exported so the spectral-flux path shares the mel FFT verbatim (behavior unchanged).
+export function fftInPlace(re: Float64Array, im: Float64Array): void {
   const n = re.length;
   // bit-reversal permutation
   for (let i = 1, j = 0; i < n; i++) {

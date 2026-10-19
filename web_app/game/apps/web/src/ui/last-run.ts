@@ -22,8 +22,13 @@ export interface RunResult {
 /**
  * Build a RunResult from a frozen snapshot. runId is minted ONCE here
  * (round 3 P1-4: stable identity for idempotent run uploads); every other field is a
- * pure projection of the snapshot. sessionOnly reflects authentication at completion —
- * no auth layer exists yet, so every current run is sessionOnly.
+ * pure projection of the snapshot. sessionOnly reflects authentication at completion.
+ *
+ * T23 carry-over fix: `crypto.randomUUID` needs a SECURE CONTEXT, so on a plain-HTTP LAN
+ * origin it is undefined and building the result threw — the caller's publish was inside an
+ * async IIFE, so a completed run silently vanished with no error. The id now has a
+ * documented fallback and never throws; stability (not unguessability) is what the id needs —
+ * it is the idempotency key of a row the DB already scopes to `user_id`.
  */
 export function buildRunResult(
   snap: GameSnapshot,
@@ -31,7 +36,7 @@ export function buildRunResult(
   opts: { chartId?: string | null; audioHash?: string | null; authenticated?: boolean } = {},
 ): RunResult {
   return {
-    runId: crypto.randomUUID(),
+    runId: mintRunId(),
     chartId: opts.chartId ?? null,
     chartHash,
     audioHash: opts.audioHash ?? null,
@@ -44,6 +49,18 @@ export function buildRunResult(
     playedAt: Date.now(),
     sessionOnly: !opts.authenticated,
   };
+}
+
+/** randomUUID when the context allows it, else a Math.random UUIDv4 shape (no secure context). */
+function mintRunId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = Math.floor(Math.random() * 16);
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
 }
 
 /** totalTargets is the sum of judgementCounts at freeze (every target resolved). */

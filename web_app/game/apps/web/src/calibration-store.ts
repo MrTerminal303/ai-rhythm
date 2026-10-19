@@ -45,6 +45,34 @@ function mirrorCalibrationToSettings(ms: number): void {
   }
 }
 
+/**
+ * W3 T23 (B6) ruling — how a REMOTE-won `deviceCalibrationOffsetMs` reaches gameplay.
+ * D36 made the mirror one-directional (calibration → envelope), which left a hole: a settings
+ * sync that pulls a remote-won envelope updates the envelope only, so `loadCalibration` (the
+ * single gameplay read path, read at `startGame`) would keep using the OLD offset until the
+ * player touched the control — `/settings` would display a value `judgeDt` is not using.
+ *
+ * The rule: adopt the remote value through `saveCalibration`, i.e. only on a confirmed
+ * `ok:true` sync — never per-render, never on an unconfirmed write. That preserves the
+ * invariant D36 was protecting (one gameplay source of truth, and it is never written by a
+ * mere read): both stores still change together, from one function. Validation is the same
+ * guard the calibration control uses (±500 ms, finite); an out-of-range or missing remote
+ * value is ignored and the local offset stands (`/settings` keeps the local value).
+ *
+ * Called AFTER `syncSettings` has finished; that matters — `saveCalibration` mirrors into the
+ * envelope with a FRESH rev, so adopting mid-sync would bump the document under the sync loop.
+ * A no-op when the merged value already matches the legacy key.
+ */
+export function adoptRemoteCalibration(remoteValue: unknown): void {
+  if (typeof remoteValue !== "number" || !isValidCalibration(remoteValue)) return;
+  if (loadCalibration() === remoteValue) return;
+  try {
+    saveCalibration(remoteValue);
+  } catch {
+    /* out-of-range is already filtered above; storage failure must not break a sync report */
+  }
+}
+
 export function computeCalibration(samples: { inputMs: number; beatMs: number }[]): number {
   if (samples.length === 0) throw new Error("no calibration taps");
   const diffs = samples.map((s) => s.inputMs - s.beatMs).sort((a, b) => a - b);

@@ -2,8 +2,8 @@
 
 // W3 T22 (B5): /settings — local-first (every control writes its envelope immediately).
 // Groups per the §18 minimum; keybinds + device offset are the two documented C10
-// exceptions. The sync notice is driven by the syncSettings outcome — with no cloud client
-// wired yet (T23), a manual sync reports `network` and the deferred notice is reachable.
+// exceptions. W3 T23 (B6) wires the real cloud channel: "Sync now" runs the merge against
+// `profiles.settings` and the deferred notice reflects the outcome.
 import { useState } from "react";
 import Link from "next/link";
 import {
@@ -11,11 +11,11 @@ import {
   DEVICE_OFFSET_RANGE_MS,
   getSetting,
   setSetting,
-  syncSettings,
   validateKeybinds,
   type Keybinds,
 } from "../../settings/settings.js";
 import { saveCalibration } from "../../calibration-store.js";
+import { isAuthenticated, syncSettingsNow } from "../../auth/auth.js";
 
 const LANE_LABELS = ["Lane 1", "Lane 2", "Lane 3", "Lane 4"];
 
@@ -53,7 +53,22 @@ export default function SettingsPage() {
 
   const runSync = async (): Promise<void> => {
     setSyncing(true);
-    const result = await syncSettings();
+    // B6 (T23): the real channel — read/merge/write/re-read against profiles.settings, and a
+    // confirmed sync adopts a remote-won calibration offset into the gameplay read path.
+    const result = await syncSettingsNow();
+    if (result.ok) {
+      // the sync may have rewritten the document (or adopted a remote offset) — re-read it so
+      // the controls show what is now stored, rather than the pre-sync values
+      setSettings({
+        masterVolume: getSetting("masterVolume"),
+        musicVolume: getSetting("musicVolume"),
+        sfxVolume: getSetting("sfxVolume"),
+        deviceCalibrationOffsetMs: getSetting("deviceCalibrationOffsetMs"),
+        scrollSpeed: getSetting("scrollSpeed"),
+        downscroll: getSetting("downscroll"),
+        keybinds: getSetting("keybinds"),
+      });
+    }
     setSyncDeferred(!result.ok); // only ok:true clears the notice
     setSyncing(false);
   };
@@ -176,12 +191,16 @@ export default function SettingsPage() {
       </section>
 
       <section className="flex flex-col items-center gap-3" aria-label="Sync">
+        <h2 className="text-lg">Cloud</h2>
+        <p data-testid="settings-account-state" className="text-sm" style={{ color: "var(--text-dim)" }}>
+          {isAuthenticated() ? "Signed in — settings sync to your account." : "Guest — settings stay on this device."}
+        </p>
         <button
           type="button"
           data-testid="settings-sync-now"
           onClick={() => void runSync()}
           disabled={syncing}
-          className="cursor-pointer rounded-[6px] border px-4 py-2 text-sm"
+          className="cursor-pointer rounded-[6px] border px-4 py-2 text-sm disabled:opacity-50"
           style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
         >
           {syncing ? "Syncing…" : "Sync now"}
@@ -191,6 +210,9 @@ export default function SettingsPage() {
             settings sync deferred — will retry
           </p>
         )}
+        <Link href="/auth" className="text-sm" style={{ color: "var(--text-dim)" }}>
+          {isAuthenticated() ? "Account" : "Sign in to sync"}
+        </Link>
       </section>
 
       <Link href="/" className="text-sm" style={{ color: "var(--text-dim)" }}>

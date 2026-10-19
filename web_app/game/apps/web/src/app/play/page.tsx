@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import w1Chart from "../../../fixtures/w1-chart.json";
 import benchChart from "../../../fixtures/w1-benchmark-chart.json";
@@ -23,6 +23,7 @@ import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSo
 import { getChart, loadVerifiedAudio, markDamaged } from "../../library/db.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { buildRunResult, lastRunStore } from "../../ui/last-run.js";
+import { getAuthSnapshot, getServerAuthSnapshot, isAuthenticated, subscribeAuth } from "../../auth/auth.js";
 import { Hud, JUDGE_LABEL } from "../../ui/hud.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
@@ -137,6 +138,10 @@ export default function PlayPage() {
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
   const [libraryError, setLibraryError] = useState(false); // W3 T19 (B2): ?libraryChartId unresolvable/corrupt
   const [startError, setStartError] = useState<string | null>(null); // startGame failure surfaced in the start overlay
+  // W3 T23 (B6): the run-sync failure notice is driven from the auth store, so it appears the
+  // moment the bounded retry gives up — not on the next render for some other reason.
+  const authSnap = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getServerAuthSnapshot);
+  const runSyncError = authSnap.runSyncError;
 
   // refs bridging the mount effect, the click-start flow, and cleanup
   const phaseRef = useRef<PlayPhase>("idle");
@@ -839,7 +844,8 @@ export default function PlayPage() {
             const finalSnap = engine.snapshot(); // frozen snapshot — single source of truth for B4 results
             store.set(finalSnap); // final frozen snapshot reaches HUD + results overlay
             // W3 T21 (B4): mint the RunResult ONCE at completion (round 3 P1-4) and hand it
-            // to B6's store. No auth layer yet → sessionOnly: true; B4 syncs nothing.
+            // to B6's store. W3 T23 (B6): sessionOnly now reflects REAL auth state, so a
+            // signed-in completion is eligible for score sync.
             const finishedChart = chartRef.current;
             void (async () => {
               let chartHash = "";
@@ -849,7 +855,15 @@ export default function PlayPage() {
                 // best-effort hand-off to B6: hash failure must not drop the run or go unhandled
                 console.error("[play] chart hash failed, publishing run without it:", err);
               }
-              lastRunStore.set(buildRunResult(finalSnap, chartHash));
+              try {
+                // W3 T23 carry-over fix: BUILDING the result can itself throw (crypto.randomUUID
+                // is unavailable on a non-secure origin). The build now has a fallback id, and
+                // this catch makes the publish non-droppable regardless — a completed run must
+                // reach the results screen even if identity minting somehow fails.
+                lastRunStore.set(buildRunResult(finalSnap, chartHash, { authenticated: isAuthenticated() }));
+              } catch (err) {
+                console.error("[play] publishing the completed run failed:", err);
+              }
             })();
             // no rAF re-arm: the loop stops, [perf] logs exactly once
             return;
@@ -958,6 +972,18 @@ export default function PlayPage() {
               .map((g) => `${JUDGE_LABEL[g]} ${snapshot?.judgementCounts[g] ?? 0}`)
               .join("  ·  ")}
           </p>
+          {runSyncError !== null && (
+            // W3 T23 (B6): score sync is personal history — an unverified copy the player asked
+            // for. A failure is shown here (the run itself is safe locally) and never blocks play.
+            <p
+              role="status"
+              data-testid="run-sync-error"
+              data-run-id={runSyncError.runId}
+              style={{ color: "var(--warn)", fontFamily: "var(--font-mono)", textAlign: "center" }}
+            >
+              {runSyncError.message} (unverified personal history)
+            </p>
+          )}
           <Link
             href="/"
             className="rounded-[10px] border px-6 py-3 text-sm"

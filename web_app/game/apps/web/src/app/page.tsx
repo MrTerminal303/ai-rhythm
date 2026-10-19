@@ -40,6 +40,14 @@ export default function Landing() {
       >
         Settings
       </Link>
+      <Link
+        href="/auth"
+        data-testid="landing-account"
+        className="rounded-[10px] border px-6 py-3 text-sm"
+        style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+      >
+        Account
+      </Link>
       <p className="text-sm" style={{ color: "var(--text-dim)" }}>
         4-key rhythm game — D F J K
       </p>

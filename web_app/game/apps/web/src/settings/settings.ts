@@ -96,6 +96,19 @@ export function getSetting<K extends keyof DefaultSettings>(key: K): DefaultSett
 }
 
 /**
+ * W3 T23 (B6): the single low-level write hook. `setSetting` is the ONE function every local
+ * edit funnels through (the /settings controls, the keybind rebind, and the calibration
+ * mirror), so B6's debounced cloud sync hangs off it instead of off each page's handlers.
+ * Deliberately NOT fired by `saveSettings`: that is the sync write-back, and triggering from
+ * it would make sync → write → sync a feedback loop.
+ */
+let afterWriteHook: (() => void) | null = null;
+
+export function setSettingsWriteHook(hook: (() => void) | null): void {
+  afterWriteHook = hook;
+}
+
+/**
  * Write one key: a fresh `writeId` per edit, and `rev = max(syncBaseline, localRev) + 1` so
  * local edits stay globally comparable with revisions observed at the last sync.
  */
@@ -111,6 +124,11 @@ export function setSetting<K extends keyof DefaultSettings>(key: K, value: Defau
     writeId: crypto.randomUUID(),
   };
   persist(map as SettingsMap);
+  try {
+    afterWriteHook?.(); // best-effort: a sync trigger must never break the write just made
+  } catch {
+    /* the local write above is the contract; the trigger is opportunistic */
+  }
 }
 
 /** Replace the whole document (sync write-back) and advance the local rev baseline. */
@@ -165,11 +183,25 @@ export function validateKeybinds(kb: Keybinds): { ok: true } | { ok: false; conf
 
 export type SettingsSyncOutcome =
   | { ok: true; mergedRev: number }
-  | { ok: false; reason: "not-converged" | "network" };
+  // "invalid-remote" (W3 T23 extension, D29): the remote document exists but is not a valid
+  // envelope map. Distinct from "network" because the local document is deliberately left
+  // untouched and a retry will NOT help until the remote row is fixed — the same class of
+  // information as "not-converged", not a transient channel failure.
+  | { ok: false; reason: "not-converged" | "network" | "invalid-remote" };
+
+/** Thrown by a `SettingsSyncClient.read` that found a non-NULL, non-envelope-map remote
+ *  document. `syncSettings` maps it to `invalid-remote` instead of the generic `network`. */
+export class InvalidRemoteSettingsError extends Error {
+  constructor(detail = "remote settings document is not a valid envelope map") {
+    super(detail);
+    this.name = "InvalidRemoteSettingsError";
+  }
+}
 
 /**
  * The cloud channel's transport (T23 supplies the real Supabase implementation).
- * `read` resolving null = row uninitialized; it throws to signal a network failure.
+ * `read` resolving null = row uninitialized; it throws to signal a network failure, and
+ * throws `InvalidRemoteSettingsError` for a malformed remote document.
  */
 export interface SettingsSyncClient {
   read(): Promise<SettingsMap | null>;
@@ -183,6 +215,29 @@ function canonicalDoc(map: SettingsMap): string {
       .sort()
       .map((k) => [k, map[k as keyof SettingsMap]]),
   );
+}
+
+/**
+ * W3 T23: is an arbitrary value a well-formed settings envelope map?
+ *
+ * Structural, not zod: the remote document arrives from our own column, and what actually
+ * threatens the local state is a payload that LOOKS like a map but makes `mergeSettings`
+ * produce garbage (a non-object, or an envelope missing the fields the merge rule orders by).
+ * Every present key must be a known setting with a numeric `rev` and string `deviceId`/`writeId`
+ * — an unknown key means the document was not written by this contract, which is exactly the
+ * case that must NOT be merged over the local document.
+ */
+export function settingsDocIsEnvelopeMap(value: unknown): value is SettingsMap {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const known = new Set(Object.keys(DEFAULT_SETTINGS));
+  for (const [key, env] of Object.entries(value as Record<string, unknown>)) {
+    if (!known.has(key)) return false;
+    if (env === null || typeof env !== "object" || Array.isArray(env)) return false;
+    const e = env as Record<string, unknown>;
+    if (!Number.isFinite(e.rev) || typeof e.deviceId !== "string" || typeof e.writeId !== "string") return false;
+    if (!("value" in e)) return false;
+  }
+  return true;
 }
 
 /**
@@ -205,7 +260,9 @@ export async function syncSettings(client?: SettingsSyncClient | null): Promise<
         return { ok: true, mergedRev: baselineRev };
       }
       // a concurrent writer interleaved — loop: the next read sees its revision too
-    } catch {
+    } catch (err) {
+      // a malformed remote document is not a channel failure and a retry cannot fix it
+      if (err instanceof InvalidRemoteSettingsError) return { ok: false, reason: "invalid-remote" };
       return { ok: false, reason: "network" };
     }
   }

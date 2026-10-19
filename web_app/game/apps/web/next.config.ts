@@ -8,6 +8,13 @@ import type { NextConfig } from "next";
 // bootstrap scripts. The build-time NODE_ENV decides: Playwright webServer runs
 // `pnpm build && pnpm start` (production), so e2e hits the prod policy.
 const isProd = process.env.NODE_ENV === "production";
+// W3 T23 (B6): the Supabase project origin joins connect-src ONLY when the project is
+// configured. Guest-only builds must keep working, so an unset env yields `'self'` alone —
+// note `new URL(undefined)` THROWS, which is why the presence check comes first. A malformed
+// non-empty value is NOT swallowed: it fails the build loudly rather than shipping a CSP that
+// silently blocks every auth call.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseOrigin = supabaseUrl ? new URL(supabaseUrl).origin : null;
 const csp = [
   "default-src 'self'",
   "img-src 'self' data: blob:",
@@ -20,7 +27,8 @@ const csp = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   "worker-src 'self' blob:",
-  "connect-src 'self'", // fetch/audio/atlas are same-origin (T23 extends with exact Supabase origin)
+  // exact project origin only (no wildcard): REST + auth go here; same-origin fetch/audio/atlas
+  ["connect-src 'self'", supabaseOrigin].filter(Boolean).join(" "),
   "font-src 'self'",
 ].join("; ");
 const securityHeaders = [

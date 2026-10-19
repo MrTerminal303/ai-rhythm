@@ -19,6 +19,18 @@ test("production CSP: play, import, and Worker/WASM probe run with zero violatio
   expect(csp).toContain("base-uri 'self'");
   expect(csp).toContain("form-action 'self'");
   expect(csp).toContain("frame-ancestors 'none'");
+  // W3 T23 (B6): connect-src is `'self'` for a guest-only build and gains EXACTLY ONE bare
+  // project origin when Supabase is configured — never a wildcard, never a path. Asserted off
+  // the observed header so the same check holds whether or not this shell exports the env.
+  const connectSrc = csp.split(";").map((s) => s.trim()).find((s) => s.startsWith("connect-src "));
+  expect(connectSrc, "connect-src present").toBeTruthy();
+  const connectTokens = connectSrc!.slice("connect-src ".length).split(/\s+/);
+  expect(connectTokens).toContain("'self'");
+  expect(connectSrc).not.toContain("*"); // a wildcard here would defeat the guest-only build
+  expect(connectTokens.length === 1 || connectTokens.length === 2).toBe(true);
+  if (connectTokens.length === 2) {
+    expect(connectTokens[1]).toMatch(/^https:\/\/[a-z0-9.-]+$/i); // bare origin: no path, no trailing slash
+  }
   // Token-level script-src check (review P0: substring check would false-fail on 'wasm-unsafe-eval')
   const scriptSrc = csp.split(";").map((s) => s.trim()).find((s) => s.startsWith("script-src "));
   expect(scriptSrc, "script-src present").toBeTruthy();
@@ -37,6 +49,16 @@ test("production CSP: play, import, and Worker/WASM probe run with zero violatio
   // survives the uploader's shape without a strict-mode collision.
   await expect(page.getByTestId("import-audio-input")).toBeVisible();
   await expect(page.getByTestId("import-file-input")).toBeVisible();
+
+  // W3 T23 (B6): the /auth journey renders under the production CSP (the client is
+  // constructed lazily and this build has no Supabase env → guest-only, no network).
+  await page.goto("/");
+  await page.getByTestId("landing-account").click();
+  await expect(page.getByTestId("auth-email")).toBeVisible();
+  await expect(page.getByTestId("auth-unconfigured")).toBeVisible(); // no env in the e2e build
+  await expect(page.getByTestId("settings-sync-now")).toHaveCount(0); // this is /auth, not /settings
+  await page.goto("/settings");
+  await expect(page.getByTestId("settings-account-state")).toBeVisible();
 
   await page.goto("/spike-probe");
   await expect(page.getByTestId("probe-ok")).toBeVisible(); // worker+wasm ran

@@ -36,6 +36,29 @@ test("completed guest run shows results, no supabase sync", async ({ page }) => 
   await expect(overlay.getByTestId("results-rank")).not.toBeEmpty();
   // pause overlay must be absent — completed ≠ paused (T13)
   await expect(page.getByTestId("pause-overlay")).toHaveCount(0);
-  // guest run: nothing synced
+  // guest run: nothing synced, and no sync error (nothing was attempted)
   expect(supabaseRequests).toEqual([]);
+  await expect(page.getByTestId("run-sync-error")).toHaveCount(0);
+
+  // W3 T23 (B6): a run-sync failure is a REAL visible state on the results screen, carrying the
+  // runId it belongs to. Seeded through the auth module's E2E seam (same pattern as the
+  // calibrate page's) because reaching the real path needs a live Supabase project; the
+  // retry/backoff that produces it is proven in src/auth/auth.test.ts.
+  await page.evaluate(() => {
+    (window as never as { __authTest?: { forceRunSyncError(e: unknown): void } }).__authTest?.forceRunSyncError({
+      runId: "e2e-run-sync-failure",
+      message: "Score sync failed — will not retry this run. Saved locally only.",
+    });
+  });
+  const syncError = page.getByTestId("run-sync-error");
+  await expect(syncError).toBeVisible();
+  await expect(syncError).toHaveAttribute("data-run-id", "e2e-run-sync-failure");
+  await expect(syncError).toContainText("unverified personal history");
+
+  // it clears (the user is not stuck with a stale notice) — the same path a later successful
+  // sync takes
+  await page.evaluate(() => {
+    (window as never as { __authTest?: { forceRunSyncError(e: unknown): void } }).__authTest?.forceRunSyncError(null);
+  });
+  await expect(syncError).toHaveCount(0);
 });

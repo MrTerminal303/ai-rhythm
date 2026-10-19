@@ -19,7 +19,8 @@ export const DEVICE_OFFSET_RANGE_MS = 500;
 
 export interface Keybinds {
   lanes: string[]; // exactly 4
-  skills: string[]; // exactly 3
+  // W3 deferral (R5, D36): no `skills` field — W3 ships no skill input path, so a skill bind
+  // would have no gameplay effect (the C10 sentence). Re-add with the W4 skill input path.
 }
 
 export interface DefaultSettings {
@@ -50,7 +51,7 @@ export const DEFAULT_SETTINGS: DefaultSettings = {
   deviceCalibrationOffsetMs: 0,
   scrollSpeed: SCROLL_PX_PER_MS,
   downscroll: false,
-  keybinds: { lanes: ["d", "f", "j", "k"], skills: ["1", "2", "3"] },
+  keybinds: { lanes: ["d", "f", "j", "k"] },
 };
 
 function storage(): Storage | null {
@@ -151,10 +152,10 @@ export function mergeSettings(local: SettingsMap, remote: SettingsMap): { merged
   return { merged: merged as SettingsMap, baselineRev };
 }
 
-/** no duplicate binds across 4 lanes + 3 skills; case-insensitive ('D' and 'd' are one bind) */
+/** no duplicate binds across the 4 lanes; case-insensitive ('D' and 'd' are one bind) */
 export function validateKeybinds(kb: Keybinds): { ok: true } | { ok: false; conflict: string } {
   const seen = new Set<string>();
-  for (const bind of [...kb.lanes, ...kb.skills]) {
+  for (const bind of kb.lanes) {
     const key = bind.toLowerCase();
     if (seen.has(key)) return { ok: false, conflict: key };
     seen.add(key);

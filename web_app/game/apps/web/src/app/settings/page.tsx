@@ -15,9 +15,9 @@ import {
   validateKeybinds,
   type Keybinds,
 } from "../../settings/settings.js";
+import { saveCalibration } from "../../calibration-store.js";
 
 const LANE_LABELS = ["Lane 1", "Lane 2", "Lane 3", "Lane 4"];
-const SKILL_LABELS = ["Skill 1", "Skill 2", "Skill 3"];
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState(() => ({
@@ -100,7 +100,12 @@ export default function SettingsPage() {
             value={settings.deviceCalibrationOffsetMs}
             onChange={(e) => {
               const v = Number.parseFloat(e.target.value);
-              if (Number.isFinite(v) && Math.abs(v) <= DEVICE_OFFSET_RANGE_MS) write("deviceCalibrationOffsetMs", v);
+              if (!Number.isFinite(v) || Math.abs(v) > DEVICE_OFFSET_RANGE_MS) return;
+              // R6: write through saveCalibration so BOTH stores carry the value — it writes the
+              // legacy key (the gameplay read path via loadCalibration) AND mirrors into the
+              // envelope. Writing the envelope alone would leave judgeDt ignoring the offset.
+              saveCalibration(v);
+              setSettings((cur) => ({ ...cur, deviceCalibrationOffsetMs: v }));
             }}
           />
         </label>
@@ -147,20 +152,6 @@ export default function SettingsPage() {
               onKeyDown={(e) => {
                 e.preventDefault(); // capture the next key — never let it scroll or submit
                 rebind("lanes", i, e.key);
-              }}
-            />
-          </label>
-        ))}
-        {SKILL_LABELS.map((label, i) => (
-          <label key={label} className="flex items-center gap-3 text-sm">
-            {label}
-            <input
-              readOnly
-              data-testid={`keybind-skill-${i}`}
-              value={settings.keybinds.skills[i]}
-              onKeyDown={(e) => {
-                e.preventDefault();
-                rebind("skills", i, e.key);
               }}
             />
           </label>

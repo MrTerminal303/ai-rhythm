@@ -22,6 +22,7 @@ import {
 } from "./settings.js";
 import { createKeyHandler, lanesToKeyMap } from "../engine/controller.js";
 import { noteY } from "../engine/renderer-webgl.js";
+import { CALIBRATION_KEY, loadCalibration } from "../calibration-store.js";
 import SettingsPage from "../app/settings/page.js";
 
 function env<T>(value: T, rev: number, deviceId: string, writeId: string): SettingEnvelope<T> {
@@ -135,23 +136,19 @@ describe("envelope storage + rev baseline", () => {
 });
 
 describe("validateKeybinds", () => {
-  const kb = (lanes: string[], skills: string[]) => ({ lanes, skills });
+  const kb = (lanes: string[]) => ({ lanes });
 
-  it("distinct binds across 4 lanes + 3 skills are ok", () => {
-    expect(validateKeybinds(kb(["d", "f", "j", "k"], ["1", "2", "3"]))).toEqual({ ok: true });
+  it("distinct binds across the 4 lanes are ok", () => {
+    expect(validateKeybinds(kb(["d", "f", "j", "k"]))).toEqual({ ok: true });
   });
 
   it("duplicate across two lanes reports the conflicting key", () => {
-    expect(validateKeybinds(kb(["d", "f", "j", "j"], ["1", "2", "3"]))).toEqual({ ok: false, conflict: "j" });
-  });
-
-  it("duplicate between a lane and a skill is a conflict too", () => {
-    expect(validateKeybinds(kb(["d", "f", "j", "k"], ["1", "1", "3"]))).toEqual({ ok: false, conflict: "1" });
-    expect(validateKeybinds(kb(["d", "f", "j", "1"], ["1", "2", "3"]))).toEqual({ ok: false, conflict: "1" });
+    expect(validateKeybinds(kb(["d", "f", "j", "j"]))).toEqual({ ok: false, conflict: "j" });
+    expect(validateKeybinds(kb(["d", "d", "j", "k"]))).toEqual({ ok: false, conflict: "d" });
   });
 
   it("case-insensitive: 'D' and 'd' are the same bind", () => {
-    expect(validateKeybinds(kb(["D", "f", "j", "d"], ["1", "2", "3"]))).toEqual({ ok: false, conflict: "d" });
+    expect(validateKeybinds(kb(["D", "f", "j", "d"]))).toEqual({ ok: false, conflict: "d" });
   });
 });
 
@@ -167,7 +164,7 @@ describe("keybind routing (input-routing contract, C10 exception 1)", () => {
     handler({ key: "d", repeat: false, timeStamp: 0, preventDefault() {} } as KeyboardEvent);
     expect(judged).toEqual([0]); // default map
 
-    setSetting("keybinds", { lanes: ["a", "s", "k", "l"], skills: ["1", "2", "3"] });
+    setSetting("keybinds", { lanes: ["a", "s", "k", "l"] });
     const rebound = lanesToKeyMap(getSetting("keybinds").lanes);
     const reboundHandler = createKeyHandler({
       inputChartTime: (ts) => ts,
@@ -299,5 +296,18 @@ describe("/settings page", () => {
     expect(screen.queryByTestId("settings-sync-deferred")).toBeNull();
     fireEvent.click(syncBtn); // no cloud channel yet → ok:false → the notice is reachable
     expect(await screen.findByTestId("settings-sync-deferred")).toBeTruthy();
+  });
+});
+
+describe("device offset is portable AND applied (R6 invariant)", () => {
+  it("an offset typed on /settings is visible to loadCalibration (the gameplay read path)", async () => {
+    render(createElement(SettingsPage));
+    const offset = await screen.findByTestId("setting-deviceCalibrationOffsetMs");
+    fireEvent.change(offset, { target: { value: "-120" } });
+    // the legacy key (what judgeDt reads) carries it...
+    expect(localStorage.getItem(CALIBRATION_KEY)).toBe("-120");
+    expect(loadCalibration()).toBe(-120);
+    // ...AND the envelope carries it for sync/portability
+    expect(storedMap().deviceCalibrationOffsetMs?.value).toBe(-120);
   });
 });

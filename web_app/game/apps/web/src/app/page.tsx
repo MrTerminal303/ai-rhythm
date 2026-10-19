@@ -33,6 +33,13 @@ export default function Landing() {
       >
         Library
       </Link>
+      <Link
+        href="/settings"
+        className="rounded-[10px] border px-6 py-3 text-sm"
+        style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+      >
+        Settings
+      </Link>
       <p className="text-sm" style={{ color: "var(--text-dim)" }}>
         4-key rhythm game — D F J K
       </p>

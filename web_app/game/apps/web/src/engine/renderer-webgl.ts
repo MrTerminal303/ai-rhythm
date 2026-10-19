@@ -2,7 +2,9 @@ import { KEY_COUNT, type Beatmap } from "@airhythm/shared";
 import { nineSliceRect, type Slice } from "./slice9.js";
 import type { NoteState, Renderer } from "./types.js";
 
-const SCROLL_PX_PER_MS = 0.5; // presentation-only constant; log any change in DECISIONS.md
+/** Default scroll speed (px/ms) — presentation-only; the settings default reads THIS value.
+ *  A per-instance `scrollSpeed` option overrides it (T22), so this stays the unchanged base. */
+export const SCROLL_PX_PER_MS = 0.5;
 const MAX_QUADS = 4096;
 const MAX_VERTICES = MAX_QUADS * 6; // 2 triangles × 3 verts per quad
 const FLOATS_PER_VERTEX = 6; // x,y,r,g,b,a
@@ -22,9 +24,18 @@ interface AtlasJson {
 }
 
 // §2.8 position rule as a pure function — exported so engine-render.test.ts pins the
-// real production math (y = hitLineY - dt * scrollPxPerMs), not a test re-implementation
-export function noteY(noteT: number, chartTimeMs: number, hitLineY: number, scrollPxPerMs: number): number {
-  return hitLineY - (noteT - chartTimeMs) * scrollPxPerMs;
+// real production math (y = hitLineY - dt * scrollPxPerMs), not a test re-implementation.
+// `downscroll` (W3 T22) mirrors the result about the hit line, so notes approach the
+// judgement line from ABOVE; both directions meet exactly at the hit line.
+export function noteY(
+  noteT: number,
+  chartTimeMs: number,
+  hitLineY: number,
+  scrollPxPerMs: number,
+  downscroll = false,
+): number {
+  const y = hitLineY - (noteT - chartTimeMs) * scrollPxPerMs;
+  return downscroll ? 2 * hitLineY - y : y;
 }
 
 const HIT_FLASH_MS = 200; // hit flash fades out over 200 ms from the transition frame
@@ -43,6 +54,10 @@ interface RendererOptions {
   onContextLost?: () => void;
   /** A7: fired on `webglcontextrestored` (GL resources rebuilt by then) */
   onContextRestored?: () => void;
+  /** W3 T22: px/ms travel speed; defaults to SCROLL_PX_PER_MS (presentation only, C10) */
+  scrollSpeed?: number;
+  /** W3 T22: notes fall toward the hit line from above (presentation only, C10) */
+  downscroll?: boolean;
 }
 
 export class WebGLRenderer implements Renderer {
@@ -82,6 +97,21 @@ export class WebGLRenderer implements Renderer {
   private disposed = false;
   /** test seam (W2 T22): cumulative gl.drawArrays calls per pipeline since construction */
   readonly drawCounts = { solid: 0, textured: 0 };
+  /** W3 T22: the presentation opts this instance actually resolved (e2e reads them back) */
+  get appliedPresentation(): { scrollSpeed: number; downscroll: boolean } {
+    return { scrollSpeed: this.scrollPxPerMs, downscroll: this.downscroll };
+  }
+
+  /**
+   * W3 T22: apply the presentation opts read at run start. Called by the play page's
+   * startGame (settings are read THERE — the constructor runs at mount, before the click).
+   * Presentation only (C10): the note path and the frozen flash Y read the same pair, so a
+   * change can never leave a flash drawn at a stale position.
+   */
+  setPresentation(opts: { scrollSpeed?: number; downscroll?: boolean }): void {
+    if (opts.scrollSpeed !== undefined) this.scrollPxPerMs = opts.scrollSpeed;
+    if (opts.downscroll !== undefined) this.downscroll = opts.downscroll;
+  }
   /** test seam: solid-batch vertex count left by the most recent render() */
   get solidVertCount(): number { return this.vertCount; }
   /** A7: whether the WebGL context is currently lost (prevents GL calls while context is down) */
@@ -93,6 +123,9 @@ export class WebGLRenderer implements Renderer {
   private readonly flashKind: Uint8Array; // 0 none/pending, 1 hit, 2 missed
   private readonly flashStartedAt: Float64Array; // performance.now() at the transition
   private readonly flashY: Float32Array; // y frozen at the transition frame (§flash position)
+  /** W3 T22 presentation options — constructed from the initial opts, then set by startGame */
+  private scrollPxPerMs: number;
+  private downscroll: boolean;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -117,6 +150,9 @@ export class WebGLRenderer implements Renderer {
     this.flashKind = new Uint8Array(this.chart.notes.length);
     this.flashStartedAt = new Float64Array(this.chart.notes.length);
     this.flashY = new Float32Array(this.chart.notes.length);
+    // W3 T22 presentation options — resolved ONCE here (the page reads settings at startGame)
+    this.scrollPxPerMs = opts.scrollSpeed ?? SCROLL_PX_PER_MS;
+    this.downscroll = opts.downscroll ?? false;
     // A7: context-loss boundary — handlers registered on the GL CONTEXT, so they survive
     // the program/buffer objects (a restored context keeps its event listeners)
     this.attachContextHandlers();
@@ -243,7 +279,9 @@ export class WebGLRenderer implements Renderer {
         if (this.flashKind[i] !== kind) {
           this.flashKind[i] = kind;
           this.flashStartedAt[i] = now;
-          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+          // the flash freezes at the SAME y the note path would draw — one speed + one flip,
+          // so a hit note's flash can never appear at a stale position (T22 presentation)
+          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
         }
         const a = flashAlpha(state, now - this.flashStartedAt[i]!);
         if (a <= 0) continue; // fade complete — zero draws for this note from here on
@@ -254,13 +292,13 @@ export class WebGLRenderer implements Renderer {
         continue;
       }
       if (state !== "pending") continue; // short noteStates array: undefined skipped as before
-      const y = noteY(note.t, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+      const y = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
       if (y < -40 || y > this.height + 40) continue;
       const x = this.laneX[note.lane]!;
       const c = this.noteColor;
       if (note.type === "hold" && note.d !== undefined) {
         // hold body (W2 T17): rect from head y to tail y at 35% opacity (§6.2)
-        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
         const top = Math.min(y, yTail);
         const h = Math.abs(yTail - y);
         if (top < this.height + 40 && top + h > -40) {

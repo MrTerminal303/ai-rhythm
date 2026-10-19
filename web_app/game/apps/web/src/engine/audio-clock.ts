@@ -7,6 +7,8 @@ export interface AudioClockSource {
   buffer: unknown;
   start(when: number, offsetSeconds?: number): void;
   stop(when?: number): void;
+  /** optional: present on real AudioBufferSources; stub contexts in unit tests omit it */
+  connect?(destination: AudioNode): void;
 }
 export interface AudioClockCtx {
   currentTime: number;
@@ -22,12 +24,22 @@ export class AudioClock implements GameClock {
   private pausedChartMs: ChartMs = asChartMs(0);
   private pausedPosMs: BufferMs = asBufferMs(0);
   private pendingBuffer: unknown = null;
+  private output: AudioNode | null = null;
 
   constructor(
     private readonly ctx: AudioClockCtx,
     private readonly pairKeeper: { get(nowMs: number): ClockPair },
     private readonly nowMs: () => number = () => performance.now(),
   ) {}
+
+  /**
+   * W3 T22 (B5): the node every song source feeds — the master/music gain chain the play
+   * page builds at startGame. Set before start(); omitted → the source is left unconnected
+   * (unit stubs), which keeps the clock's behaviour otherwise unchanged.
+   */
+  setOutput(node: AudioNode | null): void {
+    this.output = node;
+  }
 
   load(buffer: unknown, audioOffsetMs: AudioOffsetMs): void {
     this.audioOffsetMs = audioOffsetMs;
@@ -42,6 +54,7 @@ export class AudioClock implements GameClock {
     this.sourceStartCtxTime = this.ctx.currentTime;
     const src = this.ctx.createBufferSource();
     src.buffer = this.pendingBuffer;
+    if (this.output) src.connect?.(this.output); // T22: song → music gain → master gain → destination
     src.start(this.sourceStartCtxTime, raw / 1000);
     this.source = src;
     this.state = "running";

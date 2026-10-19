@@ -10,12 +10,13 @@ import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
 import { ClockPairKeeper, samplePair } from "../../engine/clock-pair.js";
 import type { ClockPair } from "../../engine/time-math.js";
-import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, laneForKey } from "../../engine/controller.js";
+import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, lanesToKeyMap } from "../../engine/controller.js";
 import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
 import { ResyncController } from "../../engine/resync.js";
 import { PlayPhaseMachine, PLAY_TRANSITIONS, type PlayPhase } from "../../engine/play-phase.js";
 import { loadCalibration } from "../../calibration-store.js";
+import { getSetting } from "../../settings/settings.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
 import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSource } from "../../chart-source.js";
@@ -116,6 +117,9 @@ declare global {
       // freeze emits) with `completion: "forced"`, and stops the frame loop. The CI-shaped perf run
       // calls it at its force-cap; certification never does.
       forcePerfReport(): void;
+      // W3 T22 (B5): the presentation opts the renderer actually resolved — the committed
+      // e2e asserts /settings values reach the playfield through this readback, not a screenshot
+      appliedPresentation(): { scrollSpeed: number; downscroll: boolean };
     };
   }
 }
@@ -336,7 +340,12 @@ export default function PlayPage() {
     // Held-lanes were flushed at pause (heldLanesRef cleared); a still-held key re-syncs
     // ONLY through normal input semantics on its next event (a still-held key produces no
     // new keydown until re-pressed — no synthetic releases, no artificial keyup dispatch).
+    // W3 T22 (B5): the renderer is constructed at mount (B6 requires webglReady before the
+    // start click), so it takes the settings then; startGame re-applies the values it reads
+    // so a settings edit between page load and the start click still lands this run.
     const renderer = new WebGLRenderer(canvas, chart, {
+      scrollSpeed: getSetting("scrollSpeed"),
+      downscroll: getSetting("downscroll"),
       onContextLost: () => {
         // only a RUNNING game pauses; loss while paused/recovering/completed is renderer-internal
         // (phaseMachineRef is read-only here — the machine owns transitions; enterPause guards)
@@ -457,6 +466,7 @@ export default function PlayPage() {
           cancelAnimationFrame(rafRef.current);
           perfReportRef.current?.("forced");
         },
+        appliedPresentation: () => renderer.appliedPresentation,
       };
     }
     const onResize = () => renderer.resize();
@@ -603,6 +613,29 @@ export default function PlayPage() {
       const renderer = rendererRef.current;
       const perf = perfRef.current;
       if (!chart || !renderer || !perf) throw new Error("play page not initialized");
+      // W3 T22 (B5): settings read ONCE here, at run start. Presentation opts are re-applied
+      // to the mount-time renderer; volumes shape the audio graph built just below; and the
+      // keybind map is resolved once and shared by judging, held-lane tracking and the
+      // input-latency probe (they must agree on what counts as a lane key).
+      const presentation = { scrollSpeed: getSetting("scrollSpeed"), downscroll: getSetting("downscroll") };
+      renderer.setPresentation(presentation);
+      const volumes = {
+        master: getSetting("masterVolume"),
+        music: getSetting("musicVolume"),
+        sfx: getSetting("sfxVolume"),
+      };
+      const laneMap = lanesToKeyMap(getSetting("keybinds").lanes);
+      // master gain sits between every source and ctx.destination; the song feeds musicGain
+      // (SFX gain is wired but unfed — no SFX sources exist yet, spec §4 B5)
+      const masterGain = audioCtx.createGain();
+      masterGain.gain.value = volumes.master;
+      masterGain.connect(audioCtx.destination);
+      const musicGain = audioCtx.createGain();
+      musicGain.gain.value = volumes.music;
+      musicGain.connect(masterGain);
+      const sfxGain = audioCtx.createGain();
+      sfxGain.gain.value = volumes.sfx;
+      sfxGain.connect(masterGain);
       const pairKeeper = new ClockPairKeeper(audioCtx, {
         // lib.dom types AudioTimestamp fields as optional; incomplete readings fall back (§4.1)
         readOutputTimestamp: () => {
@@ -617,6 +650,7 @@ export default function PlayPage() {
       inputProbeBufferRef.current = [];
       dtsRef.current = [];
       const clock = new AudioClock(audioCtx, pairKeeper);
+      clock.setOutput(musicGain); // T22: the song feeds the music gain, not ctx.destination directly
       clock.load(buffer, asAudioOffsetMs(chart.song.audioOffsetMs));
       clockRef.current = clock;
       const engine = new GameEngine({
@@ -666,6 +700,7 @@ export default function PlayPage() {
             probeRef.pairUsed = pair; // recorder measures the EXACT mapped pair
             return clock.chartTimeAt(asPerfMs(ts), pair);
           },
+          lanes: laneMap, // T22: settings keybinds — the SAME map the telemetry sites below use
           engine: {
             // wrap judge: emit snapshot at keydown so HUD updates without waiting a frame (§2.3)
             isFrozen: () => engine.isFrozen(),
@@ -693,6 +728,7 @@ export default function PlayPage() {
         // W2 T17: keyup → engine.release via inputChartTime (never render chartTimeMs)
         const rawRelease = createReleaseHandler({
           inputChartTime: (ts) => clock.chartTimeAt(asPerfMs(ts)),
+          lanes: laneMap, // T22: releases resolve through the same settings map as judging
           engine: {
             isFrozen: () => engine.isFrozen(),
             release: (lane, time) => {
@@ -733,12 +769,14 @@ export default function PlayPage() {
           const pairUsed = probeRef.pairUsed;
           if (pairUsed) inputProbeRecord(e, pairUsed, handlerNow, ref);
           // A13: record input latency on accepted lane keys (real event time, not handler-local
-          // timing) — dispatch → handler completion; non-lane keys (Escape etc.) don't count
-          if (laneForKey(e.key) !== undefined) perf.recordInputLatency(performance.now() - e.timeStamp);
+          // timing) — dispatch → handler completion; non-lane keys (Escape etc.) don't count.
+          // T22: consults the SAME resolved map the handler judged through, so a rebound key
+          // still counts as a lane key (and Escape/others never do).
+          if (laneMap[e.key.toLowerCase()] !== undefined) perf.recordInputLatency(performance.now() - e.timeStamp);
         };
         const onKeyUp = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return;
-          const lane = laneForKey(e.key);
+          const lane = laneMap[e.key.toLowerCase()];
           if (lane !== undefined) heldLanesRef.current.delete(lane);
           rawRelease(e);
         };

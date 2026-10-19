@@ -1,4 +1,6 @@
 // apps/web/src/calibration-store.ts
+import { getSetting, setSetting } from "./settings/settings.js";
+
 export const CALIBRATION_KEY = "deviceCalibrationOffsetMs";
 
 export function readCalibrationValue(stored: string | null): number {
@@ -20,9 +22,27 @@ export function loadCalibration(): number {
   return readCalibrationValue(localStorage.getItem(CALIBRATION_KEY));
 }
 
+/**
+ * W3 T22 ruling (see DECISIONS D36): `deviceCalibrationOffsetMs` is stored twice — this
+ * legacy key (the gameplay read path, unchanged since W2) and the settings envelope (so
+ * settings sync carries the value). ONE-DIRECTIONAL mirror: writing calibration copies the
+ * value into the envelope; the envelope is NEVER read back into gameplay, so `loadCalibration`
+ * stays the single source of truth for the applied offset and the two can never diverge
+ * mid-run. A later settings-side edit lands on the next run (play reads `loadCalibration`).
+ */
 export function saveCalibration(ms: number): void {
   if (!isValidCalibration(ms)) throw new Error(`invalid calibration value: ${ms} (must be finite, ±${CALIBRATION_RANGE_MS} ms)`);
   localStorage.setItem(CALIBRATION_KEY, String(ms));
+  mirrorCalibrationToSettings(ms);
+}
+
+function mirrorCalibrationToSettings(ms: number): void {
+  try {
+    if (getSetting("deviceCalibrationOffsetMs") !== ms) setSetting("deviceCalibrationOffsetMs", ms);
+  } catch {
+    // the mirror is best-effort portability — a settings/storage failure must never break
+    // the save the player just made (the legacy key above is the gameplay source)
+  }
 }
 
 export function computeCalibration(samples: { inputMs: number; beatMs: number }[]): number {

@@ -87,14 +87,16 @@ function notify(): void {
   for (const l of [...stateListeners]) l();
 }
 
-function env(name: string): string {
-  const value = process.env[name];
-  return typeof value === "string" ? value.trim() : "";
-}
+// Next.js inlines ONLY static member expressions (`process.env.NEXT_PUBLIC_FOO`) into the
+// browser bundle; a computed key (the env object indexed by a variable) stays a runtime lookup
+// against an empty browser `process.env`, which silently makes every configured build guest-only.
+// These must stay literal member expressions at module scope — `auth.test.ts` asserts the shape.
+const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim();
+const SUPABASE_KEY = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
 
 /** A build with no Supabase project configured is a valid GUEST-ONLY build (see next.config.ts). */
 export function isSupabaseConfigured(): boolean {
-  return env("NEXT_PUBLIC_SUPABASE_URL") !== "" && env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY") !== "";
+  return SUPABASE_URL !== "" && SUPABASE_KEY !== "";
 }
 
 /**
@@ -107,7 +109,7 @@ export function getClient(): SupabaseClient | null {
   clientBuilt = true; // only one construction attempt, success or failure
   if (!isSupabaseConfigured()) return null;
   try {
-    client = createClient(env("NEXT_PUBLIC_SUPABASE_URL"), env("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"), {
+    client = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: true, autoRefreshToken: true },
     });
   } catch (err) {
@@ -172,9 +174,15 @@ function hasSession(): boolean {
 export async function signUp(email: string, password: string): Promise<{ ok: boolean; error?: string }> {
   const supabase = getClient();
   if (!supabase) return { ok: false, error: "Accounts are unavailable in this build." };
-  const { error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabase.auth.signUp({ email, password });
   if (error) return { ok: false, error: friendlyAuthError(error.message) };
-  applySession({ id: (await supabase.auth.getUser()).data.user?.id ?? "", email });
+  // Email-confirmation projects return NO session here: the account was created, but the user
+  // is not signed in until they confirm and sign in. Marking that state authenticated would
+  // report `userId === ""` and fire the login settings-sync trigger for nobody.
+  const user = data.session ? data.user : null;
+  if (user && typeof user.id === "string" && user.id !== "") {
+    applySession({ id: user.id, email: user.email ?? email });
+  }
   return { ok: true };
 }
 
@@ -183,7 +191,8 @@ export async function signIn(email: string, password: string): Promise<{ ok: boo
   if (!supabase) return { ok: false, error: "Accounts are unavailable in this build." };
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) return { ok: false, error: friendlyAuthError(error.message) };
-  applySession({ id: data.user?.id ?? "", email: data.user?.email ?? email });
+  const id = data.user?.id;
+  if (typeof id === "string" && id !== "") applySession({ id, email: data.user?.email ?? email });
   return { ok: true };
 }
 

@@ -20,7 +20,8 @@ import { isAuthenticated, syncSettingsNow } from "../../auth/auth.js";
 const LANE_LABELS = ["Lane 1", "Lane 2", "Lane 3", "Lane 4"];
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState(() => ({
+  /** the seven synced keys, read from the store — one definition for initial state and re-read */
+  const readAll = () => ({
     masterVolume: getSetting("masterVolume"),
     musicVolume: getSetting("musicVolume"),
     sfxVolume: getSetting("sfxVolume"),
@@ -28,7 +29,8 @@ export default function SettingsPage() {
     scrollSpeed: getSetting("scrollSpeed"),
     downscroll: getSetting("downscroll"),
     keybinds: getSetting("keybinds"),
-  }));
+  });
+  const [settings, setSettings] = useState(readAll);
   const [conflict, setConflict] = useState<string | null>(null);
   const [syncDeferred, setSyncDeferred] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -59,15 +61,7 @@ export default function SettingsPage() {
     if (result.ok) {
       // the sync may have rewritten the document (or adopted a remote offset) — re-read it so
       // the controls show what is now stored, rather than the pre-sync values
-      setSettings({
-        masterVolume: getSetting("masterVolume"),
-        musicVolume: getSetting("musicVolume"),
-        sfxVolume: getSetting("sfxVolume"),
-        deviceCalibrationOffsetMs: getSetting("deviceCalibrationOffsetMs"),
-        scrollSpeed: getSetting("scrollSpeed"),
-        downscroll: getSetting("downscroll"),
-        keybinds: getSetting("keybinds"),
-      });
+      setSettings(readAll());
     }
     setSyncDeferred(!result.ok); // only ok:true clears the notice
     setSyncing(false);

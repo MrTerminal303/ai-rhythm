@@ -19,6 +19,8 @@
 //   (j) NULL remote → treated as {}, local merges in, row ends initialized (first login)
 //   (k) sync triggers: login, debounced local edit while authenticated, manual "Sync now"
 //   (l) the /settings deferred notice clears on the next ok:true
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createElement } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -502,6 +504,27 @@ describe("settings sync — remote payload handling", () => {
     await flush();
     expect(calls.selects).toEqual([]);
     expect(calls.upserts).toEqual([]);
+  });
+});
+
+describe("source shape — Next inlines only STATIC env member expressions", () => {
+  // This is a SOURCE-TEXT assertion on purpose: the bundler's inlining rule is not observable
+  // from a Node unit test. `vi.stubEnv` mutates the real `process.env`, so a computed read
+  // (`process.env[name]`) passes every behavioural test here while shipping a browser bundle
+  // where the lookup hits an empty object — a fully configured build would be guest-only.
+  // `process.cwd()` + `node:path` rather than `import.meta.url`: under the jsdom environment the
+  // global `URL` is jsdom's class, which Node's `fileURLToPath` rejects (ERR_INVALID_URL_SCHEME)
+  // even though the string value is a `file:` URL. Vitest's cwd is the app root; `src/auth/` is
+  // fixed relative to it.
+  const source = readFileSync(resolve(process.cwd(), "src", "auth", "auth.ts"), "utf8");
+
+  it("reads both Supabase vars as static member expressions", () => {
+    expect(source).toContain("process.env.NEXT_PUBLIC_SUPABASE_URL");
+    expect(source).toContain("process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
+  });
+
+  it("contains no computed env access", () => {
+    expect(source).not.toContain("process.env[");
   });
 });
 

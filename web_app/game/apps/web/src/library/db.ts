@@ -55,6 +55,18 @@ export class LibraryQuotaError extends Error {
   readonly userMessage = "Storage full — delete songs from the library";
 }
 
+/**
+ * W3 T26 (journey 3 variant b) — E2E-only fault seam. A real quota exhaustion cannot be
+ * provoked reliably in a browser (the origin quota is gigabytes), so the e2e sets
+ * `window.__forceQuota = true` and the audio put fails EXACTLY like an engine quota error:
+ * same synchronous throw inside the transaction handler, same explicit abort, same
+ * LibraryQuotaError. `NEXT_PUBLIC_E2E` is inlined at build, so production carries none of
+ * this path. It is read (not imported) so unit tests never need a window.
+ */
+function forceQuota(e2e: boolean): boolean {
+  return e2e && typeof window !== "undefined" && (window as { __forceQuota?: boolean }).__forceQuota === true;
+}
+
 // W2 canonical hashing pattern (import/page.tsx, canonical.ts): sha256 → lowercase hex.
 export async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -148,6 +160,13 @@ export async function importChartWithAudio(
             schemaVersion: 1,
           };
       dedupedAudio = existing !== undefined;
+      // W3 T26: the e2e quota fault fires here, before the put, with the engine's own error
+      // identity — the catch below treats it as a quota failure (abort + LibraryQuotaError).
+      if (forceQuota(process.env.NEXT_PUBLIC_E2E === "1")) {
+        const quota = new Error("forced quota (E2E)"); // same name the engine throws
+        quota.name = "QuotaExceededError";
+        throw quota;
+      }
       // Monkey-patched put() throws SYNCHRONOUSLY inside the request handler —
       // caught here so the tx is aborted explicitly (a bare JS throw does not abort).
       await req(audioStore.put(audio));

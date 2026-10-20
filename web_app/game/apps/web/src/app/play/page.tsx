@@ -121,6 +121,12 @@ declare global {
       // W3 T22 (B5): the presentation opts the renderer actually resolved — the committed
       // e2e asserts /settings values reach the playfield through this readback, not a screenshot
       appliedPresentation(): { scrollSpeed: number; downscroll: boolean };
+      // W3 T26 (spec §7 journeys 1–4): RMS of the signal AT THE MASTER GAIN, pre-DAC.
+      // FLOAT samples are already centred on 0 (getByteTimeDomainData centres near 128, so a
+      // byte-domain mean reads ~128 even for silence — review P0). Silence reads ~0.
+      // Throws before startGame built the graph (no analyser yet) — a fabricated 0 would be
+      // indistinguishable from a genuinely silent graph.
+      analyserRms(): number;
     };
   }
 }
@@ -153,6 +159,10 @@ export default function PlayPage() {
   const perfRef = useRef<PerfMonitor | null>(null);
   const clockRef = useRef<AudioClock | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  // W3 T26: the E2E analyser on the master gain (null outside E2E builds / before startGame).
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  // One reusable float buffer — analyserRms is polled per frame, so it must not allocate.
+  const analyserBufRef = useRef<Float32Array<ArrayBuffer> | null>(null);
   const rafRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined); // countdown chain
   const onResizeRef = useRef<(() => void) | null>(null); // W3 T19 (B2): runMount's resize handler (cleanup scope)
@@ -388,6 +398,21 @@ export default function PlayPage() {
           if (!clockRef.current) throw new Error("__w2.playbackPositionMs: clock not created yet");
           return clockRef.current.playbackPositionMs();
         },
+        // W3 T26: RMS at the master gain, PRE-DAC. Float domain — silence is ~0 (byte-domain
+        // samples centre near 128 and would read ~128 at silence; review P0).
+        analyserRms: () => {
+          const analyser = analyserRef.current;
+          if (!analyser) throw new Error("__w2.analyserRms: analyser not created yet (startGame has not run)");
+          let buf = analyserBufRef.current;
+          if (buf === null || buf.length !== analyser.fftSize) {
+            buf = new Float32Array(new ArrayBuffer(analyser.fftSize * 4));
+            analyserBufRef.current = buf;
+          }
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (const v of buf) sum += v * v;
+          return Math.sqrt(sum / buf.length);
+        },
         phase: () => phaseRef.current,
         noteCount: () => chart.notes.length,
         ctxSnapshot: () => {
@@ -560,6 +585,8 @@ export default function PlayPage() {
       perfReportRef.current = null; // the emitter closes over the run's PerfMonitor — do not outlive the effect
       engineRef.current = null;
       heldLanesRef.current = new Set();
+      analyserRef.current = null;
+      analyserBufRef.current = null;
       delete window.__w2;
     };
   }, [store]);
@@ -635,6 +662,14 @@ export default function PlayPage() {
       const masterGain = audioCtx.createGain();
       masterGain.gain.value = volumes.master;
       masterGain.connect(audioCtx.destination);
+      // W3 T26: the E2E analyser tap, PRE-DAC (parallel branch off the master gain — it adds
+      // no path to the destination, so playback is untouched). E2E builds only: an extra
+      // AnalyserNode is a timing side-channel to production, same class as `__w2`.
+      if (process.env.NEXT_PUBLIC_E2E === "1") {
+        const analyser = audioCtx.createAnalyser();
+        masterGain.connect(analyser);
+        analyserRef.current = analyser;
+      }
       const musicGain = audioCtx.createGain();
       musicGain.gain.value = volumes.music;
       musicGain.connect(masterGain);

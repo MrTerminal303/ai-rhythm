@@ -1727,3 +1727,16 @@ apps/web/public/songs/medium.webm,generated: apps/web/scripts/gen-audio-fixture.
 apps/web/public/songs/long.webm,generated: apps/web/scripts/gen-audio-fixture.mjs + encode-songs.mjs,AIRhythm,owned,2026-10-16,,y
 apps/web/public/songs/short.osu,generated: apps/web/scripts/gen-audio-fixture.mjs,AIRhythm,owned,2026-10-16,,y
 apps/web/public/songs/long.osu,generated: apps/web/scripts/gen-audio-fixture.mjs,AIRhythm,owned,2026-10-16,,y
+apps/web/public/spike/preproc.json,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/input.wav,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/long_input.wav,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/expected_mel.json,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/expected_mel_long.json,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/toy.onnx,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/expected_logits.json,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/spike/expected_logits_long.json,generated: models/spike/gen_vectors.py,AIRhythm,owned,2026-10-17,,y
+apps/web/public/w3-e2e-chart.json,handmade e2e fixture (W3 T19 B2),AIRhythm,owned,2026-10-18,,y
+apps/web/public/w3-e2e-audio.wav,handmade e2e fixture (W3 T19 B2),AIRhythm,owned,2026-10-18,,y
+apps/web/public/ort/ort-wasm-simd-threaded.mjs,copied from onnxruntime-web@1.30.0 (build artifact; gitignored),Microsoft,MIT,2026-10-17,,n
+apps/web/public/ort/ort-wasm-simd-threaded.wasm,copied from onnxruntime-web@1.30.0 (build artifact; gitignored),Microsoft,MIT,2026-10-17,,n
+apps/web/public/spike/long.webm,copy of apps/web/public/songs/long.webm (build artifact; gitignored),AIRhythm,owned,2026-10-17,,n

@@ -1,0 +1,26 @@
+{
+  // W3 T25b fix r1 — the e2e specs had NO typecheck: `apps/web/tsconfig.json`
+  // includes only `src`, and Playwright transpiles the specs without checking
+  // them. A real type error (`W2Timing` missing `noteCount`) sat in a committed
+  // spec and no gate saw it.
+  //
+  // This project type-checks the whole `e2e/` directory. It is run by the
+  // `@airhythm/web` package's `typecheck` script (so `pnpm -r typecheck` — the
+  // gate — covers it), NOT by the Next.js build: `apps/web/tsconfig.json` is
+  // untouched, so Next keeps compiling only `src`.
+  //
+  // The two dependency roots are the problem: the specs live OUTSIDE
+  // `apps/web`, so neither `@playwright/test` nor `@types/node` resolves from
+  // `e2e/` (pnpm's virtual store is at the workspace root and exposes neither).
+  // `paths` points at the app's own copies — the same ones the runner uses.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../apps/web/node_modules/@types"],
+    "paths": {
+      "@playwright/test": ["../apps/web/node_modules/@playwright/test"]
+    },
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}

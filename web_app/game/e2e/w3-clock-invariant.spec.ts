@@ -124,9 +124,9 @@ test("D21 fallback guarantee: clock-RATE divergence ≤5 ms over 1 s + invalidat
   // (b) lifecycle invalidation: pause → resume re-samples the pair immediately
   const before = await page.evaluate(() => (window as never as { __w2: { pairSampledAt(): number } }).__w2.pairSampledAt());
   await page.keyboard.press("Escape"); // F04 pause binding (playing → paused)
-  await page.waitForFunction(() => (window as never as { __w2?: { phase(): string } }).__w2.phase() === "paused");
+  await page.waitForFunction(() => (window as never as { __w2?: { phase(): string } }).__w2?.phase() === "paused");
   await page.getByRole("button", { name: /click to resume/i }).click();
-  await page.waitForFunction(() => (window as never as { __w2?: { phase(): string } }).__w2.phase() === "playing", undefined, { timeout: 10000 });
+  await page.waitForFunction(() => (window as never as { __w2?: { phase(): string } }).__w2?.phase() === "playing", undefined, { timeout: 10000 });
   const after = await page.evaluate(() => (window as never as { __w2: { pairSampledAt(): number } }).__w2.pairSampledAt());
   expect(after).not.toBe(before); // invalidate() ran across the transition — no stale pair survives resume
 });

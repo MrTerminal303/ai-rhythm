@@ -15,6 +15,19 @@ type W2 = {
   chartTimeMs(): number;
 };
 
+// W3 T25b fix r1: the e2e directory is now type-checked (e2e/tsconfig.json, run
+// by the app's `typecheck` script). This spec stores the WEBGL_lose_context
+// extension on `window` between two `page.evaluate` calls — the declaration
+// belongs here, not in a per-evaluate cast that TS rejects.
+declare global {
+  interface Window {
+    __a7?: {
+      ext: { restoreContext(): void };
+      canvas: HTMLCanvasElement;
+    };
+  }
+}
+
 test("context loss takes the standard pause path; restore preserves score/combo/position (A7)", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/play");
@@ -54,9 +67,10 @@ test("context loss takes the standard pause path; restore preserves score/combo/
   // (the element the real events dispatch on); the extension object was captured at loss
   // (a fresh getExtension call after loss returns null until the context is restored)
   await page.evaluate(() => new Promise<void>((resolve) => {
-    const { canvas, ext } = (window as { __a7: { ext: { restoreContext(): void }; canvas: HTMLCanvasElement } }).__a7;
-    canvas.addEventListener("webglcontextrestored", () => resolve(), { once: true });
-    ext.restoreContext();
+    const saved = window.__a7;
+    if (!saved) throw new Error("window.__a7 seam absent — the context was never lost");
+    saved.canvas.addEventListener("webglcontextrestored", () => resolve(), { once: true });
+    saved.ext.restoreContext();
   }));
   await page.getByRole("button", { name: /click to resume/i }).click();
   await page.waitForFunction(

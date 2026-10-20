@@ -32,11 +32,19 @@ pnpm --filter @airhythm/web exec playwright test w3-flux-journey --project=chrom
 | 7 | Back out of the results screen | results link → landing `/`: ___ ; `/library` still lists the song: ___ | — | _<pass/fail>_ |
 | 8 | `/import` → upload the SAME `long.webm` → Generate again | second chart id: ___ | — | _<pass/fail>_ |
 | 9 | Seeded determinism | `audioHash` equal: ___ / `chartHash` equal: ___ / note count equal: ___ | — | _<pass/fail>_ |
+| 10 | Q10: a generation over the budget | `generate-error` visible: ___ / `data-generator` = ___ (must be `flux-v1` — no silent switch) / `generate-retry` visible: ___ / `generate-cancel` visible: ___ | `w3-b8-flux-journey-04-q10-error.png` | _<pass/fail>_ |
+| 11 | Q10: Retry starts another run | the run counter goes up by one: ___ / the retried run over-budgets again: ___ | — | _<pass/fail>_ |
+| 12 | Q10: Cancel dismisses the failure | `generate-error` gone: ___ / `generate-button` enabled again: ___ | — | _<pass/fail>_ |
 
 **Field compared in row 9:** the stored chart record's `audioHash` (the content address of the audio
 asset) and `chartHash` (the canonical-chart digest — the byte-identical claim). The lane seed is
 `SHA-256(canonical JSON({audioHash, generationOptions, generatorId, generatorVersion}))`, so the same
 audio bytes + the same generation options must reproduce the same chart.
+
+**Row 10–12 (Q10):** the over-budget path is reached with a TINY budget through the page's own
+`__importTest.setTimeoutMs(ms)` e2e seam — the SAME option the app passes in production. A real
+240 s track finishes well inside the 20 s budget, so the budget is the only honest way to observe
+Retry / Cancel in a browser.
 
 ## Cross-implementation parity (cross-implementation PARITY, NOT onset accuracy)
 

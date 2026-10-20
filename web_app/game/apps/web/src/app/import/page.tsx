@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { canonicalizeBeatmap } from "@airhythm/shared";
-import { fluxV1, FluxGenerateError } from "@airhythm/chartgen";
 import { importChartWithAudio, sha256Hex, type AudioMeta } from "../../library/db.js";
+import { canonicalizeGeneratedChart } from "./generate-boundary.js";
+import { decideGenerateUi, GENERATE_TIMEOUT_MS, GENERATOR_ID, type GenerateUiDecision } from "./generate-q10.js";
+import { runFluxV1 } from "./generate-run.js";
 
 type ImportWarning = { code: string; message: string };
 
@@ -57,6 +59,20 @@ interface ChartPick {
   warnings: ImportWarning[];
 }
 
+// W3 T25b fix r1 — the e2e seam (same NEXT_PUBLIC_E2E gate as `__lib` / `__w2`).
+declare global {
+  interface Window {
+    __importTest?: {
+      /** Set the Q10 budget the NEXT generation run uses (ms). */
+      setTimeoutMs(ms: number): void;
+      /** The highest progress percentage reported so far (0 when no run started). */
+      progressPeak(): number;
+      /** How many generation runs have been STARTED on this page. */
+      generationCount(): number;
+    };
+  }
+}
+
 export default function ImportPage() {
   const [audio, setAudio] = useState<AudioPick | null>(null);
   const [chart, setChart] = useState<ChartPick | null>(null);
@@ -64,12 +80,31 @@ export default function ImportPage() {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState<{ chartId: string; source: "import" | "generate" } | null>(null);
   // W3 T25 (B8b) — Generate-with-flux-v1 state. `generating` gates the button, `progress`
-  // is the 0..100 percentage the generator reports, `genError` is the Q10 failure surface
+  // is the 0..100 percentage the generator reports, `genDecision` is the Q10 failure surface
   // (Retry / Cancel), and `abortRef` holds the AbortController for the in-flight run.
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [genError, setGenError] = useState<string | null>(null);
+  // W3 T25b fix r1 — the Q10 decision is stored WHOLE, not just its message: the
+  // pure `decideGenerateUi` table decides whether the error block, Retry and Cancel
+  // are shown, so the decision module is load-bearing rather than advisory.
+  const [genDecision, setGenDecision] = useState<GenerateUiDecision | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // W3 T25b fix r1 — the CURRENTLY selected audio (the same object the `audio`
+  // state holds). A generation run captures the pick it started with and checks
+  // this ref before it stores its chart: if the user re-picked the audio in the
+  // meantime, the chart belongs to a selection that no longer exists and is
+  // discarded instead of landing in the library.
+  const audioRef = useRef<AudioPick | null>(null);
+  // W3 T25b fix r1 — the Q10 budget the NEXT run uses. It lives in a REF, not in
+  // state, so the e2e seam can set it SYNCHRONOUSLY: a state update would need a
+  // re-render before the next run could read it, and the run could start first.
+  const timeoutMsRef = useRef(GENERATE_TIMEOUT_MS);
+  // The generator's progress is reported in percentages; the seam records the
+  // HIGHEST value seen so a fast run cannot be missed by a polling observer.
+  const progressPeakRef = useRef(0);
+  // How many generation runs have been STARTED — the e2e seam reads it to prove
+  // that Retry really starts ANOTHER run.
+  const generationCountRef = useRef(0);
   // .osz archives with >1 difficulty stay in pending state; the user picks one, then parses.
   const [difficulties, setDifficulties] = useState<string[]>([]);
   const [difficulty, setDifficulty] = useState("");
@@ -81,6 +116,24 @@ export default function ImportPage() {
   // W3 T25 (B8b): unmounting mid-generation aborts the run — the Worker is terminated
   // by the generator's own cleanup path, so no orphan keeps streaming chunks.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // W3 T25b fix r1 — the e2e seam. Same NEXT_PUBLIC_E2E gate as the library
+  // page's `__lib` and the play page's `__w2` (inlined at build by the
+  // Playwright webServer's NEXT_PUBLIC_E2E=1). It lets the journey drive the
+  // Q10 over-budget path with a TINY budget — the only honest way to observe
+  // Retry / Cancel in a browser, since a real 240 s track finishes inside the
+  // 20 s budget. Production builds leave it unset → the seam is absent.
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_E2E === "1") {
+      window.__importTest = {
+        setTimeoutMs: (ms: number) => {
+          timeoutMsRef.current = ms;
+        },
+        progressPeak: () => progressPeakRef.current,
+        generationCount: () => generationCountRef.current,
+      };
+    }
+  }, []);
 
   const fail = (msg: string): void => {
     setError(msg);
@@ -94,10 +147,15 @@ export default function ImportPage() {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-selecting the same file
     if (!file) return;
+    // W3 T25b fix r1: a NEW pick ABORTS the in-flight run. Without this the old
+    // run kept going and its `setDone` fired against the new selection — the
+    // user would be handed a chart built from the file they just replaced.
+    abortRef.current?.abort();
     setError(null);
     setAudio(null);
+    audioRef.current = null;
     setDone(null);
-    setGenError(null); // W3 T25 (B8b): a fresh pick clears the previous generation failure
+    setGenDecision(null); // W3 T25b fix r1: a fresh pick clears the previous generation failure
     const name = file.name.toLowerCase();
     const ext = name.slice(name.lastIndexOf("."));
     if (!(AUDIO_EXTENSIONS as readonly string[]).includes(ext)) {
@@ -126,11 +184,13 @@ export default function ImportPage() {
         fail(`Audio exceeds the decoded-memory cap (~160 MB of PCM) — ${decoded.length} samples × ${decoded.numberOfChannels} ch > ${MAX_DECODED_SAMPLES}`);
         return;
       }
-      setAudio({
+      const pick: AudioPick = {
         file,
         durationMs,
         meta: { durationMs, sampleRate: decoded.sampleRate, channels: decoded.numberOfChannels },
-      });
+      };
+      audioRef.current = pick;
+      setAudio(pick);
     } catch (err) {
       fail(`Could not decode audio: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -244,47 +304,68 @@ export default function ImportPage() {
   const runGenerate = async (): Promise<void> => {
     // The ref is the guard, not the state: `generating` in this closure is the value
     // from the render that produced the handler, so two rapid clicks could both pass
-    // a state check. `abortRef.current` is set synchronously, before any await.
+    // a state check. `abortRef.current` is set synchronously, before any await, and
+    // it is CLEARED by the `finally` below — so it marks "a run is in flight".
     if (!audio || abortRef.current !== null) return;
     const controller = new AbortController();
     abortRef.current = controller;
+    generationCountRef.current++;
     setGenerating(true);
-    setGenError(null);
+    setGenDecision(null);
     setProgress(0);
+    progressPeakRef.current = 0;
     let ctx: AudioContext | null = null;
+    // The pick this run belongs to. If the user re-picks the audio while the run
+    // is in flight, `audioRef.current` no longer points at this object and the
+    // run's result is discarded instead of being published for the new pick.
+    const pick = audio;
     try {
-      const audioBytes = await audio.file.arrayBuffer();
+      const audioBytes = await pick.file.arrayBuffer();
       // `decodeAudioData` DETACHES the ArrayBuffer it is handed — so it gets a COPY.
       // The original `audioBytes` must survive intact: it is what gets hashed (here and
       // again inside `importChartWithAudio`) and what the library stores.
       const audioHash = await sha256Hex(audioBytes);
       ctx = new AudioContext();
       const buffer = await ctx.decodeAudioData(audioBytes.slice(0));
-      const candidate = await fluxV1.generate(buffer, {
+      const candidate = await runFluxV1(buffer, {
         audioHash,
-        onProgress: (pct) => setProgress(pct),
+        timeoutMs: timeoutMsRef.current,
         signal: controller.signal,
+        onProgress: (pct) => {
+          progressPeakRef.current = Math.max(progressPeakRef.current, pct);
+          setProgress(pct);
+        },
       });
       // Persist through the SAME boundary as an imported chart — one validation
       // boundary, one atomic store write, one Play link.
+      //
+      // W3 T25b fix r1: the chart is CANONICALIZED first. `assembleChart` emits
+      // notes with no `tier`; every imported row carries `tier: "primary"`. Without
+      // this the two origins had different chartJson shapes (and so different
+      // chartHash conventions). The canonicalization belongs HERE — at the store
+      // boundary — and not in the pure package (R24).
+      // The user re-picked the audio while this run was in flight → the chart
+      // belongs to a selection that no longer exists. Discard it BEFORE it is
+      // stored, so no orphan library row is created for a replaced file. (The
+      // abort in `onAudioChange` already stopped the generation; this covers the
+      // window where it had already finished generating.)
+      if (audioRef.current !== pick) return;
       const { chartId } = await importChartWithAudio({
-        chart: candidate.chart,
+        chart: canonicalizeGeneratedChart(candidate.chart),
         audioBytes,
-        audioMeta: audio.meta,
+        audioMeta: pick.meta,
       });
       setDone({ chartId, source: "generate" });
     } catch (err) {
-      // Q10: a failure (or the 20 s budget) is a VISIBLE state with Retry / Cancel —
+      // Q10: a failure (or the budget) is a VISIBLE state with Retry / Cancel —
       // never a silent generator switch. flux-v1 stays the only generator.
-      // A USER-initiated cancel is not a failure: the run simply stops (the progress
-      // block disappears and Generate re-enables). The generator's own budget
-      // timeout does NOT set the abort flag, so it surfaces here as a failure.
-      if (controller.signal.aborted) return;
-      setGenError(
-        err instanceof FluxGenerateError
-          ? `Generation failed (${err.code}): ${err.message}`
-          : `Generation failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      // The DECISION is the pure `decideGenerateUi` table (unit-tested); this is
+      // only the wiring. A USER-initiated cancel is not a failure: the run simply
+      // stops (the progress block disappears and Generate re-enables). The
+      // generator's own budget timeout does NOT set the abort flag, so it
+      // surfaces here as a failure with a `timeout` code.
+      const decision = decideGenerateUi({ cancelled: controller.signal.aborted, error: err });
+      setGenDecision(decision.showError ? decision : null);
     } finally {
       abortRef.current = null;
       if (ctx && ctx.state !== "closed") void ctx.close();
@@ -294,11 +375,11 @@ export default function ImportPage() {
 
   // Cancel: aborts the AbortController of the in-flight run (the generator's own
   // cleanup terminates the Worker) and dismisses a surfaced failure. The two Cancel
-  // buttons share the testid but never coexist — a run clears `genError` before it
+  // buttons share the testid but never coexist — a run clears `genDecision` before it
   // sets `generating`, and the failure block only renders when no run is in flight.
   const cancelGenerate = (): void => {
     abortRef.current?.abort();
-    setGenError(null);
+    setGenDecision(null);
   };
 
   return (
@@ -414,7 +495,7 @@ export default function ImportPage() {
           <progress value={progress} max={100} />
           {/* Cancel aborts the AbortController of the in-flight run. The error block's
               Cancel carries the same testid, but the two never coexist: a run clears
-              `genError` before it sets `generating`. */}
+              `genDecision` before it sets `generating`. */}
           <button
             type="button"
             data-testid="generate-cancel"
@@ -427,31 +508,41 @@ export default function ImportPage() {
         </div>
       )}
 
-      {genError && (
+      {genDecision?.showError && (
         // Q10: a failed or over-budget generation is a VISIBLE state offering Retry and
         // Cancel. flux-v1 is the only generator and stays the one used — never a silent
-        // switch to another generator.
-        <div data-testid="generate-error" role="alert" className="flex flex-col gap-2 text-sm">
-          <p style={{ color: "var(--warn)" }}>{genError}</p>
+        // switch to another generator. `data-generator` names the generator the run
+        // actually used, so the "no silent switch" rule is observable in the DOM.
+        <div
+          data-testid="generate-error"
+          data-generator={GENERATOR_ID}
+          role="alert"
+          className="flex flex-col gap-2 text-sm"
+        >
+          <p style={{ color: "var(--warn)" }}>{genDecision.message}</p>
           <div className="flex gap-3">
-            <button
-              type="button"
-              data-testid="generate-retry"
-              onClick={() => void runGenerate()}
-              className="w-fit cursor-pointer rounded-[6px] border px-6 py-3 text-sm"
-              style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--you)" }}
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              data-testid="generate-cancel"
-              onClick={cancelGenerate}
-              className="w-fit cursor-pointer rounded-[6px] border px-6 py-3 text-sm"
-              style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
-            >
-              Cancel
-            </button>
+            {genDecision.showRetry && (
+              <button
+                type="button"
+                data-testid="generate-retry"
+                onClick={() => void runGenerate()}
+                className="w-fit cursor-pointer rounded-[6px] border px-6 py-3 text-sm"
+                style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--you)" }}
+              >
+                Retry
+              </button>
+            )}
+            {genDecision.showCancel && (
+              <button
+                type="button"
+                data-testid="generate-cancel"
+                onClick={cancelGenerate}
+                className="w-fit cursor-pointer rounded-[6px] border px-6 py-3 text-sm"
+                style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       )}

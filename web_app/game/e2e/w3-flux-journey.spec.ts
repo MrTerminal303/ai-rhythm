@@ -8,6 +8,10 @@
 // This is the WHOLE fallback loop, playable end to end: the chart the generator
 // produces is the chart the library stores and the play page plays.
 //
+// A SECOND test (Q10) drives the over-budget path in the browser: a tiny budget
+// makes the generator reject with a structured `timeout`, and the page must show
+// `generate-error` with Retry and Cancel — never a silent generator switch.
+//
 // TIMEOUT: `test.setTimeout(320_000)` — the 240 s long.webm play-through to the
 // results screen exceeds Playwright's 30 s per-test default (Round 11 P1-9). A
 // nested `waitForFunction` timeout does NOT extend the outer test timeout, so the
@@ -31,8 +35,20 @@ import { expect, test, type Page } from "@playwright/test";
 const PUB = path.join(__dirname, "..", "apps", "web", "public", "songs");
 const LONG_WEBM = path.join(PUB, "long.webm");
 
+/** The play page's e2e hook — the shape `__w2` exposes. */
 type W2Timing = {
   phase(): string;
+  noteCount(): number;
+};
+
+/** The import page's e2e seam — the shape `__importTest` exposes. */
+type ImportTest = {
+  /** Set the Q10 budget the NEXT generation run uses (ms). */
+  setTimeoutMs(ms: number): void;
+  /** The highest progress percentage reported so far (0 when no run started). */
+  progressPeak(): number;
+  /** How many generation runs have been STARTED on this page. */
+  generationCount(): number;
 };
 
 /** The chart record the T18 library store holds for `chartId`. */
@@ -47,22 +63,47 @@ function evidencePath(name: string): string {
   return p;
 }
 
-/** Upload long.webm on /import and click Generate; returns the resulting chartId. */
-async function generateChart(page: Page): Promise<string> {
-  await page.goto("/import");
+/** Upload long.webm on /import (audio only — journey 6 generates the chart). */
+async function uploadAudio(page: Page): Promise<void> {
   await page.setInputFiles('[data-testid="import-audio-input"]', {
     name: "long.webm",
     mimeType: "video/webm",
     buffer: readFileSync(LONG_WEBM),
   });
   await expect(page.getByTestId("audio-selected")).toBeVisible();
+}
+
+/**
+ * W3 T25b fix r1 — the progress element UNMOUNTS when the run settles, so a fast
+ * run can be missed by a "wait until visible" race. The page's seam records the
+ * HIGHEST percentage the generator reported, which is monotonic: once a run has
+ * reported anything, the value stays. Waiting on the PEAK therefore cannot race
+ * with the element's removal.
+ */
+async function waitForProgressPeak(page: Page, atLeast: number, timeoutMs: number): Promise<number> {
+  await page.waitForFunction(
+    (floor: number) => {
+      const seam = (window as unknown as { __importTest?: ImportTest }).__importTest;
+      return (seam?.progressPeak() ?? 0) >= floor;
+    },
+    atLeast,
+    { timeout: timeoutMs },
+  );
+  return page.evaluate(() => (window as unknown as { __importTest?: ImportTest }).__importTest?.progressPeak() ?? 0);
+}
+
+/** Upload long.webm on /import and click Generate; returns the resulting chartId. */
+async function generateChart(page: Page): Promise<string> {
+  await page.goto("/import");
+  await uploadAudio(page);
   // NO chart file — journey 6 generates the chart, it does not import one.
   const generate = page.getByTestId("generate-button");
   await expect(generate).toBeEnabled();
   await generate.click();
   // The progress surface is captured while the run is in flight (it is removed once
-  // the run settles, so the shot has to be taken during the run).
-  await expect(page.getByTestId("generate-progress")).toBeVisible({ timeout: 30_000 });
+  // the run settles, so the shot has to be taken during the run). The PEAK is
+  // monotonic, so this wait cannot race with the element's removal.
+  await waitForProgressPeak(page, 1, 60_000);
   await page.screenshot({ path: evidencePath("w3-b8-flux-journey-01-generating.png") });
   await expect(page.getByTestId("import-done")).toBeVisible({ timeout: 120_000 });
   // The success block says the chart was GENERATED (not imported) — the two paths
@@ -158,4 +199,65 @@ test("flux-v1 journey: generate from a real song → library → play → result
   expect(second.audioHash).toBe(first.audioHash); // same audio bytes → same content hash
   expect(second.chartHash).toBe(first.chartHash); // same seeded chart → byte-identical
   expect(second.noteCount).toBe(first.noteCount);
+});
+
+// ------------------------------------------------------------------ Q10 (fix r1)
+test("Q10: a generation over the budget shows Retry + Cancel, and Retry starts another run", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+
+  await page.goto("/import");
+  await uploadAudio(page);
+
+  // Drive a TINY budget through the page's own seam: the generator's own
+  // FLUX_GENERATION_TIMEOUT_MS (20 s) is far longer than a real 240 s track takes
+  // to finish, so the over-budget path is only reachable with a small budget.
+  // The seam sets the SAME option the app passes in production — no second path.
+  await page.evaluate(() => {
+    const seam = (window as unknown as { __importTest?: ImportTest }).__importTest;
+    if (!seam) throw new Error("window.__importTest seam absent — is NEXT_PUBLIC_E2E=1 in the build?");
+    seam.setTimeoutMs(1);
+  });
+
+  await page.getByTestId("generate-button").click();
+
+  // The Q10 surface: the error block, with BOTH Retry and Cancel.
+  const error = page.getByTestId("generate-error");
+  await expect(error).toBeVisible({ timeout: 60_000 });
+  // The failure names the generator that actually ran — Q10: no silent switch.
+  await expect(error).toHaveAttribute("data-generator", "flux-v1");
+  await expect(error).toContainText(/timeout/i);
+  const retry = page.getByTestId("generate-retry");
+  // Scope the Cancel locator to the ERROR block: the progress block carries a
+  // Cancel too (it aborts a live run), and both share the testid. They never
+  // coexist — a run clears the decision before it sets `generating` — but
+  // scoping makes the locator unambiguous regardless.
+  const cancel = error.getByTestId("generate-cancel");
+  await expect(retry).toBeVisible();
+  await expect(cancel).toBeVisible();
+  await page.screenshot({ path: evidencePath("w3-b8-flux-journey-04-q10-error.png") });
+
+  // Retry really starts ANOTHER run: the run counter goes up by one and the run
+  // fails the same way (the budget is still tiny).
+  const before = await page.evaluate(
+    () => (window as unknown as { __importTest?: ImportTest }).__importTest?.generationCount() ?? 0,
+  );
+  await retry.click();
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () => (window as unknown as { __importTest?: ImportTest }).__importTest?.generationCount() ?? 0,
+        ),
+      { timeout: 30_000 },
+    )
+    .toBe(before + 1);
+  // The retried run over-budgets again → the same visible surface.
+  await expect(page.getByTestId("generate-error")).toBeVisible({ timeout: 60_000 });
+
+  // Cancel dismisses the failure; the Generate button comes back.
+  await error.getByTestId("generate-cancel").click();
+  await expect(page.getByTestId("generate-error")).toHaveCount(0);
+  await expect(page.getByTestId("generate-button")).toBeEnabled();
 });

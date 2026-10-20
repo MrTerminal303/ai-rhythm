@@ -38,7 +38,7 @@ async function seedChart(page: import("@playwright/test").Page, suffix: string):
     if (!audio.ok) throw new Error(`cannot fetch /w3-e2e-audio.wav: ${audio.status}`);
     const bytes = new Uint8Array(await audio.arrayBuffer());
     const mask = 0x40 + sfx.charCodeAt(0); // 'a'→0x46, 'b'→0x47 — distinct, non-zero
-    for (let i = 0; i < bytes.length; i++) bytes[i] ^= mask;
+    for (let i = 0; i < bytes.length; i++) bytes[i] = bytes[i]! ^ mask;
     return hook.importForTest(chart, bytes.buffer, { durationMs: 60_000, sampleRate: 8_000, channels: 1 });
   }, suffix);
 }
@@ -96,7 +96,7 @@ test("library list, unplayable labeling, delete, and play-link target", async ({
       });
       if (!asset) throw new Error("audio asset not found");
       const corrupted = new Uint8Array(asset.bytes.slice(0));
-      corrupted[0] ^= 0xff;
+      corrupted[0] = corrupted[0]! ^ 0xff;
       audioStore.put({ ...asset, bytes: corrupted.buffer as ArrayBuffer });
       await new Promise<void>((res, rej) => {
         tx.addEventListener("complete", () => res());

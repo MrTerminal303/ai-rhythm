@@ -38,9 +38,16 @@ WHAT IS MIRRORED (function by function, from ``packages/chartgen/src/flux-v1.ts`
   floor, the local-maximum test, the mean-over-window test, and the wait.
 * ``frameToMs`` (``flux-v1.ts``).
 
-``numpy`` is used when it is importable (it only accelerates the FFT); the
-script NEVER requires ``librosa`` (nor any other third-party package) to be
-readable or runnable. The standard library alone is enough.
+``numpy`` is used when it is importable, but it is an ACCELERATOR WITH A
+DIFFERENT ALGORITHM, not a drop-in for the shared FFT: with numpy present the
+magnitude spectrum comes from ``numpy.fft.rfft`` (a different FFT
+implementation with different rounding), and without it from the port of the
+TS radix-2 FFT below. The two paths were measured to agree BYTE-FOR-BYTE on
+the committed spike vector, but that is an EMPIRICAL observation on that input
+— it is NOT an arithmetic guarantee, and a different input could separate them
+in the last ULP. The script NEVER requires ``librosa`` (nor any other
+third-party package) to be readable or runnable: the standard library alone is
+enough.
 
 R13 (controller ruling, carried here verbatim): on the machine this task was
 authored on, NO usable pinned Python environment exists (bare ``python`` is the
@@ -199,8 +206,12 @@ def _fft_in_place(re: List[float], im: List[float]) -> None:
 def _magnitudes(frame: Sequence[float]) -> List[float]:
     """Magnitude spectrum of one windowed frame (n_bins = 1 + n_fft/2).
 
-    ``numpy`` (when present) only replaces the FFT itself; the magnitude formula
-    (``hypot(re, im)``) and everything downstream are identical either way.
+    With numpy present the spectrum comes from ``numpy.fft.rfft`` — a DIFFERENT
+    FFT implementation from the ported radix-2 FFT, with different rounding. The
+    magnitude formula (``hypot(re, im)``) and everything downstream are the
+    same either way. The two paths were measured to agree byte-for-byte on the
+    committed spike vector; that is an EMPIRICAL result on that input, not an
+    arithmetic guarantee.
     """
     if _np is not None:
         spectrum = _np.fft.rfft(_np.asarray(frame, dtype=_np.float64))

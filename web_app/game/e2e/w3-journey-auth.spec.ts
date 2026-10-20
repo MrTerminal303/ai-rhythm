@@ -12,7 +12,8 @@
 //   (Review Focus 4). The chart hash is content-derived and shared with the signed-in
 //   run, so the snapshot subtraction — not an empty result — is the isolation proof.
 //
-// ENV-GATED, like rls.test.ts: without NEXT_PUBLIC_SUPABASE_URL this suite SKIPS and
+// ENV-GATED, like rls.test.ts: without SUPABASE_TEST=1 (plus the two NEXT_PUBLIC_*
+// variables) this suite SKIPS and
 // PRINTS the cases that did not run. A skip is not a pass. The operator runs it with a
 // real project (`SUPABASE_TEST=1` + the two NEXT_PUBLIC_* variables also makes the app
 // build a configured build — the webServer inherits the shell env).
@@ -25,7 +26,10 @@ import { importSong, readStore, shot, startRun, waitCompleted } from "./journey-
 
 const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim();
 const SUPABASE_KEY = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
-const ENABLED = SUPABASE_URL !== "" && SUPABASE_KEY !== "";
+// Explicit opt-in: the two NEXT_PUBLIC_* variables alone are NOT enough. In any shell where
+// they are set (an ordinary configured build) this spec would run — and `ensureAccount()`
+// would attempt a SIGNUP with the fixed fallback password. Same rule as rls.test.ts:19.
+const ENABLED = process.env.SUPABASE_TEST === "1" && SUPABASE_URL !== "" && SUPABASE_KEY !== "";
 
 /** A dedicated test account — never production user data (same rule as rls.test.ts). */
 const TEST_EMAIL = process.env.SUPABASE_TEST_EMAIL ?? "e2e-t26-journey@example.com";
@@ -48,9 +52,10 @@ if (!ENABLED) {
     [
       "",
       "── w3-journey-auth.spec.ts SKIPPED ─────────────────────────────────────",
-      "  Reason: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-      "  must both be set (and the build must be a configured build). No Supabase",
-      "  project is configured in this shell — the operator runs this suite.",
+      "  Reason: SUPABASE_TEST=1 must be set, and NEXT_PUBLIC_SUPABASE_URL and",
+      "  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY must both be set (and the build must",
+      "  be a configured build). No Supabase project is configured in this shell —",
+      "  the operator runs this suite.",
       "  Cases NOT executed:",
       ...CASES.map((c) => `    ✗ ${c}`),
       "  This skip is NOT a pass.",
@@ -113,7 +118,7 @@ function watchSupabase(page: Page): string[] {
 }
 
 test.describe("journey 4: guest → login → new run syncs, guest-era score stays absent", () => {
-  test.skip(!ENABLED, "NEXT_PUBLIC_SUPABASE_URL unset — operator runs this journey (see stderr)");
+  test.skip(!ENABLED, "SUPABASE_TEST=1 / NEXT_PUBLIC_SUPABASE_* unset — operator runs this journey (see stderr)");
 
   test("guest plays, logs in, syncs a new run, and the guest-era score never appears", async ({ page }) => {
     const auth = await ensureAccount();
@@ -128,6 +133,15 @@ test.describe("journey 4: guest → login → new run syncs, guest-era score sta
     // ---- Settings changed PRE-login (guest era), through the REAL /settings control — the
     // login trigger must merge this envelope into `profiles.settings`.
     await page.goto("/settings");
+    // The writeId BEFORE the edit: a re-used writeId would let the remote-match poll below
+    // pass against a row left by an earlier run, proving nothing about THIS edit.
+    const writeIdBefore = await page.evaluate(() => {
+      const doc = JSON.parse(localStorage.getItem("duelbeat.settings") ?? "{}") as Record<
+        string,
+        { value: unknown; rev: number; deviceId: string; writeId: string }
+      >;
+      return doc.scrollSpeed?.writeId ?? null;
+    });
     await page.getByTestId("setting-scrollSpeed").fill("1.7");
     const localEnvelope = await page.evaluate(() => {
       const doc = JSON.parse(localStorage.getItem("duelbeat.settings") ?? "{}") as Record<
@@ -138,9 +152,17 @@ test.describe("journey 4: guest → login → new run syncs, guest-era score sta
     });
     if (!localEnvelope) throw new Error("the /settings control did not write a scrollSpeed envelope");
     expect(localEnvelope.value).toBeCloseTo(1.7, 5);
+    // The edit really produced a NEW envelope (not a no-op on an already-1.7 value).
+    expect(localEnvelope.writeId).not.toBe(writeIdBefore);
 
     // ---- Guest play, part 1: zero cloud touch.
     const guestRequests = watchSupabase(page);
+    // The guest phase must really be unauthenticated: a persisted Supabase session would make
+    // this run authenticated and the zero-touch assertion below meaningless.
+    const authTokenKeys = await page.evaluate(() =>
+      Object.keys(localStorage).filter((k) => k.startsWith("sb-") && k.endsWith("-auth-token")),
+    );
+    expect(authTokenKeys).toEqual([]);
     const guestPlayedFrom = Date.now();
     await page.goto(`/play?libraryChartId=${chartId}`);
     await startRun(page);
@@ -165,6 +187,8 @@ test.describe("journey 4: guest → login → new run syncs, guest-era score sta
     await page.getByTestId("auth-password").fill(TEST_PASSWORD);
     await page.getByTestId("auth-submit").click();
     await expect(page.getByTestId("auth-signed-in")).toBeVisible({ timeout: 30_000 });
+    // The signed-in surface must name the account we signed in as (not just "some user").
+    await expect(page.getByTestId("auth-signed-in")).toContainText(TEST_EMAIL);
 
     // The login-time settings sync lands the guest-era envelope in `profiles.settings` —
     // matched by its writeId, so a leftover value from an earlier run cannot pass this.

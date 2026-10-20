@@ -37,6 +37,12 @@ const PERF_WARMUP_MS = 5000;
 // precedence). Production builds ignore it — Vercel leaves NEXT_PUBLIC_E2E unset.
 const FIXTURE_PARAMS_ENABLED = process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
 
+// W3 T26: the dev/E2E debug surface (`window.__w2`) and the RMS analyser that surface reads
+// are ONE feature: the analyser must exist wherever __w2 does, or `__w2.analyserRms()` is
+// exposed but can never work (it would always throw "analyser not created yet").
+const DEBUG_SURFACE_ENABLED =
+  process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
+
 // W3 T2 (D21, round 10 P1-1 regression target): pure extraction of inputProbeRecord's
 // calculation — no React state, no side effects — so the recorder is unit-testable
 // without a running AudioContext. Kept module-private: the play page is a Next client
@@ -388,7 +394,7 @@ export default function PlayPage() {
     // Dev builds get it; production builds only when explicitly opted in — the
     // Playwright webServer sets NEXT_PUBLIC_E2E=1 (inlined at `pnpm build`, since its
     // webServer runs `pnpm build && pnpm start`). Vercel builds leave it unset → absent.
-    if (process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1") {
+    if (DEBUG_SURFACE_ENABLED) {
       window.__w2 = {
         chartTimeMs: () => {
           if (!clockRef.current) throw new Error("__w2.chartTimeMs: clock not created yet");
@@ -663,9 +669,10 @@ export default function PlayPage() {
       masterGain.gain.value = volumes.master;
       masterGain.connect(audioCtx.destination);
       // W3 T26: the E2E analyser tap, PRE-DAC (parallel branch off the master gain — it adds
-      // no path to the destination, so playback is untouched). E2E builds only: an extra
-      // AnalyserNode is a timing side-channel to production, same class as `__w2`.
-      if (process.env.NEXT_PUBLIC_E2E === "1") {
+      // no path to the destination, so playback is untouched). Same predicate as the `__w2`
+      // surface above: an extra AnalyserNode is a timing side-channel to production, so it
+      // exists exactly where `__w2.analyserRms()` can be called.
+      if (DEBUG_SURFACE_ENABLED) {
         const analyser = audioCtx.createAnalyser();
         masterGain.connect(analyser);
         analyserRef.current = analyser;

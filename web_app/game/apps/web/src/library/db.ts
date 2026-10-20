@@ -58,10 +58,12 @@ export class LibraryQuotaError extends Error {
 /**
  * W3 T26 (journey 3 variant b) — E2E-only fault seam. A real quota exhaustion cannot be
  * provoked reliably in a browser (the origin quota is gigabytes), so the e2e sets
- * `window.__forceQuota = true` and the audio put fails EXACTLY like an engine quota error:
- * same synchronous throw inside the transaction handler, same explicit abort, same
- * LibraryQuotaError. `NEXT_PUBLIC_E2E` is inlined at build, so production carries none of
- * this path. It is read (not imported) so unit tests never need a window.
+ * `window.__forceQuota = true` and the seam APPROXIMATES the engine's quota throw at the
+ * same catch point: same error name, same explicit abort, same LibraryQuotaError. It is not
+ * the same throw site — the seam raises in the async function body BEFORE
+ * `audioStore.put(audio)`, while the unit test monkey-patches `put` so its throw happens
+ * inside the request handler. `NEXT_PUBLIC_E2E` is inlined at build, so production carries
+ * none of this path. It is read (not imported) so unit tests never need a window.
  */
 function forceQuota(e2e: boolean): boolean {
   return e2e && typeof window !== "undefined" && (window as { __forceQuota?: boolean }).__forceQuota === true;

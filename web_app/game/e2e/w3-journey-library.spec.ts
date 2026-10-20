@@ -63,10 +63,12 @@ test("journey 2: library lists the real song → play → analyser RMS > 0 + clo
   await page.goto(`/play?libraryChartId=${chartId}`);
   await startRun(page);
   // Let the signal path settle past the countdown, then sample the SAME probe.
+  // The control window STARTS AT THE SAME chart time as the positive window below (1000 ms)
+  // — a quiet first second would otherwise make the negative control pass trivially.
   await page.waitForFunction(
     () => {
       const w = (window as unknown as { __w2?: { chartTimeMs(): number } }).__w2;
-      return (w?.chartTimeMs() ?? 0) > 500;
+      return (w?.chartTimeMs() ?? 0) > 1000;
     },
     undefined,
     { timeout: 30_000 },

@@ -234,8 +234,8 @@ Train a CRNN neural network from scratch (no pretrained models, no transfer lear
   4. Fixed-400 sliding-window (200-frame hop) fallback ready if dynamic export fails on real-song lengths
 **Plans**: 2 plans (Wave 1: 1, Wave 2: 1)
 **Plan list**:
-- [ ] 09-01-PLAN.md -- export_onnx.py: version-branch export (dynamo try/catch) + CPU-EP parity + mirrored pytest + config/requirements (EXP-01 local leg)
-- [ ] 09-02-PLAN.md -- Kaggle CELL 16: version print + whole-song single pass + D-03 fixed-400 fallback + push onnx/stage1_best.onnx (EXP-01 evidence)
+- [x] 09-01-PLAN.md -- export_onnx.py: version-branch export (dynamo try/catch) + CPU-EP parity + mirrored pytest + config/requirements (EXP-01 local leg)
+- [x] 09-02-PLAN.md -- Kaggle CELL 16: version print + whole-song single pass + D-03 fixed-400 fallback + push onnx/stage1_best.onnx (EXP-01 evidence)
 **Critical path item**: Frozen dynamic time axis -- same-length verify passes while real songs throw `Got: X Expected: 400`; multi-length verify is the guard
 **Resource constraints**: CPU-EP ORT (GPU ORT silently drops to CPU EP on Kaggle). No floor-pinned blind versions -- runtime check branches.
 **Risk items**:

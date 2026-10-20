@@ -383,6 +383,7 @@ assert not (set(info["train_ids"]) | set(info["val_ids"])) & (set(EVAL_IDS) | {S
 # Derive over full-song label caches, NOT a loader pass: random crops made the
 # value drift run-to-run (14.6 vs 14.1) — shifts val-loss scale and biases
 # cross-session best_val comparisons (D-08 best-over-sessions)
+import numpy as np
 from airhythm.datasets import build_full_song_cache
 _train_ids = set(info["train_ids"])
 _lab = torch.cat([

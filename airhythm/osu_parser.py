@@ -36,7 +36,7 @@ class HitObject:
         time: Start time in milliseconds.
         end_time: End time in milliseconds (same as time for circles).
         lane: Mania lane index, clamped to [0, cs-1].
-        type_bitmask: Bitmask: 1=circle, 2=slider, 8=long note (LN).
+        type_bitmask: Bitmask: 1=circle, 2=slider, 8=spinner, 128=long note (mania hold).
     """
 
     time: float

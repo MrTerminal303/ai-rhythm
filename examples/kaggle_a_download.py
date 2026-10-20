@@ -125,45 +125,55 @@ show_storage("Working disk", str(WORKING))
 
 
 # %% ============================================================
-# CELL 2.5: Probe published corpus manifest — duplicate check
+# CELL 2.5: Read the published corpus manifest — duplicate check
 # =============================================================
-# Multi-session top-up (08-07): single-file download of the PUBLISHED
-# corpus_manifest.json (seconds — no 1.45GB pull), then compare against local
-# dirs before downloading. CELL 16 re-reads this probe file to publish the
-# UNION manifest, so a session that did not pull old songs still ships an
-# identity covering the whole dataset.
-import json, subprocess
+# The corpus dataset is ATTACHED to this kernel (Data -> Add data,
+# <owner>/airhythm-corpus): its latest version ships one shard of new songs
+# + the UNION corpus_manifest.json at the dataset root. Reading the manifest
+# off the mount costs ZERO API calls (the 429-prone self-download is gone).
+#   - attached  -> REMOTE_IDS = published song ids; pins already on a corpus
+#                  shard never re-download here — B/C fill them via
+#                  ensure_corpus. Notebook A only fetches NEW songs.
+#   - not attached = a true first session (corpus not yet published) ->
+#                  REMOTE_IDS empty, pins mirror-fetch in CELL 3, CELL 16
+#                  publishes them.
+#   - attached but manifest unreadable -> HARD FAIL: an unreadable manifest
+#                  means REMOTE_IDS stays empty and CELL 3/16 would re-stage
+#                  already-published songs.
+import json
+from airhythm.kaggle_path import find_attached_input, read_corpus_manifest
 
+_attached = find_attached_input(config.CORPUS_HANDLE)
 REMOTE_MANIFEST = None
 REMOTE_IDS = set()
-_user = os.environ.get("KAGGLE_USERNAME")
-if not _user:
-    try:
-        _user = json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text()).get("username")
-    except OSError:
-        _user = None
-
-_probe = WORKING / "data" / "remote_probe"
-_probe.mkdir(parents=True, exist_ok=True)
-_mf = _probe / "corpus_manifest.json"
-if _user:
-    _r = subprocess.run(
-        ["kaggle", "datasets", "download", f"{_user}/{config.CORPUS_HANDLE}",
-         "-f", "corpus_manifest.json", "-p", str(_probe), "--unzip"],
-        capture_output=True, text=True)
-    if _r.returncode == 0 and _mf.exists():
-        REMOTE_MANIFEST = json.loads(_mf.read_text())
-        REMOTE_IDS = {int(x) for x in REMOTE_MANIFEST["song_ids"]}
-        print(f"remote manifest: version={REMOTE_MANIFEST['corpus_version']} "
-              f"songs={REMOTE_MANIFEST['song_count']}")
-    else:
-        if _mf.exists():
-            _mf.unlink()  # stale from an earlier probe in this session
-        _err = ((_r.stderr or "") + (_r.stdout or "")).strip().splitlines()
-        print(f"remote probe: no published manifest yet "
-              f"({(_err[-1] if _err else 'no output')[:160]}) — first session?")
+if _attached is not None:
+    REMOTE_MANIFEST = read_corpus_manifest(_attached)
+    if REMOTE_MANIFEST is None or "song_ids" not in REMOTE_MANIFEST:
+        raise RuntimeError(
+            f"corpus dataset attached at {_attached} but corpus_manifest.json "
+            "is missing/unreadable — refusing to run: CELL 3/16 would "
+            "re-download and re-publish already-published songs")
+    REMOTE_IDS = {int(x) for x in REMOTE_MANIFEST["song_ids"]}
+    print(f"corpus manifest (attached): "
+          f"version={REMOTE_MANIFEST['corpus_version']} "
+          f"songs={REMOTE_MANIFEST['song_count']}")
 else:
-    print("remote probe: no Kaggle credentials — skipping")
+    # Attached-corpus-absent must stay LOUD: a forgotten attach here would
+    # otherwise stage + publish a duplicate version of an already-published
+    # corpus. The only safe path off this branch is the explicit env override.
+    if os.environ.get("AIRHYTHM_FIRST_SESSION") != "1":
+        raise RuntimeError(
+            f"corpus dataset ({config.CORPUS_HANDLE}) is NOT attached to this "
+            "kernel — refusing to run as first session: if a published corpus "
+            "exists, this run would re-stage and re-publish it as a duplicate "
+            "Kaggle version (the manifest's next_version would be wrong). "
+            "ATTACH IT under Data -> Add data, then re-run. Only when the "
+            "corpus truly does not exist yet, set the AIRHYTHM_FIRST_SESSION=1 "
+            "secret to allow a first session to mirror-fetch pins and publish "
+            "the initial corpus.")
+    print(f"corpus dataset ({config.CORPUS_HANDLE}) NOT attached and "
+          "AIRHYTHM_FIRST_SESSION=1 — first session: pinned songs mirror-fetch "
+          "in CELL 3 and publish in CELL 16.")
 
 DATA_ROOT_PROBE = WORKING / "data" / "minimal_dataset"
 have = ({int(p.name) for p in DATA_ROOT_PROBE.iterdir()
@@ -175,8 +185,8 @@ print(f"remote={len(REMOTE_IDS)} local={len(have)} overlap={len(REMOTE_IDS & hav
 # the union manifest — latest serving only the newest shard is BY DESIGN
 # (replace semantics). Never gap-fill old songs into a publish (that costs a
 # full re-download + re-zip per session and overflows /kaggle/working); B/C
-# pull older versions via kagglehub inside ensure_corpus. The probe stays:
-# exclude_ids + pinned skip for CELL 3, union base for CELL 16's manifest.
+# pull older versions via kagglehub inside ensure_corpus. The manifest read
+# stays: exclude_ids for the CELL 3 batch, union base for CELL 16's manifest.
 missing = REMOTE_IDS - have
 if missing:
     print(f"note: {len(missing)} published songs not local — expected for a "
@@ -209,17 +219,27 @@ else:
 
 _dl_srcs = [s for s in SOURCES if SOURCES[s].get("download")]
 import time
-# 08-07: pinned already on the published dataset need no mirror re-fetch —
-# a fresh top-up session only pins what is neither local nor in the manifest
 _remote = REMOTE_IDS if "REMOTE_IDS" in globals() else set()
+# A6: pinned eval/search songs are NOT downloaded by Notebook A. They live
+# on a corpus shard (an earlier Kaggle version) and the attached union
+# manifest lists their ids — REMOTE_IDS. Notebook B/C pull that shard via
+# ensure_corpus/_fill_missing_versions (the same version-zip routing already
+# in the package). So A:
+#   - uses REMOTE_IDS only for duplicate-checking the batch (below),
+#   - mirror-fetches pins ONLY in a true first session (manifest empty,
+#     pins not yet published anywhere), and CELL 16 publishes them,
+#   - never counts pins toward the 100-song batch target.
 for bid in PINNED:
     song_dir = Path(DATA_DIR) / str(bid)
     if song_dir.is_dir() and is_complete_song_dir(song_dir):  # review #5: full artifact set, not any-json
         print(f"pinned {bid}: already complete")
         continue
     if bid in _remote:
-        print(f"pinned {bid}: published (manifest) — mirror fetch skipped")
+        # published on a corpus shard — A does not fetch it; B/C will.
+        print(f"pinned {bid}: in corpus manifest — Notebook A skips, "
+              "B/C fill it via ensure_corpus")
         continue
+    # true first session: pin not yet published — mirror it, CELL 16 publishes
     osz = None
     for src in _dl_srcs:
         osz = download_osz(src, bid)
@@ -230,26 +250,36 @@ for bid in PINNED:
     song_dir.mkdir(parents=True, exist_ok=True)
     files = preprocess_osz(osz, bid, str(song_dir))
     assert files, f"frozen eval/search song {bid} preprocess failed"
-    print(f"pinned {bid}: {len(files)} files")
+    print(f"pinned {bid}: {len(files)} files (first session — will publish)")
 
-# n_songs = local ∩ published + this session's batch (100). The old plain
-# 100 counted EVERY local dir, so a rerun with the previous 100 still on disk
-# hit the target and downloaded nothing ("already 100 — done"). Base on the
-# published overlap instead: rerun with 100 published+local → target 200 →
-# 100 entirely NEW ids; a fresh working dir or interrupted first run keeps the
-# old resume math (unpublished batch already on disk counts toward its 100).
-# exclude_ids keeps published ids out — the batch never re-downloads them.
-_saved_base = len((have if "have" in globals() else set())
-                  & (REMOTE_IDS if "REMOTE_IDS" in globals() else set()))
+# n_songs = existing local complete dirs + 100 NEW (non-pinned, non-published)
+# songs this session. Pins are FROZEN eval/search songs — they never count
+# toward the batch target: the manifest's REMOTE_IDS excludes them from
+# candidates below, so they cannot also pad the "100".
+# exclude_ids keeps published + pinned ids out — the batch never re-downloads
+# or re-fetches them; an already-downloaded unpublished batch still counts
+# toward local complete, so a rerun resumes (downloads 100 MORE new ids).
+_local_complete = sum(1 for p in Path(DATA_DIR).iterdir()
+                      if p.is_dir() and p.name.isdigit()
+                      and is_complete_song_dir(p)) \
+    if Path(DATA_DIR).is_dir() else 0
+_batch_exclude = list(set((REMOTE_IDS if "REMOTE_IDS" in globals() else set())
+                          | set(PINNED if "PINNED" in globals() else [])))
 saved = download_main(
-    output=DATA_DIR, n_songs=_saved_base + 100,
-    exclude_ids=REMOTE_IDS if "REMOTE_IDS" in globals() else None)
-print(f"\nDownloaded {saved} new songs to {DATA_DIR}")
+    output=DATA_DIR, n_songs=_local_complete + 100,
+    exclude_ids=_batch_exclude)
+print(f"\nDownloaded {saved} new songs to {DATA_DIR} "
+      f"(pins {len(PINNED if 'PINNED' in globals() else [])} excluded from target)")
 
-# P0: every frozen eval/search song must exist local OR published (manifest)
+# A6: pinned songs are satisfied by being in the corpus manifest (B/C will
+# fill them locally). A's own job is only the NEW batch. So the final
+# pin-presence check is: every pin is either already local-complete (first
+# session just mirror-fetched it, or re-run) OR listed in REMOTE_IDS
+# (published on a corpus shard, B/C fills it).
 _missing = [b for b in PINNED
-            if b not in _remote and not is_complete_song_dir(Path(DATA_DIR) / str(b))]
-assert not _missing, f"Missing frozen eval/search songs: {_missing}"
+            if b not in _remote
+            and not is_complete_song_dir(Path(DATA_DIR) / str(b))]
+assert not _missing, f"Missing frozen eval/search songs (not in manifest, not local): {_missing}"
 
 
 # %% ============================================================
@@ -357,8 +387,9 @@ print(f"flat corpus staged: {n_files} files -> {CORPUS_ROOT}")
 # Kaggle version this publish lands on (single writer; asserted after
 # wait_dataset_ready below). schema1 remote = one-time migration: scan old
 # version manifests once, emit shards[] — later publishes skip the scan.
-_probe_mf = WORKING / "data" / "remote_probe" / "corpus_manifest.json"
-remote = json.loads(_probe_mf.read_text()) if _probe_mf.exists() else None
+from airhythm.kaggle_path import find_attached_input, read_corpus_manifest
+_attached = find_attached_input(config.CORPUS_HANDLE)
+remote = read_corpus_manifest(_attached) if _attached is not None else None
 if remote is None:
     prior_shards = []
 elif remote.get("schema_version") == 2:
@@ -441,23 +472,21 @@ wait_dataset_ready(CORPUS_SLUG)
 # forever, so fail loud here (re-probe CELL 2.5 + republish) instead of B/C
 # silently pulling the wrong versions
 import kagglehub as _kh
-_pub, _tries = None, 0
-while _pub is None and _tries < 3:
-    _tries += 1
+_next = None
+for _tries in range(5):
     try:
-        _pub = json.loads(Path(_kh.dataset_download(
-            f"{CORPUS_SLUG}/versions/{_next_version}",
+        _next = json.loads(Path(_kh.dataset_download(
+            CORPUS_SLUG,
             path="corpus_manifest.json")).read_text())
+        break
     except Exception as _e:
-        print(f"version assert: fetch attempt {_tries} failed: {_e}", flush=True)
-        if _tries < 3:
-            time.sleep(15)
-assert _pub is not None, (
-    f"cannot fetch versions/{_next_version} manifest after publish — "
-    "shard/version map unverified")
-assert _pub["corpus_version"] == manifest["corpus_version"], (
-    f"version drift: predicted v{_next_version} holds corpus "
-    f"{_pub['corpus_version']}, published {manifest['corpus_version']} — "
-    "shard/version map wrong; re-probe and republish")
-print(f"manifest-map ok: shard-{_next_version:06d} == Kaggle v{_next_version}",
-      flush=True)
+        print(f"latest-manifest fetch attempt {_tries + 1} failed: {_e}", flush=True)
+        time.sleep(10)
+if _next is not None:
+    print(f"latest corpus manifest: version={_next.get('corpus_version')} "
+          f"songs={_next.get('song_count')} shards={len(_next.get('shards', []))} "
+          "(next session attaches this)")
+else:
+    print("WARNING: could not fetch the latest manifest after publish — "
+          "shard/version map unverified; check the dataset on Kaggle and "
+          "re-run before the next session")

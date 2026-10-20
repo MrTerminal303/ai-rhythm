@@ -17,6 +17,8 @@ import type { Onset } from "./flux-v1.js";
  * - chords are clamped to 2 (Q27); their lanes are non-adjacent (`|a−b| ≥ 2`)
  * - holds: no overlapping holds per lane, `d ≥ 250 ms`; a hold starts only after
  *   the lane's last hold ended and never before the previous note on that lane
+ * - a lane that is inside an active hold is NOT available: neither a tap nor a
+ *   hold may be emitted on it until the hold ends
  */
 
 /** One lane-assigned note draft (before ids/validation). */
@@ -77,21 +79,52 @@ export async function computeLaneSeed(
 // ------------------------------------------------------------------ density selection
 /**
  * Keep the highest-confidence onsets so that no rolling 1 s window holds more
- * than `targetNps` onsets. A single time-ordered sweep: for each onset, the
- * window `[t, t+1000)` may contain at most `cap` kept onsets; later onsets in a
- * crowded window lose to earlier, higher-confidence ones (the onsets arrive
- * sorted by (t, -confidence), so ties prefer the higher confidence that starts
- * the window).
+ * than `targetNps` onsets (PLAN §13.2 step 8). Candidates are considered in
+ * DESCENDING confidence (ties prefer the earlier onset) and a candidate is
+ * accepted only when EVERY rolling 1 s window stays within the cap — so a
+ * high-confidence onset is never dropped in favour of an earlier, weaker one.
  */
 export function selectDensity(onsets: Onset[], targetNps: number): Onset[] {
-  const sorted = [...onsets].sort((a, b) => a.tMs - b.tMs || b.confidence - a.confidence);
   const cap = Math.max(1, Math.floor(targetNps));
-  const kept: Onset[] = [];
-  for (const o of sorted) {
-    const inWindow = kept.filter((k) => o.tMs - k.tMs < 1000 && k.tMs <= o.tMs).length;
-    if (inWindow < cap) kept.push(o);
+  const ordered = [...onsets].sort((a, b) => b.confidence - a.confidence || a.tMs - b.tMs);
+  const kept: Onset[] = []; // time-sorted, so the window counts are binary-searchable
+  for (const o of ordered) {
+    if (fitsDensityWindow(kept, o, cap)) {
+      kept.push(o);
+      kept.sort((a, b) => a.tMs - b.tMs);
+    }
   }
   return kept;
+}
+
+/**
+ * Would adding `o` keep every rolling 1 s window within `cap`? The maximum count
+ * over all windows of length 1 s is attained by a window whose left edge is one
+ * of the points, so checking the window anchored at each kept point (plus the
+ * one anchored at `o`) is exact.
+ */
+function fitsDensityWindow(kept: Onset[], o: Onset, cap: number): boolean {
+  for (const k of kept) {
+    if (o.tMs >= k.tMs && o.tMs - k.tMs < 1000 && countInWindow(kept, k.tMs) + 1 > cap) return false;
+  }
+  return countInWindow(kept, o.tMs) + 1 <= cap;
+}
+
+/** How many of the time-sorted `kept` fall in `[t, t+1000)`. */
+function countInWindow(sorted: Onset[], t: number): number {
+  return lowerBound(sorted, t + 1000) - lowerBound(sorted, t);
+}
+
+/** Index of the first entry with `tMs >= t` (binary search over a time-sorted array). */
+function lowerBound(sorted: Onset[], t: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid]!.tMs < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 // ------------------------------------------------------------------ lane assignment
@@ -112,11 +145,15 @@ export function assignLanes(onsets: Onset[], rng: () => number, opts: AssignOpti
   for (const o of onsets) {
     const t = Math.round(o.tMs);
     const isChord = rng() < chordP;
-    const primary = pickLane(rng, lastLane, sameLaneRun);
+    // A lane inside an active hold is NOT available — a tap there would land
+    // inside the hold (a note the player cannot hit).
+    const busy = (lane: number): boolean => t < (holdEndByLane.get(lane) ?? -Infinity);
+    const primary = pickLane(rng, lastLane, sameLaneRun, busy);
+    if (primary === null) continue; // every lane is inside a hold — the onset is dropped
     drafts.push(makeNote(primary, t, rng, holdP, holdMs, durationMs, holdEndByLane));
     if (isChord) {
-      const partner = chordPartner(primary, rng);
-      drafts.push(makeNote(partner, t, rng, holdP, holdMs, durationMs, holdEndByLane));
+      const partner = chordPartner(primary, rng, busy);
+      if (partner !== null) drafts.push(makeNote(partner, t, rng, holdP, holdMs, durationMs, holdEndByLane));
     }
     // Jack cap bookkeeping: a single tap on the same lane extends the run; a
     // chord (or a different lane) resets it. Chords never count toward the run.
@@ -132,9 +169,11 @@ export function assignLanes(onsets: Onset[], rng: () => number, opts: AssignOpti
 
 /**
  * Re-check the density cap AFTER lane assignment: a chord at the cap boundary can
- * push a rolling window over `targetNps` (each chord emits two notes). Drop the
- * lower-confidence members of an over-full window deterministically (later time,
- * then higher lane) until every 1 s window is within the cap.
+ * push a rolling window over `targetNps` (each chord emits two notes). When a
+ * window is over the cap, the LATER notes in that window are dropped
+ * deterministically (time, then lane) until it fits. `NoteDraft` carries no
+ * confidence — the confidence-based selection happens upstream in
+ * `selectDensity`; this pass only enforces the cap on the lane-assigned notes.
  */
 export function enforceNoteDensity(notes: NoteDraft[], targetNps: number): NoteDraft[] {
   const cap = Math.max(1, Math.floor(targetNps));
@@ -158,16 +197,36 @@ export function enforceNoteDensity(notes: NoteDraft[], targetNps: number): NoteD
 }
 
 // ------------------------------------------------------------------ helpers
-function pickLane(rng: () => number, lastLane: number, run: number): number {
+/**
+ * Pick a lane for a single tap: never the jack-capped lane, never a lane inside
+ * an active hold. Returns `null` when every lane is unavailable.
+ */
+function pickLane(
+  rng: () => number,
+  lastLane: number,
+  run: number,
+  busy: (lane: number) => boolean,
+): number | null {
   const pool: number[] = [];
-  for (const l of [0, 1, 2, 3]) if (!(l === lastLane && run >= 2)) pool.push(l);
-  return pool[Math.floor(rng() * pool.length)] ?? 0;
+  for (const l of [0, 1, 2, 3]) {
+    if (l === lastLane && run >= 2) continue; // jack cap
+    if (busy(l)) continue; // inside an active hold
+    pool.push(l);
+  }
+  if (pool.length === 0) return null;
+  // `rng()` is in [0, 1) so the index is always in range — no fallback branch.
+  return pool[Math.floor(rng() * pool.length)]!;
 }
 
-/** Chord partner: `a ± 2` (non-adjacent, distinct), clamped into 0..3. */
-function chordPartner(a: number, rng: () => number): number {
-  const candidates = [a - 2, a + 2].filter((l) => l >= 0 && l <= 3);
-  return candidates[Math.floor(rng() * candidates.length)] ?? (a < 2 ? a + 2 : a - 2);
+/**
+ * Chord partner: `a ± 2` (non-adjacent, distinct), clamped into 0..3, and never
+ * inside an active hold. Returns `null` when no partner lane is available.
+ */
+function chordPartner(a: number, rng: () => number, busy: (lane: number) => boolean): number | null {
+  const candidates = [a - 2, a + 2].filter((l) => l >= 0 && l <= 3 && !busy(l));
+  if (candidates.length === 0) return null;
+  // `rng()` is in [0, 1) so the index is always in range — no fallback branch.
+  return candidates[Math.floor(rng() * candidates.length)]!;
 }
 
 function makeNote(

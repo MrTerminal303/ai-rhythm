@@ -2,6 +2,7 @@ import { FluxChunker } from "./chunking.js";
 import {
   PINNED_PREPROC,
   generateCandidateFromFlux,
+  validateFluxChannels,
   type FluxV1InMessage,
   type FluxV1OutMessage,
   type ResolvedGenerateOptions,
@@ -63,9 +64,11 @@ self.onmessage = (e: MessageEvent<FluxV1InMessage | { type: "chunk" | "flush"; [
         if (m.startFrame !== request.expectedStart) {
           throw new Error(`flux-v1 worker: chunk startFrame ${m.startFrame} != expected ${request.expectedStart}`);
         }
-        if (m.channelCount !== m.channels.length) {
-          throw new Error(`flux-v1 worker: channelCount ${m.channelCount} != channels.length ${m.channels.length}`);
-        }
+        // T24 R16: channelCount must match channels.length AND every channel must
+        // carry the SAME length — `toMono` reads `right[i]` up to `first.length`;
+        // a short channel yields `undefined` → NaN, which `chunkFrame` silently
+        // turns into 0 (plausibly shaped but wrong flux, with no error).
+        validateFluxChannels(m.channels, m.channelCount);
         const mono = toMono(m.channels);
         const batch = chunker.consume(mono, m.startFrame);
         for (const row of batch.frames) fluxValues.push(row[0] ?? 0);

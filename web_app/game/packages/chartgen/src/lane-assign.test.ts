@@ -73,6 +73,34 @@ describe("selectDensity — keep the highest-confidence onsets until targetNps",
     }
   });
 
+  it("keeps the HIGHEST-confidence onsets, not the earliest ones", () => {
+    // 8 onsets inside one 1 s window, cap 7. The two highest confidences are
+    // LAST in time, so an earliest-order selection would drop them and keep the
+    // weak ones — the two orders disagree, so this row fails on the old behaviour.
+    const mixed: Onset[] = [
+      { tMs: 0, confidence: 0.01 },
+      { tMs: 100, confidence: 0.02 },
+      { tMs: 200, confidence: 0.03 },
+      { tMs: 300, confidence: 0.04 },
+      { tMs: 400, confidence: 0.05 },
+      { tMs: 500, confidence: 0.06 },
+      { tMs: 600, confidence: 0.99 },
+      { tMs: 700, confidence: 0.95 },
+    ];
+    const kept = selectDensity(mixed, 7);
+    expect(kept).toHaveLength(7);
+    const keptTimes = kept.map((o) => o.tMs);
+    expect(keptTimes).toContain(600); // the 0.99-confidence onset survives
+    expect(keptTimes).toContain(700); // the 0.95-confidence onset survives
+    // ...and the WEAKEST onset (0.01) is the one dropped — an earliest-order
+    // selection would have kept it and dropped 700 instead.
+    expect(keptTimes).not.toContain(0);
+    for (const o of kept) {
+      const inWindow = kept.filter((k) => k.tMs >= o.tMs && k.tMs < o.tMs + 1000).length;
+      expect(inWindow).toBeLessThanOrEqual(7);
+    }
+  });
+
   it("prefers the higher-confidence onsets when a window is over budget", () => {
     const onsets: Onset[] = [
       ...Array.from({ length: 7 }, (_, i) => ({ tMs: i * 40, confidence: 0.9 })),
@@ -141,6 +169,24 @@ describe("assignLanes — jack cap, chord cap (Q27), non-adjacent chord lanes", 
       for (const other of list) expect(h.t >= other.end || other.t >= h.t + h.d!).toBe(true);
       list.push({ t: h.t, end: h.t + h.d! });
       byLane.set(h.lane, list);
+    }
+  });
+
+  it("never emits a TAP inside an active hold on the same lane", () => {
+    // Shipped defaults (holdProbability 0.15, holdDurationMs 300) reach this
+    // state: the old code tracked only hold END times, so a later tap on a lane
+    // still inside a hold was emitted (a note the player cannot hit).
+    for (const seed of [79, 48, 7, 101, 2024]) {
+      const notes = assignLanes(onsets, mulberry32(seed), { chordProbability: 0.2 });
+      const holds = notes.filter((n) => n.type === "hold");
+      expect(holds.length).toBeGreaterThan(0); // the row is not vacuous
+      for (const h of holds) {
+        const end = h.t + h.d!;
+        for (const n of notes) {
+          if (n.type !== "tap" || n.lane !== h.lane) continue;
+          expect(n.t < h.t || n.t >= end, `tap at ${n.t} on lane ${n.lane} inside hold ${h.t}..${end}`).toBe(true);
+        }
+      }
     }
   });
 });

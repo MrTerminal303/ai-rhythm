@@ -92,12 +92,33 @@ export interface Onset {
   confidence: number;
 }
 
+/**
+ * Adapter instrumentation (tests only). Reports the ADAPTER's own view of the
+ * chunk stream — the fake Worker port cannot see what the adapter retains.
+ */
+export interface GenerateProbe {
+  /** The adapter's outstanding-chunk count changed (0 or 1 — never more). */
+  onPosted?: (outstanding: number) => void;
+  /** The adapter released its held chunk (settle: cancel / error / done). */
+  onReleased?: () => void;
+  /**
+   * The adapter's streaming loop EXITED. Without the ack-waiter drain the loop
+   * stays parked at the gate forever (the suspended `for await` never resumes),
+   * so this never fires on a cancel that lands mid-stream.
+   */
+  onStreamEnd?: () => void;
+}
+
 export interface GenerateOptions {
   audioHash: string;
   targetNps?: number;
   density?: number;
   onProgress?: (p: GenerateProgress) => void;
   signal?: AbortSignal;
+  /** Q10 budget override (ms). Defaults to `FLUX_GENERATION_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Test-only instrumentation of the adapter's own chunk accounting. */
+  probe?: GenerateProbe;
 }
 
 /** The resolved option record sent to the Worker (`seed` = laneSeed). */
@@ -119,7 +140,7 @@ export interface GenerateProgress {
 export type FluxV1OutMessage =
   | { type: "generate-progress"; startFrame: number; processedFrames: number }
   | { type: "generate-done"; candidate: BeatmapCandidate; elapsedMs: number }
-  | { type: "generate-error"; code: FluxGenerateErrorCode; message?: string };
+  | { type: "generate-error"; code: FluxWorkerErrorCode; message?: string };
 
 /**
  * Main → Worker (frozen Round-11 table).
@@ -141,7 +162,14 @@ export type FluxV1InMessage =
     }
   | { type: "generate-cancel"; requestId: string };
 
-export type FluxGenerateErrorCode = "cancelled" | "internal" | "validation" | "timeout";
+/**
+ * The frozen Round-11 WIRE error codes (worker → main). `timeout` is NOT a wire
+ * code — it is produced adapter-side by the Q10 budget (see `FluxGenerateErrorCode`).
+ */
+export type FluxWorkerErrorCode = "cancelled" | "internal" | "validation";
+
+/** Every code a `FluxGenerateError` can carry — the wire set plus adapter-side `timeout`. */
+export type FluxGenerateErrorCode = FluxWorkerErrorCode | "timeout";
 
 /** Structured generator failure — the adapter rejects with THIS, never a bare Error. */
 export class FluxGenerateError extends Error {
@@ -161,13 +189,47 @@ export interface FluxWorkerPort {
   terminate?(): void;
 }
 
+/**
+ * Reject a malformed chunk BEFORE any down-mix (T24 R16, mirrored into the
+ * flux-v1 Worker): `channelCount` must match `channels.length`, and every
+ * channel must carry the SAME length. `toMono` reads `right[i]` up to
+ * `first.length`; a short channel yields `undefined` → NaN, which `chunkFrame`
+ * silently turns into 0 — plausibly shaped but wrong flux, with no error.
+ */
+export function validateFluxChannels(channels: Float32Array[], channelCount: number): void {
+  if (channelCount !== channels.length) {
+    throw new Error(`flux-v1 worker: channelCount ${channelCount} != channels.length ${channels.length}`);
+  }
+  const first = channels[0]?.length ?? 0;
+  for (let ch = 0; ch < channels.length; ch++) {
+    if (channels[ch]!.length !== first) {
+      throw new Error(`flux-v1 worker: channel ${ch} length ${channels[ch]!.length} != channel 0 length ${first}`);
+    }
+  }
+}
+
 // ------------------------------------------------------------------ onsets
 /**
- * Normalize an envelope exactly like `librosa.onset.onset_detect` (and
- * `airhythm/baseline.py:normalize_envelope`): `x = x − min(x)`;
- * `x = x / (max(x) + tiny)`, with `tiny = np.finfo(float32).tiny`. NOTE: the
- * max is the max of the SHIFTED array (`max − min`), exactly as the Python
- * reference — so the maximum maps just under 1 and the minimum maps to 0.
+ * Normalize an envelope to `[0, 1)`:
+ *
+ *   `out[i] = (x[i] − min(x)) / (range + ε)`, `range = max(x) − min(x)`
+ *
+ * The minimum maps to exactly 0 and the maximum maps to just under 1 (never
+ * exactly 1). `ε` is RELATIVE — `range * (1 + Number.EPSILON)` — because the
+ * `librosa`/Python formulation adds an ABSOLUTE `tiny` (`np.finfo(float32).tiny`
+ * ≈ 1.18e-38) to the max; in float64 such an addend is far below the ULP of a
+ * normal range and vanishes, so the peak would land on exactly 1.0. Scaling the
+ * range by one epsilon instead keeps the peak strictly below 1 while leaving
+ * every other value unchanged to within one ULP.
+ *
+ * This is the same normalization `airhythm/baseline.py:normalize_envelope`
+ * performs, to the last ULP: the Python side divides by a float32 `max + tiny`
+ * and so can yield exactly 1.0 for the peak, while this side yields
+ * `1 / (1 + Number.EPSILON)` ≈ 0.9999999999999997.
+ *
+ * The degenerate all-equal envelope (`range === 0`) divides by `ENVELOPE_TINY`
+ * so the result is 0 rather than NaN.
+ *
  * Returns a Float64Array (JS numbers — all subsequent math is float64).
  */
 export function normalizeEnvelope(x: Float32Array | Float64Array): Float64Array {
@@ -433,14 +495,31 @@ export async function generateWithPort(
   return new Promise<BeatmapCandidate>((resolve, reject) => {
     let settled = false;
     let acksSeen = 0;
+    let posted = 0;
     const ackWaiters: Array<() => void> = [];
     let abortHandler: (() => void) | null = null;
     let deadline: ReturnType<typeof setTimeout> | null = null;
+
+    /** The ADAPTER's own outstanding count (posted − acked). Never exceeds 1. */
+    const outstanding = (): number => posted - acksSeen;
 
     const cleanup = (): void => {
       off();
       if (deadline !== null) clearTimeout(deadline);
       if (abortHandler !== null) opts.signal?.removeEventListener("abort", abortHandler);
+      // Drain every pending ack waiter: the sender may be parked at the ack gate
+      // (awaiting an ack that will never come). Without this the suspended
+      // `for await` frame never resumes, so the un-transferred next chunk is
+      // retained and the held chunk is never released (contract 3).
+      const waiters = ackWaiters.splice(0, ackWaiters.length);
+      for (const release of waiters) release();
+      // The held chunk (posted, never acked) is dropped here: the adapter keeps
+      // no pending chunk buffers after settle.
+      if (outstanding() > 0) {
+        posted = acksSeen;
+        opts.probe?.onReleased?.();
+        opts.probe?.onPosted?.(0);
+      }
       port.terminate?.();
     };
 
@@ -453,8 +532,14 @@ export async function generateWithPort(
 
     const cancel = (code: FluxGenerateErrorCode, message?: string): void => {
       if (settled) return;
+      // Claim the settlement BEFORE posting: the Worker's `generate-error` reply
+      // can arrive synchronously (a fake port) and must NOT preempt the adapter's
+      // own reason — e.g. the Q10 budget's `timeout` must not be reported as the
+      // worker's `cancelled`.
+      settled = true;
       port.post({ type: "generate-cancel", requestId });
-      finish(() => reject(new FluxGenerateError(code, message)));
+      cleanup();
+      reject(new FluxGenerateError(code, message));
     };
 
     const off = port.onMessage((msg) => {
@@ -482,7 +567,7 @@ export async function generateWithPort(
           return;
         }
         case "generate-error": {
-          const m = msg as { code: FluxGenerateErrorCode; message?: string };
+          const m = msg as { code: FluxWorkerErrorCode; message?: string };
           finish(() => reject(new FluxGenerateError(m.code, m.message)));
           return;
         }
@@ -493,7 +578,8 @@ export async function generateWithPort(
 
     // Q10: over the budget → Retry/Cancel in the UI (structured `timeout`, never a
     // silent generator switch — flux-v1 is the only generator and stays the one used).
-    deadline = setTimeout(() => cancel("timeout", `generation exceeded ${FLUX_GENERATION_TIMEOUT_MS} ms`), FLUX_GENERATION_TIMEOUT_MS);
+    const timeoutMs = opts.timeoutMs ?? FLUX_GENERATION_TIMEOUT_MS;
+    deadline = setTimeout(() => cancel("timeout", `generation exceeded ${timeoutMs} ms`), timeoutMs);
     if (opts.signal) {
       abortHandler = () => cancel("cancelled", "aborted");
       if (opts.signal.aborted) abortHandler();
@@ -513,7 +599,6 @@ export async function generateWithPort(
     void (async () => {
       try {
         let cursor = 0;
-        let posted = 0;
         // Ack-gated stream mirroring `streamChunks`: at most ONE chunk outstanding.
         // (It is inlined rather than reused because the Round-11 cancel contract needs
         // an abort-aware gate; the T24 sender is deliberately left unchanged.)
@@ -525,12 +610,14 @@ export async function generateWithPort(
           if (posted > 0) {
             const target = posted; // wait for the ack of the previously posted chunk
             await new Promise<void>((release) => {
+              if (settled) return release();
               if (acksSeen >= target) return release();
               ackWaiters.push(release);
             });
           }
           if (settled) break;
           posted++;
+          opts.probe?.onPosted?.(outstanding());
           cursor += chunk.channels[0]?.length ?? 0;
           port.post(
             {
@@ -543,12 +630,20 @@ export async function generateWithPort(
             chunk.channels.map((c) => c.buffer),
           );
         }
-        if (settled) return; // cancelled mid-stream: the held chunk is dropped here (contract 3)
+        // Cancelled mid-stream: the held chunk was already dropped by `cleanup`
+        // (the adapter holds no pending chunk buffers after settle — contract 3),
+        // and no `flush` is posted to a worker that is being torn down.
+        if (settled) return;
         port.post({ type: "flush" });
       } catch (err) {
         finish(() =>
           reject(new FluxGenerateError("internal", err instanceof Error ? err.message : String(err))),
         );
+      } finally {
+        // The streaming loop EXITED. This only fires when the parked sender was
+        // actually unwound — without the ack-waiter drain the loop stays suspended
+        // at the gate forever and this never runs.
+        opts.probe?.onStreamEnd?.();
       }
     })();
   });
@@ -568,19 +663,30 @@ export function createFluxV1WorkerPort(): FluxWorkerPort {
   };
 }
 
+/**
+ * Build a `ChartGenerator` over an injected Worker port factory — the seam the
+ * unit test uses to drive the PUBLIC `ChartGenerator` surface (production uses
+ * `createFluxV1WorkerPort`).
+ */
+export function createFluxV1Generator(
+  createPort: () => FluxWorkerPort = createFluxV1WorkerPort,
+): ChartGenerator {
+  return {
+    id: "flux-v1",
+    generate(audio, opts) {
+      return generateWithPort(
+        audio,
+        {
+          ...opts,
+          // R17: `ChartGenerator.onProgress` is `(p: number)` (percent); the internal
+          // `GenerateOptions.onProgress` is `(p: GenerateProgress)`. Map at this boundary.
+          onProgress: opts.onProgress ? (p) => opts.onProgress!(p.pct) : undefined,
+        },
+        createPort(),
+      );
+    },
+  };
+}
+
 /** The frozen `ChartGenerator`. The Worker owns the heavy computation. */
-export const fluxV1: ChartGenerator = {
-  id: "flux-v1",
-  generate(audio, opts) {
-    return generateWithPort(
-      audio,
-      {
-        ...opts,
-        // R17: `ChartGenerator.onProgress` is `(p: number)` (percent); the internal
-        // `GenerateOptions.onProgress` is `(p: GenerateProgress)`. Map at this boundary.
-        onProgress: opts.onProgress ? (p) => opts.onProgress!(p.pct) : undefined,
-      },
-      createFluxV1WorkerPort(),
-    );
-  },
-};
+export const fluxV1: ChartGenerator = createFluxV1Generator();

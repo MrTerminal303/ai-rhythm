@@ -14,13 +14,72 @@ jobs:
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
           # Named-table query required: GET /rest/v1/ is OpenAPI introspection and does
-          # NOT reset the pause timer (spec §3 A14). The key value is never echoed
-          # (Supabase no-logging warning) — only the HTTP status is printed.
+          # NOT reset the pause timer (spec §3 A14). Neither the key nor the URL is echoed
+          # (Supabase no-logging warning).
+          #
+          # A14 fix r2 (2026-10-21): the previous run returned a 404 whose body was the
+          # Supabase DASHBOARD 404 page (frontend-assets.supabase.com/studio, __NEXT_DATA__
+          # echoing our own ?select/&limit). That means SUPABASE_PROJECT_URL pointed at
+          # supabase.com — the studio web app — not at the project's PostgREST host, so no
+          # request ever reached the database. The old every-3-days job "succeeded" the same
+          # way: it pinged a website. The URL shape is therefore validated BEFORE the request,
+          # and the response is only treated as PostgREST output when it is JSON.
+          #
+          # Required shape: https://<project-ref>.supabase.co
+          #   NOT https://supabase.com/...            (dashboard — returns an HTML 404)
+          #   NOT .../dashboard/project/<ref>         (same)
+          #   no trailing slash, no /rest/v1 suffix
+          if [ -z "${SUPABASE_URL}" ]; then
+            echo "::error::SUPABASE_PROJECT_URL secret is empty"; exit 1
+          fi
+          host="${SUPABASE_URL#https://}"; host="${host#http://}"; host="${host%%/*}"
+          echo "host=${host}"
+          case "${host}" in
+            *.supabase.co) : ;;
+            supabase.com|*.supabase.com|"")
+              echo "::error::SUPABASE_PROJECT_URL must be https://<project-ref>.supabase.co" \
+                           "(the API host). Value points at '${host}', which is the dashboard" \
+                           "web app — it returns an HTML error page and never reaches the DB."
+              exit 1;;
+            *)
+              echo "::warning::host '${host}' is not *.supabase.co — continuing, but A14 only" \
+                              "passes if this is a genuinely self-hosted Supabase API.";;
+          esac
+          url="${SUPABASE_URL%/}"
           code=$(curl -sS -o /tmp/keepalive-body -w "%{http_code}" \
             -H "apikey: ${SUPABASE_PUBLISHABLE_KEY}" \
-            "${SUPABASE_URL}/rest/v1/keepalive?select=*&limit=1")
+            "${url}/rest/v1/keepalive?select=*&limit=1")
           echo "keepalive status=${code}"
           case "${code}" in
-            2??) echo "OK";;
-            *)   echo "keepalive FAILED with status ${code}"; exit 1;;
+            2??)
+              # A 200 alone is not success: the dashboard can 200 a fallback page. Require
+              # PostgREST JSON so a wrong host cannot masquerade as a pass.
+              if head -c 1 /tmp/keepalive-body | grep -qE '^[\[{]'; then
+                echo "OK"
+              else
+                echo "::error::HTTP ${code} but the body is not JSON — not a PostgREST" \
+                             "response. Check that SUPABASE_PROJECT_URL is the API host."
+                head -c 300 /tmp/keepalive-body; echo
+                exit 1
+              fi;;
+            *)
+              echo "keepalive FAILED with status ${code}"
+              # PostgREST errors are small JSON objects carrying the cause. Anything else
+              # (HTML) means the request never reached PostgREST — say so instead of
+              # dumping a page into the log.
+              if head -c 1 /tmp/keepalive-body | grep -qE '^[\[{]'; then
+                echo "PostgREST error body:"; head -c 500 /tmp/keepalive-body; echo
+              else
+                echo "::error::non-JSON body — the request did not reach PostgREST" \
+                             "(host '${host}'). This is a URL problem, not a table problem."
+              fi
+              case "${code}" in
+                404) echo "HINT 404 (API host): table absent from PostgREST's schema cache." \
+                          "Apply web_app/supabase/migrations/20261012_keepalive.sql, then run" \
+                          "in the SQL editor:  notify pgrst, 'reload schema';";;
+                401) echo "HINT 401: the publishable key is wrong/missing, or is not the" \
+                          "SUPABASE_PUBLISHABLE_KEY secret this workflow reads.";;
+                403) echo "HINT 403: RLS/grant denies anon SELECT on public.keepalive.";;
+              esac
+              exit 1;;
           esac

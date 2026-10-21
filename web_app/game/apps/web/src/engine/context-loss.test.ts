@@ -67,10 +67,27 @@ function makeFakeCanvas(gl: WebGL2RenderingContext, handlers: Handlers): HTMLCan
   } as unknown as HTMLCanvasElement;
 }
 
+// An atlas.json fetch that always fails (HTTP 500) — the shortest path to a COMMITTED
+// non-null atlas verdict ("fallback"), the same seam atlas-fallback.test.ts drives. The stub
+// honours `init.signal` so the renderer's 5 s AbortController bound can cancel it.
+function failingAtlasFetch(): typeof fetch {
+  return vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
+    if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+    return { ok: false, status: 500 } as Response;
+  }) as unknown as typeof fetch;
+}
+
 describe("A7 renderer context-loss boundary", () => {
   beforeEach(() => {
     vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    // window stub: devicePixelRatio for resize(), plus setTimeout/clearTimeout for
+    // loadAtlas()'s 5 s AbortController bound (the renderer calls them on `window`).
+    vi.stubGlobal("window", {
+      devicePixelRatio: 1,
+      setTimeout: ((cb: Parameters<typeof setTimeout>[0], ms?: Parameters<typeof setTimeout>[1]) =>
+        setTimeout(cb, ms)) as unknown as typeof setTimeout,
+      clearTimeout: ((id?: unknown) => clearTimeout(id as Parameters<typeof clearTimeout>[0])) as unknown as typeof clearTimeout,
+    });
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -138,18 +155,27 @@ describe("A7 renderer context-loss boundary", () => {
     renderer.dispose();
   });
 
-  it("contextrestored: the atlas verdict is cleared (atlasState reports null, not the stale one)", () => {
+  it("contextrestored: the atlas verdict is cleared (atlasState reports null, not the stale one)", async () => {
     // F3 (final review): initGL() must clear _atlasState alongside the other atlas resets —
     // otherwise the seam reports "loaded" through the whole re-fetch window while the
     // renderer actually draws the code-drawn fallback.
+    //
+    // The verdict must be PRIMED to a real, COMMITTED non-null value first: the previous
+    // version of this row asserted null before AND after the restore, so deleting
+    // initGL()'s `this._atlasState = null` left it GREEN (it could not fail).
     const handlers: Handlers = {};
     const gl = makeFakeGL(vi.fn(() => ({})));
+    vi.stubGlobal("fetch", failingAtlasFetch());
     const renderer = new WebGLRenderer(makeFakeCanvas(gl, handlers), chart, {});
     expect(renderer.atlasState).toBeNull(); // undecided before initAtlas settles
 
+    // PRIME: an HTTP-500 atlas.json drives the renderer to the permanent "fallback" verdict.
+    await expect(renderer.initAtlas()).resolves.toBe(false);
+    expect(renderer.atlasState).toBe("fallback"); // the verdict the restore must clear
+
     handlers["webglcontextlost"]?.({ preventDefault: vi.fn() });
     handlers["webglcontextrestored"]?.({ preventDefault: () => undefined });
-    expect(renderer.atlasState).toBeNull();
+    expect(renderer.atlasState).toBeNull(); // the stale "fallback" verdict did NOT survive
     renderer.dispose();
   });
 });

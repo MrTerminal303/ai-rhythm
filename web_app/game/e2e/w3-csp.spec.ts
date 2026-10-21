@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+// The app's `isSupabaseConfigured()` (apps/web/src/auth/auth.ts:99-101) requires BOTH the URL
+// AND the publishable key to be non-empty (each trimmed). The spec's precondition must mirror
+// that EXACTLY: a shell that exports only the URL still builds a GUEST-ONLY app, so the
+// unconfigured notice IS expected there.
+const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim();
+const SUPABASE_KEY = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "").trim();
+const SUPABASE_CONFIGURED = SUPABASE_URL !== "" && SUPABASE_KEY !== "";
+
 test("production CSP: play, import, and Worker/WASM probe run with zero violations", async ({ page }) => {
   // Violations aggregate in NODE across navigations (review P0: window.__cspViolations is
   // per-document — a goto wipes it; exposeFunction survives every navigation).
@@ -53,22 +61,23 @@ test("production CSP: play, import, and Worker/WASM probe run with zero violatio
   // W3 T23 (B6): the /auth journey renders under the production CSP (the client is
   // constructed lazily and this build has no Supabase env → guest-only, no network).
   //
-  // PRECONDITION (final review F15): `auth-unconfigured` renders ONLY in a build with no
-  // NEXT_PUBLIC_SUPABASE_URL. The build inlines that env (Next inlines NEXT_PUBLIC_* at
-  // build time, and the webServer inherits this runner's process env), so an operator shell
-  // that exports a project URL would make the app render the CONFIGURED form and this
-  // assertion would fail for a reason that has nothing to do with the CSP. The assertion is
-  // therefore gated on the env being genuinely absent — the CSP assertions above and below are
-  // NOT gated and always run.
+  // PRECONDITION (final review F15): `auth-unconfigured` renders ONLY in a build where
+  // Supabase is NOT configured — and the app's own `isSupabaseConfigured()`
+  // (apps/web/src/auth/auth.ts:99-101) requires the URL **AND** the publishable key to be
+  // non-empty. The build inlines those envs (Next inlines NEXT_PUBLIC_* at build time, and
+  // the webServer inherits this runner's process env), so an operator shell that exports
+  // only the URL still builds a GUEST-ONLY app and the unconfigured notice IS expected.
+  // The gate below mirrors that AND-condition exactly. The CSP assertions above and below
+  // are NOT gated and always run.
   await page.goto("/");
   await page.getByTestId("landing-account").click();
   await expect(page.getByTestId("auth-email")).toBeVisible();
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+  if (!SUPABASE_CONFIGURED) {
     await expect(page.getByTestId("auth-unconfigured")).toBeVisible(); // no env in the e2e build
   } else {
-    // The operator shell exports a Supabase project → this build is CONFIGURED, so the
-    // unconfigured notice is (correctly) absent. Not a CSP failure.
-    console.log("[w3-csp] NEXT_PUBLIC_SUPABASE_URL is set — skipping the guest-only auth-unconfigured assertion");
+    // The operator shell exports a Supabase project (URL AND key) → this build is CONFIGURED,
+    // so the unconfigured notice is (correctly) absent. Not a CSP failure.
+    console.log("[w3-csp] Supabase is configured (URL AND key) — skipping the guest-only auth-unconfigured assertion");
   }
   await expect(page.getByTestId("settings-sync-now")).toHaveCount(0); // this is /auth, not /settings
   await page.goto("/settings");

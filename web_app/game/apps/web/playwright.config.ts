@@ -54,8 +54,10 @@ export default defineConfig({
         // (median 5.4 ms, p95Abs 21.6 ms). Ignored/cheaper on a real GPU;
         // --enable-unsafe-swiftshader is required because modern Chromium otherwise
         // refuses the software WebGL path. The args are Chromium switches — they must NOT
-        // reach firefox/webkit, where --enable-unsafe-swiftshader changes the GL backend
-        // (and can disable WebGL entirely under WebKit), so they are scoped here, not in
+        // reach firefox/webkit: those engines have their own GL backends and Chromium's
+        // switches are meaningless to them. (If a WebKit GL backend were to respond badly
+        // to them, that is a REASON not to send them there, not a documented WebKit
+        // outcome — no such outcome is recorded in-tree.) They are scoped here, not in
         // the top-level `use` block.
         launchOptions: { args: ["--enable-gpu", "--use-gl=angle", "--enable-unsafe-swiftshader"] },
       },

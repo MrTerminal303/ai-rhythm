@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build --webpack",
+    "prebuild": "node scripts/gen-audio-fixture.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

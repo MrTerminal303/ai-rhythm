@@ -46,7 +46,7 @@ listed at the end of the file.
 6. **T23** — the RLS/grant contract has ZERO executed evidence (`rls.test.ts` skips with a NOT-a-pass banner, 10 unexecuted cases; no Supabase project here).
 7. **T25** — `models/spike/baseline_flux.py` written but NOT RUN against the fixture (R13); `baseline_onsets.json` NOT generated, so the parity row skips with a banner. Operator must generate it with the D17-pinned env.
 8. **C9 (4K)** — measured 7.5 fps at 3840×2160 on GPU-less hardware: C9 is unsatisfiable here. Operator has NOT authorised a spec amendment.
-9. **T26 journey 4 (auth)** — skips with printed reason when `NEXT_PUBLIC_SUPABASE_URL` is unset.
+9. **T26 journey 4 (auth)** — skips with a printed reason unless `SUPABASE_TEST === "1"` **and** both `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are set (`e2e/w3-journey-auth.spec.ts:31`). Naming only the URL understated the gate: the explicit `SUPABASE_TEST=1` opt-in was added by ruling R28 so an ordinary configured shell cannot trigger a SIGNUP with the fixed test password.
 
 ---
 

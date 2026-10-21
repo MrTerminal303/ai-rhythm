@@ -200,6 +200,12 @@ export class WebGLRenderer implements Renderer {
     this.atlasFrames = null;
     this.atlasInitStarted = false;
     this.atlasInitPromise = null;
+    // F3 (final review): also clear the permanent-outcome seam. A context restore is a fresh
+    // implementation — a prior "loaded"/"fallback" verdict does not survive it. Clearing it
+    // here (rather than only in the initAtlas settle path) keeps the atlasState getter in
+    // agreement with the real texture state: it reports null (undecided) until initAtlas()
+    // settles again after the restore.
+    this._atlasState = null;
   }
 
   /**
@@ -223,6 +229,12 @@ export class WebGLRenderer implements Renderer {
     this.canvas.addEventListener("webglcontextrestored", (() => {
       this.lost = false;
       this.initGL();
+      // F3 (final review): initGL rebuilds programs/buffers/attribs but does not re-set
+      // u_res or gl.viewport — those live only in resize(). Without this, the fresh
+      // programs default to u_res=(0,0) and every vertex clips to +-Inf: a BLACK playfield
+      // after a context restore. Re-do the resize here so the restored context draws
+      // correctly immediately.
+      this.resize();
       this.opts.onContextRestored?.();
     }) as EventListener);
   }

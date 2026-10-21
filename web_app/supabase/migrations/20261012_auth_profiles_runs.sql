@@ -13,8 +13,20 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 alter table public.profiles enable row level security;
-create policy "profiles: owner all" on public.profiles
-  for all using (auth.uid() = id) with check (auth.uid() = id);
+-- F7 (final review): idempotent policy creation — a re-run of a half-applied env must not
+-- abort at `create policy` (42710 duplicate_object) while the surrounding `create table
+-- if not exists` happily no-ops.
+do $f7$
+  begin
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = 'profiles' and policyname = 'profiles: owner all'
+    ) then
+      create policy "profiles: owner all" on public.profiles
+        for all using (auth.uid() = id) with check (auth.uid() = id);
+    end if;
+  end;
+$f7$;
 
 -- runs: personal run history — score sync authorized HERE, never via profiles (spec §4 B6)
 create table if not exists public.runs (
@@ -32,8 +44,23 @@ create table if not exists public.runs (
   unique (user_id, run_id)                  -- duplicate upload with the same runId → conflict → no-op (idempotent)
 );
 alter table public.runs enable row level security;
-create policy "runs: read own" on public.runs for select using (auth.uid() = user_id);
-create policy "runs: insert own" on public.runs for insert with check (auth.uid() = user_id);
+-- F7 (final review): idempotent, same reason as the profiles policy above.
+do $f7$
+  begin
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = 'runs' and policyname = 'runs: read own'
+    ) then
+      create policy "runs: read own" on public.runs for select using (auth.uid() = user_id);
+    end if;
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = 'runs' and policyname = 'runs: insert own'
+    ) then
+      create policy "runs: insert own" on public.runs for insert with check (auth.uid() = user_id);
+    end if;
+  end;
+$f7$;
 -- no update/delete policies in W3 — rows are append-only personal history
 
 -- Explicit privileges (review P0): RLS policies are NOT table privileges; new Supabase projects

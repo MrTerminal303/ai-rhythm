@@ -14,7 +14,7 @@
     "encode:songs": "node scripts/encode-songs.mjs",
     "copy:ort": "node scripts/copy-ort-wasm.mjs",
     "e2e": "playwright test",
-    "e2e:timing": "playwright test --project=chromium --workers=1 w3-timing w3-clock-invariant",
+    "e2e:timing": "playwright test --project=chromium --workers=1 w3-timing.spec.ts w3-clock-invariant.spec.ts",
     "e2e:fixture-decode": "playwright test --config w3-fixture-decode.config.ts"
   },
   "dependencies": {

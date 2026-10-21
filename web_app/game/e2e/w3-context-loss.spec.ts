@@ -3,11 +3,16 @@
 // score/position. Simulated via the WEBGL_lose_context extension (gl.getExtension +
 // loseContext/restoreContext) — the same event path a real GPU/context loss drives.
 //
-// The brief's "short" hold fixture does not exist in this tree (neither w1 nor benchmark
-// charts contain holds), so the D7 flush-then-freeze assertion is exercised with a LIVE
-// tap judgment on lane 1 (t=1500, note id 1 in w1-chart.json): pressing "f" at t≈1500 hits
-// the tap, adds lane 1 to heldLanesRef; the context loss triggers enterPause("paused")
-// whose flushHeldLanesBeforePause releases that lane BEFORE clock.pause (D7 order).
+// A hold fixture DOES exist (apps/web/public/songs/short.osu carries a 1000 ms hold at
+// t=3000), but it is only reachable through the /import + libraryChartId path — the
+// .osu/.webm pair must be uploaded and stored first, which is a different journey than
+// this spec's. This spec therefore uses the DEFAULT w1 chart and drives the D7
+// flush-then-freeze assertion with a LIVE tap judgment on lane 1 (t=1500, note id 1 in
+// w1-chart.json): pressing "f" at t≈1500 hits the tap, and the key is still HELD when the
+// context is lost, so lane 1 is in heldLanesRef; the context loss triggers
+// enterPause("paused") whose flushHeldLanesBeforePause releases that lane BEFORE
+// clock.pause (D7 order). A held TAP exercises exactly the same release path as a held
+// HOLD would — the lane set, not the note type, is what D7 flushes.
 import { expect, test } from "@playwright/test";
 
 type W2 = {

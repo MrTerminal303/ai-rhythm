@@ -46,6 +46,11 @@ test("A6 perf report: structure (+ certification: NATURAL completion + p95 gate)
     tail: { over16_7Count: number; over16_7Share: number; p99FrameIntervalMs: number; maxFrameIntervalMs: number };
     samples: { frames: number }; pass: boolean; completion: "natural" | "forced";
   };
+  // Frame-count floor: the FROZEN protocol (evidence-templates/w3-perf-protocol.md) fixes the CI
+  // structure check at `samples.frames > 5000`. Derivation: the CI force-cap window is 160 s and
+  // the protocol discards the first PERF_WARMUP_MS (5 s) of frames, so ≥155 s of frames are
+  // measured — 5000 frames over that window means the render loop averaged ≥ ~32 fps. It is a
+  // STRUCTURE floor (the loop actually ran), not a performance gate; the p95 gate below is that.
   expect(report.samples.frames).toBeGreaterThan(5000);
   expect(report.tail).toBeDefined();
   expect(report.completion).toBeDefined();

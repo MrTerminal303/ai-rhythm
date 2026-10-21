@@ -41,8 +41,8 @@ export function d21FinalVerdict(input: {
   // negative. Fail closed; never let it reach the eligibility branch.
   if (input.maxAbsErrMs < 0) return "conversion-unverified";
   if (input.maxAbsErrMs > D21_MAX_MAPPING_ERR_MS) return "mapping-error-fail"; // HARD FAIL
-  // observed discrepancy within budget from here on:
-  if (input.total === 0) return "conversion-unverified";
+  // observed discrepancy within budget from here on. `total <= 0` already returned
+  // "conversion-unverified" above, so the rate below is always well-defined.
   const eligible = input.acceptCount / input.total >= D21_ACCEPT_RATE;
   return eligible ? "conversion-validated" : "fallback-mode";
 }

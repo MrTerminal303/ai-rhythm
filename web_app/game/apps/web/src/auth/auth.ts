@@ -37,7 +37,8 @@ export interface AuthSnapshot {
   runSyncError: RunSyncError | null;
 }
 
-/** Winner-first out-of-order guard: an older run's failure must not undo a newer run's notice. */
+/** The failure notice carries the run it belongs to. There is NO `playedAt` ordering guard:
+ *  the notice is keyed to a `runId`, and a DIFFERENT run's success clears it (see `syncRun`). */
 interface StampedError extends RunSyncError {
   playedAt: number;
 }
@@ -285,7 +286,10 @@ async function syncRun(run: RunResult): Promise<void> {
     console.error("[runs] retry failed:", failure);
   }
   // Out of attempts for THIS run. The notice is a real error state, not a console line; it is
-  // keyed to this runId so a later, different completion can never be mistaken for its retry.
+  // keyed to this runId. There is NO playedAt ordering guard: the notice is cleared by a
+  // DIFFERENT run's success (the `runId !== run.runId` branches above), so a later completion
+  // is never treated as this run's retry, and an OLDER run's failure can clear a NEWER run's
+  // notice — the ordering claim D29 used to make is not implemented here.
   setRunSyncError({ runId: run.runId, message: RUN_SYNC_FAILED_MESSAGE, playedAt: run.playedAt });
   console.error("[runs] giving up on run", run.runId);
 }

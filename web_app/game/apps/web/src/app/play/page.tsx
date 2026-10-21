@@ -20,17 +20,22 @@ import { getSetting } from "../../settings/settings.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
 import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
 import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSource } from "../../chart-source.js";
-import { getChart, loadVerifiedAudio, markDamaged } from "../../library/db.js";
+import { loadVerifiedAudio, loadVerifiedChart } from "../../library/db.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
 import { buildRunResult, lastRunStore } from "../../ui/last-run.js";
 import { getAuthSnapshot, getServerAuthSnapshot, isAuthenticated, subscribeAuth } from "../../auth/auth.js";
 import { Hud, JUDGE_LABEL } from "../../ui/hud.js";
+import { computeProbeEntry, type InputProbeEntry } from "./input-probe.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
 
-// W3 T16 (A6) protocol window: the run's first 5 s are discarded before ANY interval statistic is
-// recorded, so the gate and the tail cover the post-warm-up window only (decode / shader-compile
-// transients never enter the reported numbers) — evidence-templates/w3-perf-protocol.md.
+// W3 T16 (A6) protocol window: the first 5 s of the frame loop are discarded before ANY interval
+// statistic is recorded, so the gate and the tail cover the post-warm-up window only. The window
+// opens at the rAF loop start, which is ONE COUNTDOWN after the start click — the 3-2-1 countdown
+// runs BEFORE clock.start(0), so the countdown itself is never measured and the excluded 5 s are
+// the song's own first 5 s. The exclusion gates FRAME INTERVALS only: the render/update duration
+// percentiles still include the first frames (the shader-compile transient) — see the T16 note in
+// deferred-items.md. evidence-templates/w3-perf-protocol.md.
 const PERF_WARMUP_MS = 5000;
 
 // W3 T15 (A5): ?fixtureAudio is a dev/E2E-only source (chart-source.ts holds the documented
@@ -43,46 +48,13 @@ const FIXTURE_PARAMS_ENABLED = process.env.NODE_ENV === "development" || process
 const DEBUG_SURFACE_ENABLED =
   process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
 
-// W3 T2 (D21, round 10 P1-1 regression target): pure extraction of inputProbeRecord's
-// calculation — no React state, no side effects — so the recorder is unit-testable
-// without a running AudioContext. Kept module-private: the play page is a Next client
-// component and its generated .next/types OmitWithTag constraint forbids extra named
-// exports (TS2344); the e2e reads the buffer through __w2.inputErrorLog() instead.
-interface InputProbeEntry {
-  e: number; handlerNow: number; ageMs: number; dispatchDelayMs: number;
-  errMs: number; source: string; refUncertaintyMs: number;
-  refPerfBefore: number; refPerfAfter: number; refCtxNow0: number;
-}
-
-const computeProbeEntry = (
-  e: KeyboardEvent,
-  cached: ClockPair,
-  handlerNow: number,
-  ref: { perfBefore: number; perfAfter: number; ctxNow0: number },
-): InputProbeEntry => {
-  const cachedCtxAtE = cached.contextTimeSeconds + (e.timeStamp - cached.performanceTimeMs) / 1000;
-  // The reference anchor is the MIDPOINT of the perfBefore/perfAfter bracket — the ctx
-  // read brackets the handler entry, not post-processing time (round 10 P1-1).
-  const refPerfMid = (ref.perfBefore + ref.perfAfter) / 2;
-  const refCtxAtE = ref.ctxNow0 + (e.timeStamp - refPerfMid) / 1000;
-  // Bounded reference uncertainty (round 11 P2-19 + round 12 P2-6): (a) clock-advance
-  // uncertainty = bracket width; (b) render-quantum floor ≈ 2.8 ms (48 kHz quantum 2.7,
-  // 44.1 kHz 2.9 — repeated reads of currentTime within one quantum return the same value).
-  // Do NOT add |e.timeStamp − refPerfMid| — that anchoring offset the formula accounts for.
-  const refUncertaintyMs = Math.max(ref.perfAfter - ref.perfBefore, 2.8);
-  return {
-    e: e.timeStamp,
-    handlerNow,
-    ageMs: handlerNow - cached.sampledAt,
-    dispatchDelayMs: handlerNow - e.timeStamp,
-    errMs: Math.abs(cachedCtxAtE - refCtxAtE) * 1000,
-    source: cached.source,
-    refUncertaintyMs,
-    refPerfBefore: ref.perfBefore,
-    refPerfAfter: ref.perfAfter,
-    refCtxNow0: ref.ctxNow0,
-  };
-};
+// W3 T2 (D21, round 10 P1-1 regression target): the pure calculation behind
+// inputProbeRecord lives in ./input-probe.ts — no React state, no side effects — so the
+// recorder is unit-testable without a running AudioContext AND the unit test imports the
+// REAL implementation (a mirrored copy would stay green when the page regresses). The
+// page itself cannot export it: it is a Next client component and its generated
+// .next/types OmitWithTag constraint forbids extra named exports (TS2344); the e2e reads
+// the buffer through __w2.inputErrorLog() instead.
 
 // Play phases: driven by the A12 machine (play-phase.ts) — all movement goes through
 // applyPhase → machine.to; recovering (W3 T7 / A11) is a first-class machine state.
@@ -133,6 +105,11 @@ declare global {
       // Throws before startGame built the graph (no analyser yet) — a fabricated 0 would be
       // indistinguishable from a genuinely silent graph.
       analyserRms(): number;
+      // W3 T13 (A9), F11 (final review): the atlas outcome the renderer actually committed.
+      // The affordances spec could only see the <canvas> (present in EVERY run, atlas or not),
+      // so it could not tell "fallback committed" from "atlas loaded fine". This seam makes
+      // the state observable; it is E2E-gated exactly like the rest of __w2.
+      atlas(): "loaded" | "fallback" | null;
     };
   }
 }
@@ -335,12 +312,12 @@ export default function PlayPage() {
       return; // no renderer / __w2 / listeners on the unsafe branch
     }
     audioSourceRef.current = audioSource;
-    // W3 T19 (B2): the ?libraryChartId branch (highest chart-source precedence per T15's
-    // documented order) resolves the stored chartJson + verified audio bytes from the T18
-    // store. It is async, so it wraps the shared mount body (renderer, __w2, listeners,
-    // frame loop) which runs once the source is settled. On missing/corrupt state the
-    // record is marked damaged (review P0) and the inline error renders — no renderer,
-    // __w2, or listeners attach on that path.
+    // W3 T19 (B2): the ?libraryChartId branch (highest chart-source precedence per the
+    // documented order in chart-source.ts) resolves the stored chartJson + verified audio
+    // bytes from the T18 store. It is async, so it wraps the shared mount body (renderer,
+    // __w2, listeners, frame loop) which runs once the source is settled. On missing/corrupt
+    // state the record is marked damaged (review P0) and the inline error renders — no
+    // renderer, __w2, or listeners attach on that path.
     const libraryChartId = params.get("libraryChartId");
     const runMount = (resolvedLibraryChart: Beatmap | null, libraryAudio: ArrayBuffer | null): void => {
     // W3 T20: the W2 ?import sessionStorage branch is gone — library beats benchmark beats default
@@ -419,6 +396,8 @@ export default function PlayPage() {
           for (const v of buf) sum += v * v;
           return Math.sqrt(sum / buf.length);
         },
+        // F11 (final review): the renderer's committed atlas outcome — see the type comment.
+        atlas: () => rendererRef.current?.atlasState ?? null,
         phase: () => phaseRef.current,
         noteCount: () => chart.notes.length,
         ctxSnapshot: () => {
@@ -533,24 +512,24 @@ export default function PlayPage() {
     // (zero awaits — B6's renderer-readiness ordering is unchanged).
     if (libraryChartId) {
       void (async () => {
-        const rec = await getChart(libraryChartId);
-        const loaded =
-          rec && rec.state !== "damaged" ? await loadVerifiedAudio(libraryChartId) : null;
-        if (!rec || !loaded || !loaded.ok) {
-          await markDamaged(libraryChartId).catch(() => {}); // missing/corrupt → damaged (review P0)
-          setLibraryError(true);
+        // F1 (final review): verify the chart body BEFORE parsing it. loadVerifiedChart
+        // re-hashes chartJson against chartHash and flips the record to damaged on a
+        // mismatch — a tampered-but-parseable chartJson must not reach the renderer.
+        const rec = await loadVerifiedChart(libraryChartId);
+        const loaded = rec.ok ? await loadVerifiedAudio(libraryChartId) : null;
+        if (!rec.ok || !loaded || !loaded.ok) {
+          setLibraryError(true); // missing/corrupt/damaged → inline import-error UI
           return; // no renderer / __w2 / listeners on the error branch
         }
         if (!mountedRef.current) return; // unmounted mid-store-read
         let resolved: Beatmap;
         try {
-          resolved = parseBeatmap(JSON.parse(rec.chartJson));
+          resolved = parseBeatmap(JSON.parse(rec.chart.chartJson));
         } catch (err) {
-          // corrupt chartJson on a record still marked playable → flip it to damaged
-          // (consistent with the audio loadVerifiedAudio ok:false path above) and show
-          // the library inline error.
-          console.error("[play] library chartJson failed to parse:", err);
-          await markDamaged(libraryChartId).catch(() => {});
+          // loadVerifiedChart already re-hashed + JSON.parse'd successfully, so this
+          // catch is belt-and-braces: a parse failure after verification means
+          // parseBeatmap itself threw — flip to damaged and show the library error.
+          console.error("[play] verified chartJson failed to parse:", err);
           setLibraryError(true);
           return;
         }

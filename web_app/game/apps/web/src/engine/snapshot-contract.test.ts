@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { GameEngine } from "./engine.js";
 import { SnapshotStore } from "../ui/snapshot-store.js";
-import type { Renderer } from "./types.js";
+import type { GameSnapshot, Renderer } from "./types.js";
 import { PerformanceClock } from "./clock.js";
 
 const noopRenderer: Renderer = { render() {}, dispose() {} };
@@ -48,18 +48,32 @@ describe("A3 fix 2 — compact snapshot", () => {
   });
 
   it("store subscribers never observe torn state (whole snapshots only)", () => {
+    // Final review F28: the expected values come from the ENGINE (it computes score / combo /
+    // maxCombo / judgementCounts), NOT from hand-written literals the store never computes.
+    // A torn read (score from one emit, combo from another) would break the ordering below.
     const engine = new GameEngine({ chart, clock: new PerformanceClock(), renderer: noopRenderer });
     const store = new SnapshotStore();
-    const observed: { score: number; combo: number }[] = [];
+    const observed: GameSnapshot[] = [];
     store.subscribe(() => {
       const s = store.getSnapshot();
-      if (s) observed.push({ score: s.score, combo: s.combo });
+      if (s) observed.push(s);
     });
-    // correlated fixture: score = combo × 1000 by construction of these emits
-    store.set({ ...engine.snapshot(), score: 0, combo: 0 });
-    store.set({ ...engine.snapshot(), score: 1000, combo: 1 });
-    store.set({ ...engine.snapshot(), score: 2000, combo: 2 });
-    for (const o of observed) expect(o.score).toBe(o.combo * 1000); // pairing never mixes across emits
+    engine.judge(0, 1000); // hits note id 0 (t=1000, lane 0) → combo 1
+    const afterFirstHit = engine.snapshot();
+    store.set(afterFirstHit);
+    engine.judge(1, 2000); // hits note id 1 (t=2000, lane 1) → combo 2
+    const afterSecondHit = engine.snapshot();
+    store.set(afterSecondHit);
+
+    expect(observed.length).toBe(2);
+    // every observed snapshot IS the exact object the engine published — no field mixing
+    expect(observed[0]).toBe(afterFirstHit);
+    expect(observed[1]).toBe(afterSecondHit);
+    // the engine's own numbers move together: a torn read would pair them from different emits
+    expect(observed[1]!.combo).toBeGreaterThan(observed[0]!.combo);
+    expect(observed[1]!.score).toBeGreaterThan(observed[0]!.score);
+    expect(observed[1]!.maxCombo).toBe(observed[1]!.combo);
+    expect(observed[0]!.judgementCounts).toBe(afterFirstHit.judgementCounts);
   });
 
   it("store.set with the identical object notifies nothing (identity short-circuit already present)", () => {

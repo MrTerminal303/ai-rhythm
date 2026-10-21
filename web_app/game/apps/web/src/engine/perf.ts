@@ -9,7 +9,11 @@ export class PerfMonitor {
   private frameIntervals: number[] = [];
   private renderDurations: number[] = [];
   private updateDurations: number[] = [];
-  private inputLatencies: number[] = []; // A13: dispatch → handler completion (ms), accepted lane keys only
+  // A13: the event's OWN timestamp (e.timeStamp) → the moment right after engine.judge
+  // returned (the page reads performance.now() after rawKey(e)). It is NOT "dispatch →
+  // handler completion": e.timeStamp is the event CREATION time, and the measured end is
+  // post-judgement — the HUD's store.set happens in the frame loop, outside this interval.
+  private inputLatencies: number[] = []; // A13: event-timeStamp → post-judgement (ms), accepted lane keys only
 
   recordFrameInterval(ms: number): void { this.frameIntervals.push(ms); }
   recordRenderDuration(ms: number): void { this.renderDurations.push(ms); }

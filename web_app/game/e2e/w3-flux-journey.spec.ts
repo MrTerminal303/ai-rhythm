@@ -144,7 +144,10 @@ async function readStoredChart(page: Page, chartId: string): Promise<StoredChart
 test("flux-v1 journey: generate from a real song → library → play → results → identical re-generate", async ({
   page,
 }) => {
-  // The 240 s play-through to the results screen exceeds the 30 s default.
+  // The 240 s play-through to the results screen exceeds the 30 s default. The 320 s budget is
+  // the 240 s long.webm play-through + the 3-2-1 countdown + the flux generation round + the
+  // headroom the CI-shape machine needs — a nested waitForFunction timeout does NOT extend the
+  // outer test timeout, so the outer budget is raised here (Round 11 P1-9).
   test.setTimeout(320_000);
 
   // ---- Phase 1: /import → Generate (audio only) → the chart is persisted.

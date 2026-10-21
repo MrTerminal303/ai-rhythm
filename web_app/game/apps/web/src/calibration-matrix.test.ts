@@ -102,8 +102,9 @@ describe("REVIEW FOCUS 1 — double-application guard: outputLatency acts EXACTL
       asCalibMs(0),
       asChartMs(TARGET_MS),
     );
-    expect(unconverted - fallback).toBeCloseTo(-21, 6); // exactly one latency missing
-    expect(Math.abs(unconverted - fallback)).not.toBeCloseTo(-42, 6); // never double-counted
+    // Exactly one latency missing. This also rules out the double-counted shape: a
+    // double-applied outputLatency would read -42, which fails this assertion.
+    expect(unconverted - fallback).toBeCloseTo(-21, 6);
   });
   it("grep-level: outputLatency never appears in calibration-store.ts", async () => {
     const { readFileSync } = await import("node:fs");

@@ -63,6 +63,34 @@ describe("B8a reference: analyzeWhole (the whole-buffer ground truth)", () => {
     expect(Array.from(ref.flux)).toEqual(Array.from(direct));
   });
 
+  it("flux of a single impulse is the hand-derived spectral magnitude sum (independent ground truth)", () => {
+    // An EXACT, hand-derived value for one frame — NOT a comparison of the implementation
+    // against itself (the row above is exactly that, and it cannot fail).
+    //
+    // Signal: one impulse of amplitude A at sample 0. Frame 0's window covers the absolute
+    // samples [-n_fft/2, +n_fft/2) with zero padding, so the ONLY non-zero windowed sample
+    // is at frame index pad = n_fft/2, and the Hann window's peak is hann(pad) = 1. The
+    // windowed frame is therefore x[i] = A * hann(i - pad), i.e. a single non-zero sample A.
+    // Its DFT is X[k] = A * exp(-2*pi*i*k*pad/n_fft) = A * exp(-pi*i*k) = A * (-1)^k, so
+    // |X[k]| = A for EVERY bin. The first frame's flux is the sum of the magnitude spectrum
+    // (the first frame diffs against ZERO magnitude — computeFlux's documented convention):
+    //   flux[0] = nBins * A = (1 + n_fft/2) * A = 1025 * A
+    // — a closed form that never touches the FFT implementation.
+    const amplitude = 1;
+    const nBins = 1 + PREPROC.n_fft / 2;
+    const impulse = (a: number): Float32Array => {
+      const s = new Float32Array(PREPROC.sr); // 1 s at the pinned rate
+      s[0] = a;
+      return s;
+    };
+    const f1 = analyzeWhole(impulse(amplitude), PREPROC.sr, PREPROC);
+    expect(f1.flux[0]).toBeCloseTo(nBins * amplitude, 4);
+    // Spectral flux is LINEAR in the signal: doubling the amplitude doubles the flux.
+    // (An independent property of the definition — the whole first frame is a scaled copy.)
+    const f2 = analyzeWhole(impulse(2 * amplitude), PREPROC.sr, PREPROC);
+    expect(f2.flux[0]).toBeCloseTo(2 * f1.flux[0]!, 4);
+  });
+
   it("withMel=true returns the mel as per-frame rows; default (false) omits it", () => {
     const samples = multiTone(2, PREPROC.sr, 13);
     const noMel = analyzeWhole(samples, PREPROC.sr, PREPROC);

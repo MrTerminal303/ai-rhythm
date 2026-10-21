@@ -527,10 +527,14 @@ describe("flux-v1 Round-11 Worker contract (generate-request / progress / cancel
     expect(port.terminated).toBe(true); // no lingering worker
   });
 
-  it("contract 1 — cancel: AbortSignal mid-stream → generate-cancel → generate-error { code: 'cancelled' }; worker terminated", async () => {
+  it("contract 1 — cancel: AbortSignal before any chunk is posted → generate-cancel → generate-error { code: 'cancelled' }; worker terminated", async () => {
+    // PRE-CHUNK ABORT (final review F27): the title used to claim "mid-stream", but the abort
+    // lands before the async generator's first `next()` resolves, so NO chunk is ever posted
+    // (asserted below: chunksPosted === 0). The REAL mid-stream path is contract 3 below,
+    // which waits for chunk #1 to be posted and ack-gated before it aborts.
     const grid = beatGrid(30, 120, { offbeats: true, seed: 23 });
     const port = new FakeFluxPort();
-    port.withholdAcks = true; // stall after the first chunk so the abort lands mid-stream
+    port.withholdAcks = true; // no ack would arrive for a chunk that is never posted
     const controller = new AbortController();
     const p = generateWithPort(fakeAudioBuffer(grid.mono), {
       audioHash: AUDIO_HASH,
@@ -548,6 +552,8 @@ describe("flux-v1 Round-11 Worker contract (generate-request / progress / cancel
     expect(port.cancelled).toBe(true); // the wire message was sent
     expect(port.terminated).toBe(true); // no lingering worker
     expect(performance.now() - t0).toBeLessThan(1_000); // idle within 1 s
+    // the pre-chunk shape this test actually covers
+    expect(port.chunksPosted).toBe(0);
   });
 
   it("contract 2 — error delivery: a malformed candidate rejects with the STRUCTURED validation error", async () => {

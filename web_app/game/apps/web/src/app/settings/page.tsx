@@ -32,7 +32,11 @@ export default function SettingsPage() {
   });
   const [settings, setSettings] = useState(readAll);
   const [conflict, setConflict] = useState<string | null>(null);
-  const [syncDeferred, setSyncDeferred] = useState(false);
+  // F2 (final review): the deferred notice must be branch-correct. "invalid-remote" means the
+  // remote document itself is malformed — retrying cannot fix it; "not-converged"/"network"
+  // are transient and a later sync genuinely re-runs the loop. Track the reason, not just a
+  // boolean, so the two notices render distinct text.
+  const [syncDeferredReason, setSyncDeferredReason] = useState<null | "retry" | "invalid-remote">(null);
   const [syncing, setSyncing] = useState(false);
 
   /** every control writes its own envelope immediately — the local-first contract */
@@ -62,8 +66,15 @@ export default function SettingsPage() {
       // the sync may have rewritten the document (or adopted a remote offset) — re-read it so
       // the controls show what is now stored, rather than the pre-sync values
       setSettings(readAll());
+      setSyncDeferredReason(null); // only ok:true clears the notice
+    } else {
+      // F2 (final review): "invalid-remote" is not transient — a later sync re-runs the same
+      // read against the same malformed document and fails the same way. "not-converged" and
+      // "network" are the retryable class. Branch the notice on the reason, not on ok alone.
+      setSyncDeferredReason(
+        result.reason === "invalid-remote" ? "invalid-remote" : "retry",
+      );
     }
-    setSyncDeferred(!result.ok); // only ok:true clears the notice
     setSyncing(false);
   };
 
@@ -199,9 +210,15 @@ export default function SettingsPage() {
         >
           {syncing ? "Syncing…" : "Sync now"}
         </button>
-        {syncDeferred && (
-          <p data-testid="settings-sync-deferred" role="status" style={{ color: "var(--warn)", fontFamily: "var(--font-mono)" }}>
-            settings sync deferred — will retry
+        {syncDeferredReason !== null && (
+          <p
+            data-testid="settings-sync-deferred"
+            role="status"
+            style={{ color: "var(--warn)", fontFamily: "var(--font-mono)" }}
+          >
+            {syncDeferredReason === "invalid-remote"
+              ? "settings sync failed — the stored settings document is invalid, and retrying will not help until it is fixed"
+              : "settings sync deferred — will retry"}
           </p>
         )}
         <Link href="/auth" className="text-sm" style={{ color: "var(--text-dim)" }}>

@@ -110,4 +110,46 @@ describe("A7 renderer context-loss boundary", () => {
     expect(createBuffer.mock.calls.length).toBeGreaterThan(afterCtor); // GL rebuilt on restore
     renderer.dispose();
   });
+
+  it("contextrestored: the fresh programs get u_res + viewport again (F3 — no black playfield)", () => {
+    // F3 (final review): initGL() rebuilds the programs but does NOT re-set u_res or
+    // gl.viewport — those live only in resize(). A fresh program's u_res defaults to (0,0),
+    // and both shaders divide by it: every vertex clips to +-Inf and the playfield is BLACK.
+    // The restore handler must therefore re-do the resize. This test FAILS without it.
+    const handlers: Handlers = {};
+    const gl = makeFakeGL(vi.fn(() => ({})));
+    const uniform2f = vi.fn();
+    const viewport = vi.fn();
+    gl.uniform2f = uniform2f as unknown as typeof gl.uniform2f;
+    gl.viewport = viewport as unknown as typeof gl.viewport;
+    const renderer = new WebGLRenderer(makeFakeCanvas(gl, handlers), chart, {});
+
+    const uniformAfterCtor = uniform2f.mock.calls.length;
+    const viewportAfterCtor = viewport.mock.calls.length;
+    expect(uniformAfterCtor).toBeGreaterThan(0); // the ctor's resize() set u_res
+    expect(viewportAfterCtor).toBeGreaterThan(0); // ... and the viewport
+
+    handlers["webglcontextlost"]?.({ preventDefault: vi.fn() });
+    handlers["webglcontextrestored"]?.({ preventDefault: () => undefined });
+
+    // the restore re-did BOTH — the count grew instead of staying at the ctor's value
+    expect(uniform2f.mock.calls.length).toBeGreaterThan(uniformAfterCtor);
+    expect(viewport.mock.calls.length).toBeGreaterThan(viewportAfterCtor);
+    renderer.dispose();
+  });
+
+  it("contextrestored: the atlas verdict is cleared (atlasState reports null, not the stale one)", () => {
+    // F3 (final review): initGL() must clear _atlasState alongside the other atlas resets —
+    // otherwise the seam reports "loaded" through the whole re-fetch window while the
+    // renderer actually draws the code-drawn fallback.
+    const handlers: Handlers = {};
+    const gl = makeFakeGL(vi.fn(() => ({})));
+    const renderer = new WebGLRenderer(makeFakeCanvas(gl, handlers), chart, {});
+    expect(renderer.atlasState).toBeNull(); // undecided before initAtlas settles
+
+    handlers["webglcontextlost"]?.({ preventDefault: vi.fn() });
+    handlers["webglcontextrestored"]?.({ preventDefault: () => undefined });
+    expect(renderer.atlasState).toBeNull();
+    renderer.dispose();
+  });
 });

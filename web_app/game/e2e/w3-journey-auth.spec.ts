@@ -5,12 +5,11 @@
 //   requests recorded, and no `profiles` row exists for the account we later log in as
 //   → sign in on /auth → play a NEW run → its score appears in `runs` (read back with
 //   the test's OWN authenticated REST call, using the session the browser really holds)
-//   → settings changed PRE-login (through the real /settings control) are merged into
-//   `profiles.settings` (the login trigger), matched by the envelope's writeId
 //   → guest-era scores remain absent: query `runs` for the guest run's `chart_hash` in a
-//   `played_at` window covering that run → no NEW row beyond the pre-login snapshot
-//   (Review Focus 4). The chart hash is content-derived and shared with the signed-in
-//   run, so the snapshot subtraction — not an empty result — is the isolation proof.
+//   `played_at` window covering that run → no row beyond a snapshot taken BEFORE the guest
+//   play began (Review Focus 4). The chart hash is content-derived and shared with the
+//   signed-in run, so an empty result would prove nothing; the pre-guest snapshot subtraction
+//   is what makes the window check able to fail.
 //
 // ENV-GATED, like rls.test.ts: without SUPABASE_TEST=1 (plus the two NEXT_PUBLIC_*
 // variables) this suite SKIPS and
@@ -163,6 +162,16 @@ test.describe("journey 4: guest → login → new run syncs, guest-era score sta
       Object.keys(localStorage).filter((k) => k.startsWith("sb-") && k.endsWith("-auth-token")),
     );
     expect(authTokenKeys).toEqual([]);
+    // The chart hash is content-derived, so earlier runs of this spec share it. Snapshot the
+    // account's rows BEFORE the guest play so the signed-in run can be asserted to add EXACTLY
+    // one, and so the guest-window check below compares against a genuinely pre-guest state.
+    // F9 (R27 reversal): this read USED to sit after the guest play, which made the guest-window
+    // subtraction empty by construction — any row the guest run could have created was already
+    // inside the snapshot. Reading it here is what makes that subtraction able to fail.
+    const rowsBefore = await restSelect<RunRow>(
+      auth.accessToken,
+      `runs?select=run_id,chart_hash,played_at&chart_hash=eq.${chartHash}`,
+    );
     const guestPlayedFrom = Date.now();
     await page.goto(`/play?libraryChartId=${chartId}`);
     await startRun(page);
@@ -173,13 +182,6 @@ test.describe("journey 4: guest → login → new run syncs, guest-era score sta
     await shot(page, "w3-journey-4-guest-results.png");
     // The load-bearing invariant: a guest run touches the cloud ZERO times.
     expect(guestRequests).toEqual([]);
-
-    // The chart hash is content-derived, so earlier runs of this spec share it. Count the
-    // account's existing rows and assert the signed-in run adds EXACTLY one.
-    const rowsBefore = await restSelect<RunRow>(
-      auth.accessToken,
-      `runs?select=run_id,chart_hash,played_at&chart_hash=eq.${chartHash}`,
-    );
 
     // ---- Login on /auth (the real form controls).
     await page.goto("/auth");

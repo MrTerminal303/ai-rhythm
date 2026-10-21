@@ -1,38 +1,21 @@
 // apps/web/src/app/play/input-probe.test.ts
 // Page-level regression target for D21 round 10 P1-1: the probe reference must be
-// anchored at the midpoint of ref.perfBefore/ref.perfAfter. computeProbeEntry is
-// re-implemented here against the CONTRACT (mirrored, not imported — the play page is
-// a client component ("use client") and its OmitWithTag constraint forbids extra named exports).
+// anchored at the midpoint of ref.perfBefore/ref.perfAfter.
+//
+// The test IMPORTS the real computeProbeEntry (./input-probe.ts — the same module the
+// play page uses). It used to MIRROR the function here, which meant reverting the
+// round-9 anchor bug in the page left this test green — the mirror could not fail.
 import { describe, expect, it } from "vitest";
 import type { ClockPair } from "../../engine/time-math.js";
 import { asCtxSec, asPerfMs } from "../../engine/branded.js";
+import { computeProbeEntry } from "./input-probe.js";
 
-// Mirrors the page-local pure computation (page.tsx):
+// The imported implementation computes (page.tsx → ./input-probe.ts):
 //   refPerfMid = (perfBefore + perfAfter) / 2
 //   refCtxAtE  = ctxNow0 + (e.timeStamp − refPerfMid) / 1000
 //   cachedCtxAtE = cached.contextTimeSeconds + (e.timeStamp − cached.performanceTimeMs) / 1000
 //   errMs          = |cachedCtxAtE − refCtxAtE| × 1000
 //   refUncertaintyMs = max(perfAfter − perfBefore, 2.8)  // render-quantum floor (round 12 P2)
-const computeProbeEntry = (
-  e: { timeStamp: number },
-  cached: ClockPair,
-  handlerNow: number,
-  ref: { perfBefore: number; perfAfter: number; ctxNow0: number },
-) => {
-  const cachedCtxAtE = cached.contextTimeSeconds + (e.timeStamp - cached.performanceTimeMs) / 1000;
-  const refPerfMid = (ref.perfBefore + ref.perfAfter) / 2;
-  const refCtxAtE = ref.ctxNow0 + (e.timeStamp - refPerfMid) / 1000;
-  const refUncertaintyMs = Math.max(ref.perfAfter - ref.perfBefore, 2.8);
-  return {
-    e: e.timeStamp,
-    handlerNow,
-    ageMs: handlerNow - cached.sampledAt,
-    dispatchDelayMs: handlerNow - e.timeStamp,
-    errMs: Math.abs(cachedCtxAtE - refCtxAtE) * 1000,
-    source: cached.source,
-    refUncertaintyMs,
-  };
-};
 
 // Round 10 P1-1 + round 12 P1-1: the reference must be anchored at the midpoint of
 // ref.perfBefore/ref.perfAfter, NOT at handlerNow or at call time. If the
@@ -67,5 +50,17 @@ describe("inputProbeRecord — reference anchoring (round 10 P1-1 regression)", 
     expect(entry.refUncertaintyMs).toBeCloseTo(4, 1);
     // If the implementation used handlerNow as anchor: refCtxAtE = fakeCtxNow + (5000 − 5005)/1000
     // = 100.0 − 0.005 = 99.995; errMs = |100.99 − 99.995| × 1000 = 995 ms — different value, test fails.
+  });
+
+  it("the render-quantum floor is 2.8 ms when the bracket is narrower than it", () => {
+    const ref = { perfBefore: 4999, perfAfter: 5000, ctxNow0: 100 };
+    const cached: ClockPair = {
+      contextTimeSeconds: asCtxSec(100),
+      performanceTimeMs: asPerfMs(4999),
+      sampledAt: asPerfMs(4999),
+      source: "getOutputTimestamp",
+    };
+    const entry = computeProbeEntry({ timeStamp: 4999 }, cached, 5000, ref);
+    expect(entry.refUncertaintyMs).toBeCloseTo(2.8, 6); // floor wins over the 1 ms bracket
   });
 });

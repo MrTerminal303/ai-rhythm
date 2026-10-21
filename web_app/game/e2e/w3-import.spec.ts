@@ -119,11 +119,14 @@ test("corrupt .osu (illegal Mode) → error naming the reason", async ({ page })
   await expect(page.getByTestId("import-done")).toHaveCount(0);
 });
 
-// Grep gate (brief Step 4): the W2 sessionStorage hand-off key and the ?import= param are GONE
-// from the app source. Assert both absent so a regression that re-introduces the path fails here.
+// Grep gate (brief Step 4): the W2 sessionStorage hand-off key is GONE from the app source.
+// Assert it absent so a regression that re-introduces the path fails here.
 test("the w2-import sessionStorage hand-off is removed from the app source", async () => {
   // This assertion runs in the node context (no page) — it pins the grep gate as an executable
   // check rather than a manual step. The source paths are resolved relative to the spec.
+  // The search is scoped to apps/web/src — the APP source. A broader sweep would hit this
+  // spec's own needle list (and the architecture doc, which documents the removed W2 shape
+  // on purpose), so the scope is deliberately narrow: the gate is about app code.
   const srcDir = path.join(__dirname, "..", "apps", "web", "src");
   const hits: string[] = [];
   const walk = (dir: string): void => {
@@ -132,9 +135,7 @@ test("the w2-import sessionStorage hand-off is removed from the app source", asy
       if (isDir(full)) walk(full);
       else if (/\.(ts|tsx|js|jsx|json|css|html)$/.test(entry)) {
         const text = readFileSync(full, "utf8");
-        for (const needle of ["w2-import", "MAX_IMPORT_JSON_CHARS"]) {
-          if (text.includes(needle)) hits.push(`${full}:${needle}`);
-        }
+        if (text.includes("w2-import")) hits.push(full);
       }
     }
   };

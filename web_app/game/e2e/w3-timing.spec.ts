@@ -195,9 +195,10 @@ test("A5 standing: AudioContext suspend/resume (1/5/20 s) freezes the chart cloc
 test("A5 standing: tab hide mid-play auto-pauses the real song", async ({ page }) => {
   await startPlaying(page);
   await page.waitForTimeout(1000);
-  // Synthetic visibilitychange is the sanctioned exception (no input tool expresses a tab hide — the
-  // same reasoning W2's blur test records). document.visibilityState is a READONLY prototype getter,
-  // so the branch the page actually reads is shadowed on the instance before dispatching.
+  // NO Playwright input tool can hide the tab, so this uses the CLAUDE.md §5 documented exception
+  // (the same reasoning W2's blur test records) — it is NOT a real-input test. The synthetic
+  // visibilitychange is the sanctioned exception; document.visibilityState is a READONLY prototype
+  // getter, so the branch the page actually reads is shadowed on the instance before dispatching.
   await page.evaluate(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));

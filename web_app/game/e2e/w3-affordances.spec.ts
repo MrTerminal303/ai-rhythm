@@ -12,13 +12,21 @@ import { expect, test } from "@playwright/test";
 
 type W2 = {
   phase(): string;
+  atlas(): "loaded" | "fallback" | null;
 };
 
 test("atlas timeout → permanent fallback, game still playable", async ({ page }) => {
   // A9: force the atlas route to be slow/blocked. The renderer's 5 s AbortController bound then
   // aborts the fetch and commits the permanent "fallback" state; the code-drawn highway path
-  // (W2) keeps rendering. We assert the game reaches "playing" and the highway is visible, and
-  // that the aborted fetch surfaces NO unhandled rejection on the page (the renderer consumes it).
+  // (W2) keeps rendering.
+  //
+  // F11 (final review): the assertions here used to be `getByTestId("highway")` (the <canvas>,
+  // present in EVERY run whether or not the atlas loaded) plus a pageerror check that cannot see
+  // unhandled REJECTIONS (initAtlas swallows them with .catch) — so a route that stopped
+  // matching, or an abort landing after a successful first fetch, stayed green. The claim this
+  // test makes is "the renderer COMMITTED the fallback path", so it now reads the renderer's own
+  // committed outcome through the __w2 seam. The canvas-visibility check is kept as a second
+  // signal that the code-drawn path still renders.
   await page.route("**/atlas/**", async (route) => {
     await new Promise((r) => setTimeout(r, 8000)); // outlasts the renderer's 5 s bound
     await route.abort();
@@ -29,7 +37,14 @@ test("atlas timeout → permanent fallback, game still playable", async ({ page 
   await page.getByRole("button", { name: /click to start/i }).click();
   await page.waitForFunction(() => (window as never as { __w2?: { phase(): string } }).__w2?.phase() === "playing");
   await expect(page.getByTestId("highway")).toBeVisible(); // code-drawn fallback renders
-  await page.waitForTimeout(2000); // give the 5 s abort window a moment to settle
+  // Wait for the 5 s abort window to settle, then assert the COMMITTED atlas outcome.
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => (window as never as { __w2?: W2 }).__w2?.atlas() ?? null),
+      { timeout: 15_000, intervals: [250, 500, 1000] },
+    )
+    .toBe("fallback");
   expect(unhandled).toEqual([]); // A9: the aborted atlas fetch never throws into gameplay
 });
 

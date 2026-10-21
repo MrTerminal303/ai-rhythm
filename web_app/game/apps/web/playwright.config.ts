@@ -13,15 +13,6 @@ export default defineConfig({
     baseURL: "http://localhost:3000", // spec calls page.goto("/play") — relative URLs need a baseURL
     viewport: { width: 1280, height: 800 },
     trace: "retain-on-failure",
-    // W3 A5 (2026-10-17, measured): a GPU-less machine renders WebGL through Chromium's
-    // degraded software fallback by default, which blocks the main thread long enough that a
-    // Playwright keyboard round trip costs 0.5–1.6 s — the scripted timing loop then falls
-    // behind the real-time song and only 16/160 presses land in-window. Pointing Chromium at
-    // ANGLE's SwiftShader explicitly restores a normal frame cadence: the same run then lands
-    // 160/160 presses (median 5.4 ms, p95Abs 21.6 ms). Ignored/cheaper on a real GPU;
-    // --enable-unsafe-swiftshader is required because modern Chromium otherwise refuses the
-    // software WebGL path.
-    launchOptions: { args: ["--enable-gpu", "--use-gl=angle", "--enable-unsafe-swiftshader"] },
   },
   webServer: {
     command: "pnpm build && pnpm start",
@@ -39,11 +30,33 @@ export default defineConfig({
   // W3 T15 (A5): the default chromium project runs EVERYTHING (unchanged behavior — verified by
   // `playwright test --list`, whose count for the non-grep specs is unaffected).
   // Firefox and webkit run ONLY the multi-engine evidence specs (grep matches the spec FILE PATH):
-  // the claim-2 timing suite, T14's decode gate, and T2's D21 conversion invariant — the D21
-  // invariant is claim-1 evidence on all three engines. The rest of the suite stays chromium-only
-  // so CI time does not multiply by three.
+  // the claim-2 timing suite, T14's decode gate, and T2's D21 conversion invariant. The D21
+  // invariant is claim-1 evidence on all three engines — green where the machine's D21 mapping
+  // error is within the frozen budget, or operator-gated RED where it exceeds it (P1 on this
+  // machine). So the expected result is EITHER green on all three engines OR operator-gated red
+  // where D21 fails — a non-green clock-invariant result on any of the three engines is expected
+  // here, not a regression. The rest of the suite stays chromium-only so CI time does not
+  // multiply by three.
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        // W3 A5 (2026-10-17, measured, CHROMIUM ONLY — F5): a GPU-less machine renders
+        // WebGL through Chromium's degraded software fallback by default, which blocks the
+        // main thread long enough that a Playwright keyboard round trip costs 0.5–1.6 s —
+        // the scripted timing loop then falls behind the real-time song and only 16/160
+        // presses land in-window. Pointing Chromium at ANGLE's SwiftShader explicitly
+        // restores a normal frame cadence: the same run then lands 160/160 presses
+        // (median 5.4 ms, p95Abs 21.6 ms). Ignored/cheaper on a real GPU;
+        // --enable-unsafe-swiftshader is required because modern Chromium otherwise
+        // refuses the software WebGL path. The args are Chromium switches — they must NOT
+        // reach firefox/webkit, where --enable-unsafe-swiftshader changes the GL backend
+        // (and can disable WebGL entirely under WebKit), so they are scoped here, not in
+        // the top-level `use` block.
+        launchOptions: { args: ["--enable-gpu", "--use-gl=angle", "--enable-unsafe-swiftshader"] },
+      },
+    },
     { name: "firefox", use: { ...devices["Desktop Firefox"] }, grep: /w3-timing|w3-fixture-decode|w3-clock-invariant/ },
     { name: "webkit", use: { ...devices["Desktop Safari"] }, grep: /w3-timing|w3-fixture-decode|w3-clock-invariant/ },
   ],

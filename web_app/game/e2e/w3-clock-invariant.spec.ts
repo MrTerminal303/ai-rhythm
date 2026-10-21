@@ -83,7 +83,13 @@ test("D21 conversion invariant: accepted conversions are in-band; out-of-band sa
   console.log(`[D21 evidence] 3) fallback breakdown: ${JSON.stringify(reasonCounts)} (codes: missing-timestamp | invalid-latency | residual-guard; accepted-counted separately)`);
   // NOTE (round 8): no "outcome" is printed here — the FOURTH evidence item is the single
   // final verdict logged ONCE by d21FinalVerdict() in the mapping-evidence test.
-  expect(typeof acceptRateEligible).toBe("boolean");
+  // F10 (final review): this used to be `typeof acceptRateEligible === "boolean"`, which is
+  // true even at 0/50 — the named 90%-release gate was computed and only console-logged, so
+  // test 1 could not fail on any engine. Assert the gate itself: a run that accepts fewer
+  // than MIN_ACCEPTED of the samples is now RED, not merely a log line. The threshold is the
+  // frozen 45/50 (90%); it is deliberately NOT lowered here.
+  expect(accepted.length).toBeGreaterThanOrEqual(MIN_ACCEPTED);
+  expect(acceptRateEligible).toBe(true);
 });
 
 test("D21 fallback guarantee: clock-RATE divergence ≤5 ms over 1 s + invalidate across lifecycle (round 5/6)", async ({ page }) => {

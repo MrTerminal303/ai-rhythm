@@ -490,7 +490,6 @@ export async function generateWithPort(
         };
   const sampleRate = pcm?.sampleRate ?? audio.sampleRate;
   const totalSamples = source.length;
-  const durationMs = Math.max(1, Math.round((totalSamples * 1000) / sampleRate));
 
   return new Promise<BeatmapCandidate>((resolve, reject) => {
     let settled = false;

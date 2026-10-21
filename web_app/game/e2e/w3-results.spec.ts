@@ -30,10 +30,26 @@ test("completed guest run shows results, no supabase sync", async ({ page }) => 
 
   const overlay = page.getByTestId("results-overlay");
   await expect(overlay).toBeVisible();
-  await expect(overlay.getByTestId("results-score")).not.toBeEmpty();
-  await expect(overlay.getByTestId("results-max-combo")).not.toBeEmpty();
-  await expect(overlay.getByTestId("results-accuracy")).not.toBeEmpty();
-  await expect(overlay.getByTestId("results-rank")).not.toBeEmpty();
+  // Value assertions (final review F24): the old `not.toBeEmpty()` accepted ANY text, so a
+  // field that rendered the WRONG value (e.g. results-max-combo rendering the score) passed.
+  // This run is the seeded one: a guest plays the 60-tap w1 chart with NO lane input, so every
+  // note auto-misses — maxCombo 0, score 0, accuracy 0.0%, rank D, and MISS == the chart's note
+  // count (read from the app, not hardcoded). Each field is asserted by its EXACT rendered text
+  // (label + value), and max-combo is additionally pinned NOT to render the score.
+  const noteCount = await page.evaluate(
+    () => (window as never as { __w2?: { noteCount(): number } }).__w2?.noteCount() ?? 0,
+  );
+  expect(noteCount).toBeGreaterThan(0);
+  await expect(overlay.getByTestId("results-score")).toHaveText("Score 0");
+  await expect(overlay.getByTestId("results-max-combo")).toHaveText("Max combo 0");
+  await expect(overlay.getByTestId("results-accuracy")).toHaveText("Accuracy 0.0%");
+  await expect(overlay.getByTestId("results-rank")).toHaveText("D");
+  await expect(overlay.getByTestId("results-breakdown")).toHaveText(
+    `PERFECT 0 · GREAT 0 · GOOD 0 · MISS ${noteCount}`,
+  );
+  // the field the review named: max-combo must not be the score's value under the score's label
+  await expect(overlay.getByTestId("results-max-combo")).not.toContainText("Score");
+  await expect(overlay.getByTestId("results-score")).not.toContainText("combo");
   // pause overlay must be absent — completed ≠ paused (T13)
   await expect(page.getByTestId("pause-overlay")).toHaveCount(0);
   // guest run: nothing synced, and no sync error (nothing was attempted)

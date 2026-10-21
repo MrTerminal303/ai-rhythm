@@ -52,10 +52,24 @@ test("production CSP: play, import, and Worker/WASM probe run with zero violatio
 
   // W3 T23 (B6): the /auth journey renders under the production CSP (the client is
   // constructed lazily and this build has no Supabase env → guest-only, no network).
+  //
+  // PRECONDITION (final review F15): `auth-unconfigured` renders ONLY in a build with no
+  // NEXT_PUBLIC_SUPABASE_URL. The build inlines that env (Next inlines NEXT_PUBLIC_* at
+  // build time, and the webServer inherits this runner's process env), so an operator shell
+  // that exports a project URL would make the app render the CONFIGURED form and this
+  // assertion would fail for a reason that has nothing to do with the CSP. The assertion is
+  // therefore gated on the env being genuinely absent — the CSP assertions above and below are
+  // NOT gated and always run.
   await page.goto("/");
   await page.getByTestId("landing-account").click();
   await expect(page.getByTestId("auth-email")).toBeVisible();
-  await expect(page.getByTestId("auth-unconfigured")).toBeVisible(); // no env in the e2e build
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+    await expect(page.getByTestId("auth-unconfigured")).toBeVisible(); // no env in the e2e build
+  } else {
+    // The operator shell exports a Supabase project → this build is CONFIGURED, so the
+    // unconfigured notice is (correctly) absent. Not a CSP failure.
+    console.log("[w3-csp] NEXT_PUBLIC_SUPABASE_URL is set — skipping the guest-only auth-unconfigured assertion");
+  }
   await expect(page.getByTestId("settings-sync-now")).toHaveCount(0); // this is /auth, not /settings
   await page.goto("/settings");
   await expect(page.getByTestId("settings-account-state")).toBeVisible();

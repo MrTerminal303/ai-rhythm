@@ -25,18 +25,43 @@ interface AtlasJson {
 
 // §2.8 position rule as a pure function — exported so engine-render.test.ts pins the
 // real production math (y = hitLineY - dt * scrollPxPerMs), not a test re-implementation.
-// `downscroll` (W3 T22) mirrors the result about the hit line, so notes approach the
-// judgement line from ABOVE; both directions meet exactly at the hit line.
+//
+// `downscroll` (W3 T22) mirrors the result about the hit line, so notes approach the judgement
+// line from ABOVE; both directions meet exactly at the hit line.
+//
+// W4 fix r1: the returned y is the note's LEADING EDGE, not its centre. Every VSRG anchors the
+// leading edge of the note to the judgement line — osu!mania's skin.ini `HitPosition` (default
+// 402/480 = 83.75%) is documented as "the bottom of your note reaches the judgment line".
+// Anchoring the centre instead (the W1-W3 behaviour) makes every hit read as visually LATE by
+// half a note height. Callers draw the note body ABOVE the returned y.
+//
+// `visualOffsetPx` shifts the whole playfield toward the player's perceptual line WITHOUT
+// touching judging: positive moves notes DOWN (they appear later), negative moves them UP.
+// Presentation only — it must never reach the input path (C10: a setting that changes judging
+// is a fairness bug).
 export function noteY(
   noteT: number,
   chartTimeMs: number,
   hitLineY: number,
   scrollPxPerMs: number,
   downscroll = false,
+  visualOffsetPx = 0,
 ): number {
   const y = hitLineY - (noteT - chartTimeMs) * scrollPxPerMs;
-  return downscroll ? 2 * hitLineY - y : y;
+  const mirrored = downscroll ? 2 * hitLineY - y : y;
+  // Under downscroll the playfield is flipped, so a downward screen shift is an upward
+  // timeline shift: negate the offset to keep "positive = notes appear later" true in both
+  // scroll directions.
+  return mirrored + (downscroll ? -visualOffsetPx : visualOffsetPx);
 }
+
+/** Note body height in CSS px. The note's leading edge sits ON `noteY`, so upscroll draws the
+ *  body from `y - NOTE_H` and downscroll from `y`. One constant so the draw path and the tests
+ *  cannot disagree about which edge "on the line" means. */
+export const NOTE_H = 28;
+/** Hit-line position as a fraction of playfield height, before the downscroll mirror.
+ *  Matches osu!mania's HitPosition default (402/480 = 83.75%) rounded to the W1 value. */
+export const HIT_LINE_FRAC = 0.82;
 
 const HIT_FLASH_MS = 200; // hit flash fades out over 200 ms from the transition frame
 const MISS_FLASH_MS = 400; // missed flash fades out over 400 ms (the HUD MISS red read)
@@ -58,6 +83,8 @@ interface RendererOptions {
   scrollSpeed?: number;
   /** W3 T22: notes fall toward the hit line from above (presentation only, C10) */
   downscroll?: boolean;
+  /** W4: visual-only playfield shift in ms; positive = notes appear later (never judged) */
+  visualOffsetMs?: number;
 }
 
 export class WebGLRenderer implements Renderer {
@@ -98,8 +125,8 @@ export class WebGLRenderer implements Renderer {
   /** test seam (W2 T22): cumulative gl.drawArrays calls per pipeline since construction */
   readonly drawCounts = { solid: 0, textured: 0 };
   /** W3 T22: the presentation opts this instance actually resolved (e2e reads them back) */
-  get appliedPresentation(): { scrollSpeed: number; downscroll: boolean } {
-    return { scrollSpeed: this.scrollPxPerMs, downscroll: this.downscroll };
+  get appliedPresentation(): { scrollSpeed: number; downscroll: boolean; visualOffsetMs: number } {
+    return { scrollSpeed: this.scrollPxPerMs, downscroll: this.downscroll, visualOffsetMs: this.visualOffsetMs };
   }
 
   /**
@@ -108,12 +135,41 @@ export class WebGLRenderer implements Renderer {
    * Presentation only (C10): the note path and the frozen flash Y read the same pair, so a
    * change can never leave a flash drawn at a stale position.
    */
-  setPresentation(opts: { scrollSpeed?: number; downscroll?: boolean }): void {
+  setPresentation(opts: { scrollSpeed?: number; downscroll?: boolean; visualOffsetMs?: number }): void {
     if (opts.scrollSpeed !== undefined) this.scrollPxPerMs = opts.scrollSpeed;
     if (opts.downscroll !== undefined) this.downscroll = opts.downscroll;
+    if (opts.visualOffsetMs !== undefined) this.visualOffsetMs = opts.visualOffsetMs;
+    this.syncHitLine();
   }
+  /** W4: the hit line MIRRORS with scroll direction, so flipping the direction must move it —
+   *  otherwise the line keeps the position it had at construction (W4 fix r1). One place sets
+   *  it, so the constructor and setPresentation cannot disagree. */
+  private syncHitLine(): void {
+    this.hitLineY = this.downscroll ? this.height * (1 - HIT_LINE_FRAC) : this.height * HIT_LINE_FRAC;
+  }
+  /** W4: the playfield shift in px, derived from the ms setting at the CURRENT scroll speed so
+   *  the perceived time shift stays constant when the player changes scroll speed. */
+  private get visualOffsetPx(): number { return (this.visualOffsetMs / 1000) * this.scrollPxPerMs; }
   /** test seam: solid-batch vertex count left by the most recent render() */
   get solidVertCount(): number { return this.vertCount; }
+  /** W4: the judgement line's y in CSS px. Mirrors with scroll direction (upscroll 82% of the
+   *  playfield, downscroll 18%) — the same mirror the notes use. */
+  get hitLineYPx(): number { return this.hitLineY; }
+  /** W4 test seam: the solid batch's quads in draw order, as {x,y,w,h} in CSS px. A test can
+   *  therefore assert the RENDERED note body (not the noteY helper) against the line. */
+  get solidQuads(): { x: number; y: number; w: number; h: number }[] {
+    const out: { x: number; y: number; w: number; h: number }[] = [];
+    for (let v = 0; v + 5 < this.vertCount; v += 6) {
+      const b = v * FLOATS_PER_VERTEX;
+      // quad layout: (x,y) (x+w,y) (x+w,y+h) | (x,y) (x+w,y+h) (x,y+h)
+      const x = this.verts[b]!;
+      const y = this.verts[b + 1]!;
+      const x2 = this.verts[b + 6]!;   // vertex 1 = (x+w, y)
+      const y2 = this.verts[b + 13]!;  // vertex 2 = (x+w, y+h)
+      out.push({ x, y, w: x2 - x, h: y2 - y });
+    }
+    return out;
+  }
   /** A7: whether the WebGL context is currently lost (prevents GL calls while context is down) */
   private lost = false;
   /** peak color of the hit flash — noteColor lightened toward white for punch */
@@ -126,6 +182,8 @@ export class WebGLRenderer implements Renderer {
   /** W3 T22 presentation options — constructed from the initial opts, then set by startGame */
   private scrollPxPerMs: number;
   private downscroll: boolean;
+  /** W4: visual-only playfield shift in ms (positive = notes appear later). Never judged. */
+  private visualOffsetMs: number;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -153,6 +211,7 @@ export class WebGLRenderer implements Renderer {
     // W3 T22 presentation options — resolved ONCE here (the page reads settings at startGame)
     this.scrollPxPerMs = opts.scrollSpeed ?? SCROLL_PX_PER_MS;
     this.downscroll = opts.downscroll ?? false;
+    this.visualOffsetMs = opts.visualOffsetMs ?? 0;
     // A7: context-loss boundary — handlers registered on the GL CONTEXT, so they survive
     // the program/buffer objects (a restored context keeps its event listeners)
     this.attachContextHandlers();
@@ -258,7 +317,11 @@ export class WebGLRenderer implements Renderer {
     const x0 = (this.width - highwayW) / 2;
     this.laneW = highwayW / KEY_COUNT;
     this.laneX = [x0, x0 + this.laneW, x0 + this.laneW * 2, x0 + this.laneW * 3];
-    this.hitLineY = this.height * 0.82;
+    // W4 fix r1: the hit line MIRRORS across the playfield with scroll direction, exactly as the
+    // notes do. The W1-W3 code mirrored only the notes, so downscroll left the line at 82% with
+    // the notes crammed below it — the "line stays at the bottom" bug, and the same failure the
+    // osu!mania renderers call "clipping into the bottom". Mirrored: upscroll 82%, downscroll 18%.
+    this.syncHitLine();
   }
 
   render(chartTimeMs: number, noteStates: readonly NoteState[]): void {
@@ -270,6 +333,9 @@ export class WebGLRenderer implements Renderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     // lane panels + receptors (code-drawn, §6.5.1 "drawn in code, no sprites")
+    // `voff` is the visual-only playfield shift, recomputed per frame from the CURRENT scroll
+    // speed so a scroll-speed change never silently changes the perceived offset.
+    const voff = this.visualOffsetPx;
     for (let lane = 0; lane < KEY_COUNT; lane++) {
       const x = this.laneX[lane]!;
       this.quad(x, 0, this.laneW, this.height, 1, 1, 1, 0.03);
@@ -293,26 +359,35 @@ export class WebGLRenderer implements Renderer {
           this.flashStartedAt[i] = now;
           // the flash freezes at the SAME y the note path would draw — one speed + one flip,
           // so a hit note's flash can never appear at a stale position (T22 presentation)
-          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
+          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll, voff);
         }
         const a = flashAlpha(state, now - this.flashStartedAt[i]!);
         if (a <= 0) continue; // fade complete — zero draws for this note from here on
         const fy = this.flashY[i]!;
         if (fy < -40 || fy > this.height + 40) continue;
         const fc = state === "hit" ? this.hitFlashColor : MISS_FLASH_COLOR;
-        this.quad(this.laneX[note.lane]! + 4, fy - 14, this.laneW - 8, 28, fc[0], fc[1], fc[2], a);
+        // the flash is centred on the note's leading edge (quad takes a TOP y)
+        this.quad(this.laneX[note.lane]! + 4, fy - NOTE_H / 2, this.laneW - 8, NOTE_H, fc[0], fc[1], fc[2], a);
         continue;
       }
       if (state !== "pending") continue; // short noteStates array: undefined skipped as before
-      const y = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
-      if (y < -40 || y > this.height + 40) continue;
+      // `y` is the note's LEADING edge (see noteY): upscroll draws the body above it, so the
+      // bottom edge touches the line; downscroll is mirrored, so it draws below.
+      const y = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll, voff);
+      const yTop = this.downscroll ? y : y - NOTE_H;
+      if (yTop < -80 || yTop > this.height + 80) continue;
       const x = this.laneX[note.lane]!;
       const c = this.noteColor;
       if (note.type === "hold" && note.d !== undefined) {
-        // hold body (W2 T17): rect from head y to tail y at 35% opacity (§6.2)
-        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
-        const top = Math.min(y, yTail);
-        const h = Math.abs(yTail - y);
+        // hold body (W2 T17): rect from head y to tail y at 35% opacity (§6.2).
+        // Both y and yTail are LEADING edges, so the body spans from the head's far edge to
+        // the tail's far edge: upscroll it runs from (lo - NOTE_H) down to hi; downscroll is
+        // mirrored, from lo up to (hi + NOTE_H). Either way the body is (hi - lo) + NOTE_H tall.
+        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll, voff);
+        const lo = Math.min(y, yTail);
+        const hi = Math.max(y, yTail);
+        const top = this.downscroll ? lo : lo - NOTE_H;
+        const h = hi - lo + NOTE_H;
         if (top < this.height + 40 && top + h > -40) {
           const bodyH = Math.max(h, 2);
           if (!atlas || !this.texturedSlice(x + 4, top, this.laneW - 8, bodyH, atlas.hold, c[0], c[1], c[2], 0.35)) {
@@ -320,8 +395,8 @@ export class WebGLRenderer implements Renderer {
           }
         }
       }
-      if (!atlas || !this.texturedSlice(x + 4, y - 14, this.laneW - 8, 28, atlas.tap, c[0], c[1], c[2], 1)) {
-        this.quad(x + 4, y - 14, this.laneW - 8, 28, c[0], c[1], c[2], 1);
+      if (!atlas || !this.texturedSlice(x + 4, yTop, this.laneW - 8, NOTE_H, atlas.tap, c[0], c[1], c[2], 1)) {
+        this.quad(x + 4, yTop, this.laneW - 8, NOTE_H, c[0], c[1], c[2], 1);
       }
     }
 

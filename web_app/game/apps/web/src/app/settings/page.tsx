@@ -28,6 +28,7 @@ export default function SettingsPage() {
     deviceCalibrationOffsetMs: getSetting("deviceCalibrationOffsetMs"),
     scrollSpeed: getSetting("scrollSpeed"),
     downscroll: getSetting("downscroll"),
+    visualOffsetMs: getSetting("visualOffsetMs"),
     keybinds: getSetting("keybinds"),
   });
   const [settings, setSettings] = useState(readAll);
@@ -158,6 +159,24 @@ export default function SettingsPage() {
             onChange={(e) => write("downscroll", e.target.checked)}
           />
         </label>
+        <label className="flex items-center gap-3 text-sm">
+          Visual offset (ms)
+          <input
+            type="range"
+            min={-100}
+            max={100}
+            step={1}
+            data-testid="setting-visualOffsetMs"
+            value={settings.visualOffsetMs}
+            onChange={(e) => write("visualOffsetMs", Number.parseInt(e.target.value, 10))}
+          />
+          <span style={{ fontFamily: "var(--font-mono)" }}>{settings.visualOffsetMs} ms</span>
+        </label>
+        <p className="text-xs" style={{ color: "var(--text-dim)" }}>
+          Shifts the playfield only — it never changes when a note is judged. Positive = notes
+          appear later. Use it if the notes look early or late against the line; use
+          &ldquo;device calibration&rdquo; when your audio and input disagree.
+        </p>
       </section>
 
       <section className="flex flex-col items-center gap-3" aria-label="Controls">

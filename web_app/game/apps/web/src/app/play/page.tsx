@@ -98,7 +98,7 @@ declare global {
       forcePerfReport(): void;
       // W3 T22 (B5): the presentation opts the renderer actually resolved — the committed
       // e2e asserts /settings values reach the playfield through this readback, not a screenshot
-      appliedPresentation(): { scrollSpeed: number; downscroll: boolean };
+      appliedPresentation(): { scrollSpeed: number; downscroll: boolean; visualOffsetMs: number };
       // W3 T26 (spec §7 journeys 1–4): RMS of the signal AT THE MASTER GAIN, pre-DAC.
       // FLOAT samples are already centred on 0 (getByteTimeDomainData centres near 128, so a
       // byte-domain mean reads ~128 even for silence — review P0). Silence reads ~0.
@@ -634,7 +634,7 @@ export default function PlayPage() {
       // to the mount-time renderer; volumes shape the audio graph built just below; and the
       // keybind map is resolved once and shared by judging, held-lane tracking and the
       // input-latency probe (they must agree on what counts as a lane key).
-      const presentation = { scrollSpeed: getSetting("scrollSpeed"), downscroll: getSetting("downscroll") };
+      const presentation = { scrollSpeed: getSetting("scrollSpeed"), downscroll: getSetting("downscroll"), visualOffsetMs: getSetting("visualOffsetMs") };
       renderer.setPresentation(presentation);
       const volumes = {
         master: getSetting("masterVolume"),

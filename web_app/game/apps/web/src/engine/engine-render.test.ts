@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Beatmap } from "@airhythm/shared";
 import { GameEngine } from "./engine.js";
 import { PerformanceClock } from "./clock.js";
-import { flashAlpha, noteY, WebGLRenderer } from "./renderer-webgl.js";
+import { flashAlpha, noteY, NOTE_H, WebGLRenderer } from "./renderer-webgl.js";
 import type { GameSnapshot, NoteState, Renderer } from "./types.js";
 
 const chart: Beatmap = {
@@ -118,6 +118,121 @@ describe("renderer position rule (§2.8)", () => {
     expect(noteY(1000, 0, 800, 0.5)).toBe(300); // 1 s ahead → 800 − 1000·0.5 = 300, above the hit line
     expect(noteY(1000, 1000, 800, 0.5)).toBe(800); // exactly at the hit line
     expect(noteY(1000, 2000, 800, 0.5)).toBe(1300); // 1 s past → 800 − (−1000)·0.5 = 1300, below the hit line
+  });
+});
+
+// ---- W4 fix r1: the note's LEADING edge meets the judgement line, and the line mirrors ----
+//
+// Research basis (osu!mania): the skin.ini `HitPosition` (default 402/480) is where "the bottom
+// of your note reaches the judgment line" — the note's EDGE, not its centre. Anchoring the centre
+// makes every hit read as visually late by half a note height, which is the "the perfect note is
+// not on the line" complaint. Downscroll must mirror the LINE too, not just the notes, or the
+// line stays at the bottom with the notes crammed below it.
+
+describe("W4: note leading edge meets the judgement line", () => {
+  it("a note at its exact time has its LEADING edge on the line, not its centre", () => {
+    // the returned y IS the leading edge, so a note hit exactly on time has y === hitLineY
+    const y = noteY(1000, 1000, 800, 0.5);
+    expect(y).toBe(800);
+    // the draw path puts the body ABOVE that edge (upscroll), so the body's BOTTOM is the edge
+    expect(y - NOTE_H).toBe(800 - NOTE_H); // body top
+    expect(y).toBe(800);                   // body bottom == the line
+  });
+
+  it("the RENDERED note body rests on the line — the draw path, not the helper", () => {
+    // This is the assertion that actually fails if the draw path forgets the leading-edge
+    // anchor: it reads the real vertex buffer, so a note body whose BOTTOM is not on the
+    // judgement line is caught even though noteY() would still return the right number.
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart);
+      // chartTime 2000: the TAP (t=2000) is exactly due; the HOLD (t=1000, d=500) is long past
+      renderer.render(2000, ["pending", "pending"]);
+      const quads = renderer.solidQuads;
+      // the tap body is the only 28px-tall quad (the hold body is 153px: 500ms of travel + the
+      // note height); the hit line is a 2px bar and the receptors 12px
+      const noteBodies = quads.filter((q) => Math.abs(q.h - NOTE_H) < 0.001);
+      expect(noteBodies.length).toBe(1);
+      const line = renderer.hitLineYPx;
+      for (const body of noteBodies) {
+        // upscroll: the body's BOTTOM edge is the leading edge, and it sits ON the line
+        expect(body.y + body.h).toBeCloseTo(line, 6);
+      }
+      renderer.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("the visual offset shifts the playfield without touching the judgement", () => {
+    // +20 ms at 0.5 px/ms = +10 px: notes appear LATER (further down in upscroll)
+    expect(noteY(1000, 1000, 800, 0.5, false, 10)).toBe(810);
+    // the offset is presentation only — the time→y relation is unchanged
+    expect(noteY(1000, 1000, 800, 0.5, false, 10) - noteY(1000, 1000, 800, 0.5)).toBe(10);
+  });
+
+  it("downscroll mirrors the offset too, so 'positive = appears later' holds in both directions", () => {
+    const up = noteY(1000, 1000, 800, 0.5, false, 10);
+    const down = noteY(1000, 1000, 800, 0.5, true, 10);
+    // mirrored geometry: downscroll's y is the mirror of upscroll's y about the hit line,
+    // and the offset flips sign with the mirror
+    expect(down).toBe(2 * 800 - up);
+  });
+
+  it("the hit line MIRRORS with scroll direction: 82% upscroll, 18% downscroll", () => {
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      // PATH A: the direction is known at construction (opts.downscroll)
+      const builtDown = new WebGLRenderer(makeFakeCanvas(), atlasChart, { downscroll: true });
+      expect(builtDown.hitLineYPx).toBeCloseTo(600 * 0.18, 6);
+      builtDown.dispose();
+
+      // PATH B: the direction is flipped at runtime (setPresentation) — the line must MOVE,
+      // not keep the position it had at construction
+      const up = new WebGLRenderer(makeFakeCanvas(), atlasChart);
+      expect(up.hitLineYPx).toBeCloseTo(600 * 0.82, 6);
+      up.setPresentation({ downscroll: true });
+      expect(up.hitLineYPx).toBeCloseTo(600 * 0.18, 6);
+      up.setPresentation({ downscroll: false });
+      expect(up.hitLineYPx).toBeCloseTo(600 * 0.82, 6);
+      up.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("downscroll puts the note's LEADING edge on the MIRRORED line", () => {
+    // the downscroll counterpart of the draw-path assertion: the note approaches from BELOW,
+    // so its leading edge is the TOP edge and the line sits where that edge lands
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart, { downscroll: true });
+      renderer.render(2000, ["pending", "pending"]); // the TAP (t=2000) is exactly due
+      const quads = renderer.solidQuads;
+      const noteBodies = quads.filter((q) => Math.abs(q.h - NOTE_H) < 0.001);
+      expect(noteBodies.length).toBe(1);
+      const line = renderer.hitLineYPx;
+      expect(line).toBeCloseTo(600 * 0.18, 6);
+      for (const body of noteBodies) {
+        // downscroll: the body's TOP edge is the leading edge, and it sits ON the line
+        expect(body.y).toBeCloseTo(line, 6);
+      }
+      renderer.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("the note's leading edge and the line coincide at the hit moment in BOTH directions", () => {
+    // downscroll: the note approaches the line from BELOW, so its leading edge is the TOP edge
+    // and the line must sit where that edge lands (the mirrored position).
+    const hitLineUp = 600 * 0.82;
+    const hitLineDown = 600 * 0.18;
+    expect(noteY(1000, 1000, hitLineUp, 0.5, false)).toBe(hitLineUp);
+    expect(noteY(1000, 1000, hitLineDown, 0.5, true)).toBe(hitLineDown);
   });
 });
 

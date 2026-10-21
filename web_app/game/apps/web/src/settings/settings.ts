@@ -30,6 +30,10 @@ export interface DefaultSettings {
   deviceCalibrationOffsetMs: number;
   scrollSpeed: number;
   downscroll: boolean;
+  /** W4: visual-only playfield shift in ms. Positive = notes appear LATER. Never judged —
+   *  this is the perceptual counterpart of the audio offset, and it must not reach the
+   *  input path (C10). */
+  visualOffsetMs: number;
   keybinds: Keybinds;
 }
 
@@ -51,6 +55,7 @@ export const DEFAULT_SETTINGS: DefaultSettings = {
   deviceCalibrationOffsetMs: 0,
   scrollSpeed: SCROLL_PX_PER_MS,
   downscroll: false,
+  visualOffsetMs: 0,
   keybinds: { lanes: ["d", "f", "j", "k"] },
 };
 

@@ -17,3 +17,4 @@ download_minimal.py
 .ruff_cache/
 .mypy_cache/
 .env
+AGENTS.md

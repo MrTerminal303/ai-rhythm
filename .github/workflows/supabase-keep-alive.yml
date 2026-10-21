@@ -14,13 +14,36 @@ jobs:
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
           # Named-table query required: GET /rest/v1/ is OpenAPI introspection and does
-          # NOT reset the pause timer (spec §3 A14). The key value is never echoed
-          # (Supabase no-logging warning) — only the HTTP status is printed.
+          # NOT reset the pause timer (spec §3 A14). Neither the key nor the URL is echoed
+          # (Supabase no-logging warning).
+          #
+          # Diagnosability (A14 fix r1, 2026-10-21): the first real run failed with a bare
+          # `keepalive status=404`, which is UNATTRIBUTABLE — a missing table, a schema-cache
+          # miss, and a wrong URL path all look identical. The response body is a PostgREST
+          # error object ({"code":"42P01",...}) carrying the actual cause and contains no
+          # credentials, so it is printed on failure. The key is still never echoed.
           code=$(curl -sS -o /tmp/keepalive-body -w "%{http_code}" \
             -H "apikey: ${SUPABASE_PUBLISHABLE_KEY}" \
             "${SUPABASE_URL}/rest/v1/keepalive?select=*&limit=1")
           echo "keepalive status=${code}"
           case "${code}" in
             2??) echo "OK";;
-            *)   echo "keepalive FAILED with status ${code}"; exit 1;;
+            *)
+              echo "keepalive FAILED with status ${code}"
+              echo "response body (PostgREST error, no credentials):"
+              cat /tmp/keepalive-body
+              echo
+              # Hints keyed to the codes this endpoint actually produces.
+              case "${code}" in
+                404) echo "HINT 404: table absent from PostgREST's schema cache. Either the" \
+                          "migration was not applied, or it was applied after the cache was" \
+                          "built. Run in the Supabase SQL editor:" \
+                          "  notify pgrst, 'reload schema';" \
+                          "and confirm public.keepalive exists in the Table Editor.";;
+                401) echo "HINT 401: the publishable key is wrong/missing, or it is not" \
+                          "the SUPABASE_PUBLISHABLE_KEY secret this workflow reads.";;
+                403) echo "HINT 403: RLS/grant denies anon SELECT on public.keepalive." \
+                          "The migration must grant select on public.keepalive to anon.";;
+              esac
+              exit 1;;
           esac

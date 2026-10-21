@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Beatmap } from "@airhythm/shared";
 import { GameEngine } from "./engine.js";
 import { PerformanceClock } from "./clock.js";
-import { flashAlpha, noteY, NOTE_H, WebGLRenderer } from "./renderer-webgl.js";
+import { flashAlpha, noteY, NOTE_H, HIT_LINE_H, RECEPTOR_H, WebGLRenderer } from "./renderer-webgl.js";
 import type { GameSnapshot, NoteState, Renderer } from "./types.js";
 
 const chart: Beatmap = {
@@ -159,6 +159,54 @@ describe("W4: note leading edge meets the judgement line", () => {
         // upscroll: the body's BOTTOM edge is the leading edge, and it sits ON the line
         expect(body.y + body.h).toBeCloseTo(line, 6);
       }
+      renderer.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("the white line is drawn WHOLE, below the note's leading edge (nothing is clipped)", () => {
+    // W4 fix r2: the 2px rule used to be CENTRED on hitLineY, so a note whose leading edge
+    // stopped there covered the rule's top half — the player saw the note's bottom edge
+    // clipping a half-eaten white bar. The rule is now drawn entirely BEYOND the leading edge.
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart);
+      renderer.render(2000, ["pending", "pending"]);
+      const quads = renderer.solidQuads;
+      // the rule is the 2px quad spanning the full width of the highway
+      const rules = quads.filter((q) => Math.abs(q.h - HIT_LINE_H) < 0.001);
+      expect(rules.length).toBe(1);
+      const rule = rules[0]!;
+      const line = renderer.hitLineYPx;
+      // upscroll: the rule's TOP edge is the leading edge, so the whole rule is below it
+      expect(rule.y).toBeCloseTo(line, 6);
+      expect(rule.y + rule.h).toBeCloseTo(line + HIT_LINE_H, 6);
+      // and the note's bottom edge is flush with the rule's top edge — a touch, not an overlap
+      const body = quads.find((q) => Math.abs(q.h - NOTE_H) < 0.001)!;
+      expect(body.y + body.h).toBeCloseTo(rule.y, 6);
+      renderer.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("downscroll: the white line is drawn WHOLE, above the note's leading edge", () => {
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      const renderer = new WebGLRenderer(makeFakeCanvas(), atlasChart, { downscroll: true });
+      renderer.render(2000, ["pending", "pending"]);
+      const quads = renderer.solidQuads;
+      const rule = quads.find((q) => Math.abs(q.h - HIT_LINE_H) < 0.001)!;
+      const line = renderer.hitLineYPx;
+      // downscroll: the rule's BOTTOM edge is the leading edge, so the whole rule is above it
+      expect(rule.y + rule.h).toBeCloseTo(line, 6);
+      expect(rule.y).toBeCloseTo(line - HIT_LINE_H, 6);
+      // and the note's top edge is flush with the rule's bottom edge
+      const body = quads.find((q) => Math.abs(q.h - NOTE_H) < 0.001)!;
+      expect(body.y).toBeCloseTo(rule.y + rule.h, 6);
       renderer.dispose();
     } finally {
       vi.unstubAllGlobals();

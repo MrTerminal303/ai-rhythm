@@ -62,6 +62,10 @@ export const NOTE_H = 28;
 /** Hit-line position as a fraction of playfield height, before the downscroll mirror.
  *  Matches osu!mania's HitPosition default (402/480 = 83.75%) rounded to the W1 value. */
 export const HIT_LINE_FRAC = 0.82;
+/** W4 fix r2: the white judgement line's thickness in CSS px (§6.2 — a 2px rule). */
+export const HIT_LINE_H = 2;
+/** W4 fix r2: the receptor (the key indicator under each lane) height in CSS px. */
+export const RECEPTOR_H = 12;
 
 const HIT_FLASH_MS = 200; // hit flash fades out over 200 ms from the transition frame
 const MISS_FLASH_MS = 400; // missed flash fades out over 400 ms (the HUD MISS red read)
@@ -339,9 +343,26 @@ export class WebGLRenderer implements Renderer {
     for (let lane = 0; lane < KEY_COUNT; lane++) {
       const x = this.laneX[lane]!;
       this.quad(x, 0, this.laneW, this.height, 1, 1, 1, 0.03);
-      this.quad(x, this.hitLineY - 6, this.laneW, 12, 1, 1, 1, 0.8); // receptor
     }
-    this.quad(this.laneX[0]!, this.hitLineY - 1, this.laneW * KEY_COUNT, 2, 1, 1, 1, 0.8); // hit line (2px, §6.2)
+    // W4 fix r2: the note's leading edge lands flush ON the white line, and the line is drawn
+    // fully — the note must never eat its top half.
+    //
+    // Before: the 2px line was centred on `hitLineY` (spanning ±1). The note's leading edge
+    // stopped AT `hitLineY`, so the note covered the line's top half and the player saw the
+    // note's bottom edge clipping a half-eaten white bar.
+    //
+    // Now: `hitLineY` IS the note's leading edge at the judgement moment, so the line is drawn
+    // just BEYOND it — upscroll the line's TOP is at hitLineY (the note's bottom edge sits
+    // flush on the line's top edge, and the whole 2px rule is visible below it); downscroll the
+    // line's BOTTOM is at hitLineY (the note's top edge sits flush on it, rule visible above).
+    const lineTop = this.downscroll ? this.hitLineY - HIT_LINE_H : this.hitLineY;
+    for (let lane = 0; lane < KEY_COUNT; lane++) {
+      const x = this.laneX[lane]!;
+      // the receptor stays CENTRED on the line, as in every VSRG: the note covers its top half
+      // in upscroll, which is the intended "landing pad" read.
+      this.quad(x, this.hitLineY - RECEPTOR_H / 2, this.laneW, RECEPTOR_H, 1, 1, 1, 0.8); // receptor
+    }
+    this.quad(this.laneX[0]!, lineTop, this.laneW * KEY_COUNT, HIT_LINE_H, 1, 1, 1, 0.8); // hit line (§6.2)
 
     // notes: dt = note.t - chartTime; y = hitLineY - dt * scrollPxPerMs (§2.8, via noteY)
     // atlas snapshot per frame: once loaded, notes switch from the NEXT render on

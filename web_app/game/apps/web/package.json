@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "prebuild": "node scripts/copy-ort-wasm.mjs",
+    "prebuild": "node scripts/copy-ort-wasm.mjs && node scripts/gen-audio-fixture.mjs",
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",

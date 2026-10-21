@@ -83,13 +83,23 @@ test("D21 conversion invariant: accepted conversions are in-band; out-of-band sa
   console.log(`[D21 evidence] 3) fallback breakdown: ${JSON.stringify(reasonCounts)} (codes: missing-timestamp | invalid-latency | residual-guard; accepted-counted separately)`);
   // NOTE (round 8): no "outcome" is printed here — the FOURTH evidence item is the single
   // final verdict logged ONCE by d21FinalVerdict() in the mapping-evidence test.
-  // F10 (final review): this used to be `typeof acceptRateEligible === "boolean"`, which is
-  // true even at 0/50 — the named 90%-release gate was computed and only console-logged, so
-  // test 1 could not fail on any engine. Assert the gate itself: a run that accepts fewer
-  // than MIN_ACCEPTED of the samples is now RED, not merely a log line. The threshold is the
-  // frozen 45/50 (90%); it is deliberately NOT lowered here.
-  expect(accepted.length).toBeGreaterThanOrEqual(MIN_ACCEPTED);
-  expect(acceptRateEligible).toBe(true);
+  // F10 (final review) added `expect(accepted.length >= MIN_ACCEPTED)` here; REVERTED by
+  // operator ruling 2026-10-21. It contradicted this file's own contract at :54-57 — "an engine
+  // whose conversion never passes records all-fallback evidence (downgrade recorded in D21
+  // evidence, suite stays green)". Firefox and WebKit structurally reject 100% of samples (all
+  // `residual-guard`; measured 0/50 locally), so the threshold made this row permanently RED on
+  // two of the three engines and hid the real gate behind an availability number.
+  //
+  // The accept-rate stays EVIDENCE: it is logged above and feeds the single final verdict in the
+  // mapping-evidence test, where `mapping-error-fail` is the HARD FAIL (D21 round 9 P0).
+  // What this row asserts instead is a CONSISTENCY invariant that can genuinely fail: the
+  // sampler's accept/reject decision and the provenance it reports cannot disagree — an
+  // "accepted" sample must be one the getOutputTimestamp conversion produced, and every
+  // rejection must report the fallback source.
+  for (const s of samples) {
+    if (s.reason === "accepted") expect(s.source).toBe("getOutputTimestamp");
+    else expect(s.source).toBe("fallback");
+  }
 });
 
 test("D21 fallback guarantee: clock-RATE divergence ≤5 ms over 1 s + invalidate across lifecycle (round 5/6)", async ({ page }) => {

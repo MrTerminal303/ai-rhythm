@@ -284,6 +284,190 @@ describe("W4: note leading edge meets the judgement line", () => {
   });
 });
 
+// ---- W4: the same geometry under NON-DEFAULT scroll speed + measured device offset ----
+//
+// The default-settings rows above pin the contract at scrollSpeed 0.5 / offset 0 / calibration 0.
+// These rows run the SAME invariants across the settings a player can actually pick, because the
+// reported defect was "speed and measured offset move the note off the line": every row must pass
+// for the settings to be presentation-only (C10) rather than geometry-breaking.
+
+const SPEEDS = [0.1, 0.25, 0.5, 1, 1.5, 2];
+const CALIBRATIONS_MS = [-100, -50, 0, 50, 100];
+
+/** One tap, so a render has exactly one note body in it at any speed (a hold's body and head
+ *  both enter the viewport at slow speeds and would make "the note" ambiguous). */
+const singleTapChart: Beatmap = {
+  ...chart,
+  notes: [{ id: 0, t: 1000, lane: 0, type: "tap" }],
+};
+
+/** Render once and bucket the solid quads by height: the only 2px quad is the rule, the only
+ *  12px quads are the receptors, the only 28px ones are note heads (lane panels are 600px). */
+function renderGeometry(renderer: WebGLRenderer, chartTimeMs: number, states: readonly NoteState[] = ["pending"]) {
+  renderer.render(chartTimeMs, states);
+  const quads = renderer.solidQuads;
+  const byH = (h: number) => quads.filter((q) => Math.abs(q.h - h) < 1e-6);
+  return { line: byH(HIT_LINE_H), receptors: byH(RECEPTOR_H), notes: byH(NOTE_H) };
+}
+
+/** Build a renderer with the given presentation opts, run `fn`, always dispose. */
+function withRenderer<T>(
+  opts: { scrollSpeed?: number; downscroll?: boolean; visualOffsetMs?: number },
+  fn: (r: WebGLRenderer) => T,
+  map: Beatmap = singleTapChart,
+): T {
+  vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+  vi.stubGlobal("window", { devicePixelRatio: 1 });
+  try {
+    const renderer = new WebGLRenderer(makeFakeCanvas(), map, opts);
+    try {
+      return fn(renderer);
+    } finally {
+      renderer.dispose();
+    }
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
+const round6 = (n: number): number => {
+  const v = Number(n.toFixed(6));
+  return v === 0 ? 0 : v; // normalize -0 so table diffs show a real disagreement only
+};
+
+describe("W4: note/line geometry across scroll speeds", () => {
+  it("upscroll: the leading edge is on the line at its exact time at EVERY scroll speed", () => {
+    const table = SPEEDS.map((scrollSpeed) => {
+      const gapPx = withRenderer({ scrollSpeed }, (r) => {
+        const { notes } = renderGeometry(r, 1000); // the tap (t=1000) is exactly due
+        expect(notes).toHaveLength(1);
+        // upscroll: the body's BOTTOM edge is the leading edge
+        return notes[0]!.y + notes[0]!.h - r.hitLineYPx;
+      });
+      return { scrollSpeed, gapPx: round6(gapPx) };
+    });
+    expect(table).toEqual(SPEEDS.map((scrollSpeed) => ({ scrollSpeed, gapPx: 0 })));
+  });
+
+  it("downscroll: the leading edge is on the mirrored line at EVERY scroll speed", () => {
+    const table = SPEEDS.map((scrollSpeed) => {
+      const gapPx = withRenderer({ scrollSpeed, downscroll: true }, (r) => {
+        const { notes } = renderGeometry(r, 1000);
+        expect(notes).toHaveLength(1);
+        // downscroll: the body's TOP edge is the leading edge
+        return notes[0]!.y - r.hitLineYPx;
+      });
+      return { scrollSpeed, gapPx: round6(gapPx) };
+    });
+    expect(table).toEqual(SPEEDS.map((scrollSpeed) => ({ scrollSpeed, gapPx: 0 })));
+  });
+
+  it("the note travels `200 ms × speed` px in the 200 ms before it is due (the speed factors really apply)", () => {
+    // The zero-gap rows above hold for ANY speed factor (and even for a constant one): they only
+    // pin the instant of arrival. This row pins the RATE — render 200 ms early and the note must
+    // stand exactly 200 ms of travel away from the line, at every speed.
+    const table = SPEEDS.map((scrollSpeed) => {
+      const travelPx = withRenderer({ scrollSpeed }, (r) => {
+        const { notes } = renderGeometry(r, 800); // due at 1000 → 200 ms of travel to go
+        expect(notes).toHaveLength(1);
+        return round6(r.hitLineYPx - (notes[0]!.y + notes[0]!.h));
+      });
+      return { scrollSpeed, travelPx, expectedPx: round6(200 * scrollSpeed) };
+    });
+    for (const row of table) expect(row.travelPx).toBeCloseTo(row.expectedPx, 3);
+  });
+
+  it("the rule and the receptors do not move with scroll speed", () => {
+    const table = SPEEDS.map((scrollSpeed) => {
+      const g = withRenderer({ scrollSpeed }, (r) => {
+        const { line, receptors } = renderGeometry(r, 2000);
+        expect(line).toHaveLength(1);
+        expect(receptors).toHaveLength(4);
+        return {
+          lineY: round6(line[0]!.y),
+          receptorY: round6(receptors[0]!.y),
+          receptorH: round6(receptors[0]!.h),
+        };
+      });
+      return { scrollSpeed, ...g };
+    });
+    const first = table[0]!;
+    // every speed draws the rule/receptors at exactly the same place as the slowest speed
+    expect(table).toEqual(
+      SPEEDS.map((scrollSpeed) => ({
+        scrollSpeed,
+        lineY: first.lineY,
+        receptorY: first.receptorY,
+        receptorH: first.receptorH,
+      })),
+    );
+  });
+
+  it("a +20 ms visual offset moves the notes by 20 ms of travel at EVERY speed — and never the rule", () => {
+    const table = SPEEDS.map((scrollSpeed) => {
+      const base = withRenderer({ scrollSpeed }, (r) => renderGeometry(r, 1000));
+      const shifted = withRenderer({ scrollSpeed, visualOffsetMs: 20 }, (r) => renderGeometry(r, 1000));
+      const leading = (g: ReturnType<typeof renderGeometry>, down: boolean) => {
+        const body = g.notes[0]!;
+        return down ? body.y : body.y + body.h;
+      };
+      // the line stays put; the notes move DOWN by exactly 20 ms × the run's px/ms
+      expect(round6(shifted.line[0]!.y)).toBe(round6(base.line[0]!.y));
+      return {
+        scrollSpeed,
+        shiftPx: round6(leading(shifted, false) - leading(base, false)),
+        expectedPx: round6((20 / 1000) * scrollSpeed),
+      };
+    });
+    // tolerance = float32 quantization of a y near 500 px (the vertex buffer is Float32Array),
+    // which is coarser than a sub-pixel shift at the slowest speed. A wrong sign or a missing
+    // scroll-speed factor misses by whole pixels, so the check still bites.
+    for (const row of table) expect(row.shiftPx).toBeCloseTo(row.expectedPx, 3);
+  });
+});
+
+describe("W4: the measured device offset is INPUT-PATH ONLY (D21) — it never moves a pixel", () => {
+  // D21: `deviceCalibrationOffsetMs` is applied exactly once, inside `judgeDt`. The render path
+  // uses raw chartTime, so the note's drawn position must be byte-identical for every offset a
+  // player can measure. These rows pin that, so no later "fix" can quietly push a judgement
+  // value into presentation (C10) while changing what players see without changing what is judged.
+  it("any offset in ±500 ms renders the identical note body at the same chart time", () => {
+    const rows = CALIBRATIONS_MS.flatMap((calibrationMs) =>
+      [0.5, 1, 2].map((scrollSpeed) =>
+        withRenderer({ scrollSpeed }, (r) => {
+          const src = new FakeTime();
+          const clock = new PerformanceClock(src);
+          const engine = new GameEngine({ chart, clock, renderer: r, deviceCalibrationOffsetMs: calibrationMs });
+          clock.start(0);
+          // press lane 0 at the time this offset calls PERFECT for note 0 (t=1000)
+          engine.judge(0, 1000 + calibrationMs);
+          const hit = engine.snapshot().events.find((e) => e.type === "hit");
+          // render at note 1's exact due time (t=2000) — still pending, leading edge due
+          src.t = 2000;
+          engine.update();
+          const bodies = r.solidQuads.filter((q) => Math.abs(q.h - NOTE_H) < 1e-6);
+          expect(bodies).toHaveLength(1); // note 1 is the only pending body at its due time
+          return {
+            calibrationMs,
+            scrollSpeed,
+            grade: hit && hit.type === "hit" ? hit.grade : "none",
+            bodyY: round6(bodies[0]!.y),
+          };
+        }, chart),
+      ),
+    );
+    // control: each press really is PERFECT at its own offset — the offsets are live and distinct
+    expect(rows.map((r) => r.grade)).toEqual(rows.map(() => "perfect"));
+    // and the pixels do not vary with the offset AT ALL: one bodyY per scroll speed
+    for (const scrollSpeed of [0.5, 1, 2]) {
+      const ys = new Set(rows.filter((r) => r.scrollSpeed === scrollSpeed).map((r) => r.bodyY));
+      expect([...ys]).toHaveLength(1);
+    }
+    // the drawn body still lands its leading edge exactly on the line at the due time
+    for (const row of rows) expect(row.bodyY + NOTE_H).toBeCloseTo(600 * 0.82, 3);
+  });
+});
+
 it("Review Focus #4: judging again never mutates an earlier snapshot", () => {
   const { engine } = makeEngine(); // notes at 1000 (lane 0) and 2000 (lane 2)
   engine.judge(0, 1000);           // snapshot A: note0 hit

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // chartgen is the shared ANALYSIS layer — it touches Web Audio types
+    // (AudioBuffer / OfflineAudioContext) but no DOM APIs beyond them.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src"]
+}

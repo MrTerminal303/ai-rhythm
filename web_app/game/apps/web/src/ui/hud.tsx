@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { GameSnapshot, JudgementEvent } from "../engine/types.js";
 
-const JUDGE_LABEL: Record<string, string> = { perfect: "PERFECT", great: "GREAT", good: "GOOD", miss: "MISS" };
+export const JUDGE_LABEL: Record<string, string> = { perfect: "PERFECT", great: "GREAT", good: "GOOD", miss: "MISS" };
 const JUDGE_VAR: Record<string, string> = {
   perfect: "var(--judge-perfect)",
   great: "var(--judge-great)",

@@ -4,3 +4,4 @@ export * from "./constants.js";
 export * from "./judgement.js";
 export * from "./beatmap.js";
 export * from "./canonical.js";
+export * from "./rank.js";

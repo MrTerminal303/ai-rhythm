@@ -1,10 +1,12 @@
+import { asChartMs, type ChartMs } from "./branded.js";
+
 export interface TimeSource {
   nowMs(): number;
 }
 
 export interface GameClock {
   start(atChartMs?: number): void;
-  chartTimeMs(): number;
+  chartTimeMs(): ChartMs;
 }
 
 export class PerformanceClock implements GameClock {
@@ -21,8 +23,8 @@ export class PerformanceClock implements GameClock {
     this.originWallMs = this.source.nowMs();
   }
 
-  chartTimeMs(): number {
+  chartTimeMs(): ChartMs {
     if (this.originWallMs === null) throw new Error("clock not started");
-    return this.originChartMs + (this.source.nowMs() - this.originWallMs);
+    return asChartMs(this.originChartMs + (this.source.nowMs() - this.originWallMs));
   }
 }

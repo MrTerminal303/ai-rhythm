@@ -16,7 +16,11 @@
       {
         "name": "next"
       }
-    ]
+    ],
+    "paths": {
+      "@airhythm/beatmap-formats": ["../../packages/beatmap-formats/src/index.ts"],
+      "@airhythm/beatmap-formats/*": ["../../packages/beatmap-formats/*"]
+    }
   },
   "include": [
     "next-env.d.ts",

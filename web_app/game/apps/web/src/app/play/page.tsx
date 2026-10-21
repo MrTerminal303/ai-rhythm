@@ -1,39 +1,115 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import w1Chart from "../../../fixtures/w1-chart.json";
 import benchChart from "../../../fixtures/w1-benchmark-chart.json";
-import { parseBeatmap, type Beatmap } from "@airhythm/shared";
+import { canonicalJson, hashBeatmap, parseBeatmap, rankFor, type Beatmap } from "@airhythm/shared";
 import { PerfMonitor, RENDER_BUDGET_MS } from "../../engine/perf.js";
 import { GameEngine } from "../../engine/engine.js";
 import { AudioClock } from "../../engine/audio-clock.js";
-import { ClockPairKeeper } from "../../engine/clock-pair.js";
-import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, laneForKey } from "../../engine/controller.js";
+import { ClockPairKeeper, samplePair } from "../../engine/clock-pair.js";
+import type { ClockPair } from "../../engine/time-math.js";
+import { createKeyHandler, createReleaseHandler, flushHeldLanesBeforePause, lanesToKeyMap } from "../../engine/controller.js";
 import { SoloPauseController } from "../../engine/pause-controller.js";
 import { DeviceChangeDetector } from "../../engine/device-change.js";
+import { ResyncController } from "../../engine/resync.js";
+import { PlayPhaseMachine, PLAY_TRANSITIONS, type PlayPhase } from "../../engine/play-phase.js";
 import { loadCalibration } from "../../calibration-store.js";
+import { getSetting } from "../../settings/settings.js";
 import { WebGLRenderer } from "../../engine/renderer-webgl.js";
+import { asAudioOffsetMs, asPerfMs, type ChartMs } from "../../engine/branded.js";
+import { resolveChartSource, resolveAudioSource, isSafeFixtureName, type AudioSource } from "../../chart-source.js";
+import { loadVerifiedAudio, loadVerifiedChart } from "../../library/db.js";
 import { SnapshotStore, useGameSnapshot } from "../../ui/snapshot-store.js";
-import { Hud } from "../../ui/hud.js";
+import { buildRunResult, lastRunStore } from "../../ui/last-run.js";
+import { getAuthSnapshot, getServerAuthSnapshot, isAuthenticated, subscribeAuth } from "../../auth/auth.js";
+import { Hud, JUDGE_LABEL } from "../../ui/hud.js";
+import { computeProbeEntry, type InputProbeEntry } from "./input-probe.js";
 
 const FLASH_MS = 120; // key-label highlight duration; per-lane so chords light independently
 
-// Play phases: idle → loading → countdown → playing; paused (T10) → countdown → playing (resume)
-type Phase = "idle" | "loading" | "countdown" | "playing" | "paused";
+// W3 T16 (A6) protocol window: the first 5 s of the frame loop are discarded before ANY interval
+// statistic is recorded, so the gate and the tail cover the post-warm-up window only. The window
+// opens at the rAF loop start, which is ONE COUNTDOWN after the start click — the 3-2-1 countdown
+// runs BEFORE clock.start(0), so the countdown itself is never measured and the excluded 5 s are
+// the song's own first 5 s. The exclusion gates FRAME INTERVALS only: the render/update duration
+// percentiles still include the first frames (the shader-compile transient) — see the T16 note in
+// deferred-items.md. evidence-templates/w3-perf-protocol.md.
+const PERF_WARMUP_MS = 5000;
 
-// I5: cap the stored chart JSON before JSON.parse (mirrors MAX_TEXT_FILE_BYTES in
-// import/page.tsx — different file, same value; beatmaps are KB-scale).
-const MAX_IMPORT_JSON_CHARS = 10 * 1024 * 1024;
+// W3 T15 (A5): ?fixtureAudio is a dev/E2E-only source (chart-source.ts holds the documented
+// precedence). Production builds ignore it — Vercel leaves NEXT_PUBLIC_E2E unset.
+const FIXTURE_PARAMS_ENABLED = process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
+
+// W3 T26: the dev/E2E debug surface (`window.__w2`) and the RMS analyser that surface reads
+// are ONE feature: the analyser must exist wherever __w2 does, or `__w2.analyserRms()` is
+// exposed but can never work (it would always throw "analyser not created yet").
+const DEBUG_SURFACE_ENABLED =
+  process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1";
+
+// W3 T2 (D21, round 10 P1-1 regression target): the pure calculation behind
+// inputProbeRecord lives in ./input-probe.ts — no React state, no side effects — so the
+// recorder is unit-testable without a running AudioContext AND the unit test imports the
+// REAL implementation (a mirrored copy would stay green when the page regresses). The
+// page itself cannot export it: it is a Next client component and its generated
+// .next/types OmitWithTag constraint forbids extra named exports (TS2344); the e2e reads
+// the buffer through __w2.inputErrorLog() instead.
+
+// Play phases: driven by the A12 machine (play-phase.ts) — all movement goes through
+// applyPhase → machine.to; recovering (W3 T7 / A11) is a first-class machine state.
 
 // debug hook for e2e (w2-sync) — set on mount, reads live refs
+type ProbePairResult = {
+  source: string;
+  residualMs: number | null;
+  reason: "accepted" | "missing-timestamp" | "invalid-latency" | "residual-guard";
+};
 declare global {
   interface Window {
     __w2?: {
-      chartTimeMs(): number;
+      chartTimeMs(): ChartMs;
       playbackPositionMs(): number;
       phase(): string;
       noteCount(): number;
+      // W3 T2 (D21) invariant probes
+      ctxSnapshot(): {
+        currentTime: number;
+        baseLatency: number;
+        outputLatency: number;
+        tsContextTime: number | null;
+        tsPerformanceTime: number | null;
+      };
+      probePair(): ProbePairResult;
+      pairSampledAt(): number;
+      inputErrorLog(): InputProbeEntry[];
+      // W3 T15 (A5) claim-2 evidence hooks
+      notes(): { t: number; lane: number }[];
+      dts(): number[];
+      suspend(): Promise<void>;
+      resume(): Promise<void>;
+      // W3 T7 (A11): E2E-gated device-change simulation — forces one continuity check with an
+      // optional fake chart jump; returns true when the check completed and a recovery pause
+      // was entered, false on alignment-ok.
+      simulateDeviceChange(fakeJump?: boolean): Promise<boolean>;
+      // W3 T16 (A6): logs the CURRENT [perf] report (same serialized `[perf] <json>` line the natural
+      // freeze emits) with `completion: "forced"`, and stops the frame loop. The CI-shaped perf run
+      // calls it at its force-cap; certification never does.
+      forcePerfReport(): void;
+      // W3 T22 (B5): the presentation opts the renderer actually resolved — the committed
+      // e2e asserts /settings values reach the playfield through this readback, not a screenshot
+      appliedPresentation(): { scrollSpeed: number; downscroll: boolean };
+      // W3 T26 (spec §7 journeys 1–4): RMS of the signal AT THE MASTER GAIN, pre-DAC.
+      // FLOAT samples are already centred on 0 (getByteTimeDomainData centres near 128, so a
+      // byte-domain mean reads ~128 even for silence — review P0). Silence reads ~0.
+      // Throws before startGame built the graph (no analyser yet) — a fabricated 0 would be
+      // indistinguishable from a genuinely silent graph.
+      analyserRms(): number;
+      // W3 T13 (A9), F11 (final review): the atlas outcome the renderer actually committed.
+      // The affordances spec could only see the <canvas> (present in EVERY run, atlas or not),
+      // so it could not tell "fallback committed" from "atlas loaded fine". This seam makes
+      // the state observable; it is E2E-gated exactly like the rest of __w2.
+      atlas(): "loaded" | "fallback" | null;
     };
   }
 }
@@ -45,23 +121,36 @@ export default function PlayPage() {
   const store = storeRef.current;
   const snapshot = useGameSnapshot(store);
   const [activeLanes, setActiveLanes] = useState<number[]>([]);
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [phase, setPhase] = useState<PlayPhase>("idle");
   const [countdown, setCountdown] = useState(3);
   const [resuming, setResuming] = useState(false); // true only during the resume 3-2-1 (hides the start button)
   const [deviceToast, setDeviceToast] = useState(false); // output-device change hint (T12)
-  const [importError, setImportError] = useState(false); // W2 T18: ?import= present but w2-import unusable
+  const [libraryError, setLibraryError] = useState(false); // W3 T19 (B2): ?libraryChartId unresolvable/corrupt
   const [startError, setStartError] = useState<string | null>(null); // startGame failure surfaced in the start overlay
+  // W3 T23 (B6): the run-sync failure notice is driven from the auth store, so it appears the
+  // moment the bounded retry gives up — not on the next render for some other reason.
+  const authSnap = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getServerAuthSnapshot);
+  const runSyncError = authSnap.runSyncError;
 
   // refs bridging the mount effect, the click-start flow, and cleanup
-  const phaseRef = useRef<Phase>("idle");
+  const phaseRef = useRef<PlayPhase>("idle");
+  const phaseMachineRef = useRef<PlayPhaseMachine | null>(null);
+  if (phaseMachineRef.current === null) phaseMachineRef.current = new PlayPhaseMachine();
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const chartRef = useRef<Beatmap | null>(null);
   const benchmarkRef = useRef(false);
   const perfRef = useRef<PerfMonitor | null>(null);
   const clockRef = useRef<AudioClock | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  // W3 T26: the E2E analyser on the master gain (null outside E2E builds / before startGame).
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  // One reusable float buffer — analyserRms is polled per frame, so it must not allocate.
+  const analyserBufRef = useRef<Float32Array<ArrayBuffer> | null>(null);
   const rafRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined); // countdown chain
+  const onResizeRef = useRef<(() => void) | null>(null); // W3 T19 (B2): runMount's resize handler (cleanup scope)
+  const onEscapeRef = useRef<((e: KeyboardEvent) => void) | null>(null); // W3 T19 (B2)
+  const onVisibilityRef = useRef<(() => void) | null>(null); // W3 T19 (B2)
   const onKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const onKeyUpRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
@@ -70,9 +159,63 @@ export default function PlayPage() {
   const mountedRef = useRef(true); // false after unmount — aborts startGame's await chain
   const pauseCtlRef = useRef<SoloPauseController | null>(null);
   if (pauseCtlRef.current === null) pauseCtlRef.current = new SoloPauseController();
+  const pairKeeperRef = useRef<ClockPairKeeper | null>(null); // D21: lifecycle invalidation + e2e pairSampledAt
+  const inputProbeBufferRef = useRef<InputProbeEntry[]>([]); // D21 real-input mapping probe (E2E builds)
+  const dtsRef = useRef<number[]>([]); // W3 T15 (A5) claim 2: hit-event dt collection (E2E builds)
+  // W3 T16 (A6): THE single [perf] report emitter, created with the frame loop (it closes over the
+  // run's PerfMonitor + reportLogged guard). Natural freeze calls it with "natural"; the E2E
+  // __w2.forcePerfReport() hook calls it with "forced". One emitter, one log contract.
+  const perfReportRef = useRef<((completion: "natural" | "forced") => void) | null>(null);
+  const audioSourceRef = useRef<AudioSource>({ kind: "clickTrack" }); // resolved at mount: real .webm vs click track
+  const libraryAudioBytesRef = useRef<ArrayBuffer | null>(null); // W3 T19 (B2): verified stored audio for ?libraryChartId
+  const resyncRef = useRef<ResyncController | null>(null); // A11 resync machine (T7); created next to pauseCtlRef
+  if (resyncRef.current === null) resyncRef.current = new ResyncController();
+  // A11 shared handler body: the 2 s poll and the __w2.simulateDeviceChange E2E hook both run
+  // this ONE function (review P0: page-level continuity is proven by the hook, not units).
+  // Returns true when the alignment-lost verdict entered the recovery pause; false on
+  // alignment-ok. Gated on "aligned" + "playing" — the resync table throws otherwise, so the
+  // raw poll must not dispatch blindly.
+  const resyncCheckRef = useRef<{
+    run: (fakeJump?: boolean) => Promise<boolean>;
+  } | null>(null);
+  if (resyncCheckRef.current === null) {
+    resyncCheckRef.current = {
+      run: (fakeJump = false): Promise<boolean> => {
+        const resync = resyncRef.current!;
+        const clock = clockRef.current;
+        if (!clock) return Promise.resolve(false);
+        if (resync.current !== "aligned") return Promise.resolve(false);
+        if (phaseRef.current !== "playing") return Promise.resolve(false);
+        const chartBefore = clock.chartTimeMs();
+        const wallBefore = performance.now(); // declared measurement interval (review P0)
+        resync.dispatch("device-change"); // aligned → resyncing (legal only from aligned)
+        return new Promise((resolve) => {
+          requestAnimationFrame(() => {
+            const wall = performance.now() - wallBefore;
+            const jump = fakeJump ? 500 : 0; // fakeJump simulates a discontinuous chart reading
+            const chartAfter = clock.chartTimeMs() + jump;
+            const ok = Number.isFinite(chartAfter) &&
+              chartAfter >= chartBefore &&
+              Math.abs(chartAfter - chartBefore - wall) <= 100;
+            if (ok) resync.dispatch("alignment-ok"); // resyncing → aligned — stay playing
+            else resync.dispatch("alignment-lost"); // resyncing → recovery-paused
+            if (ok) {
+              setDeviceToast(true); // latency may have shifted — still hint recalibrate
+              resolve(false);
+            } else {
+              enterPause("recovering"); // flush-then-freeze (D7 ordering) into the recovery phase
+              resolve(true);
+            }
+          });
+        });
+      },
+    };
+  }
 
-  const applyPhase = (p: Phase): void => {
-    phaseRef.current = p; // sync first — guards re-entry before React re-renders
+  const applyPhase = (p: PlayPhase): void => {
+    const machine = phaseMachineRef.current!; // always constructed above
+    machine.to(p); // throws on illegal — bugs surface immediately (A12)
+    phaseRef.current = machine.current; // sync bridge for non-React closures (the ONE direct write)
     setPhase(p);
   };
 
@@ -95,8 +238,12 @@ export default function PlayPage() {
   };
 
   // blur / visibilitychange → hidden while playing: flush held-lane releases FIRST,
-  // then freeze clock, record position once, show overlay (Review Focus 4, W2 T17)
-  const pauseGame = (): void => {
+  // then freeze clock, record position once, show overlay (Review Focus 4, W2 T17).
+  // W3 T7 (A11): extracted into enterPause(target) — the flush-then-freeze order
+  // (flushHeldLanesBeforePause → clock.pause() → record → applyPhase(target)) is unchanged;
+  // target selects the post-pause phase: "paused" for user/blur pause, "recovering" for
+  // device-change / AudioContext-interruption recovery.
+  const enterPause = (target: "paused" | "recovering"): void => {
     if (phaseRef.current !== "playing") return;
     const clock = clockRef.current;
     const engine = engineRef.current;
@@ -105,29 +252,39 @@ export default function PlayPage() {
       heldLanes: heldLanesRef.current,
       releaseAt: (lane) => {
         if (!engine || engine.isFrozen()) return;
-        engine.release(lane, clock.chartTimeAt(performance.now())); // input-domain time, pre-pause
+        engine.release(lane, clock.chartTimeAt(asPerfMs(performance.now()))); // input-domain time, pre-pause
         store.set(engine.snapshot());
       },
       pause: () => {
+        pairKeeperRef.current?.invalidate(); // D21 round 5 P0-1: BEFORE clock.pause() — no stale pair survives suspend
         clock.pause(); // T7: freezes chartTime/playbackPosition — never throws
         const pausedAt = clock.chartTimeMs(); // frozen value, not a live reading
         pauseCtlRef.current?.pause(pausedAt);
-        applyPhase("paused");
+        applyPhase(target);
       },
     });
   };
+  const pauseGame = (): void => enterPause("paused");
 
   const resumeGame = (): void => {
-    if (phaseRef.current !== "paused") return;
+    // W3 T7 (A11): resume accepts BOTH "paused" (user pause) and "recovering" (device-change /
+    // interruption recovery) — both render the resume overlay; data-testid distinguishes them.
+    if (phaseRef.current !== "paused" && phaseRef.current !== "recovering") return;
     const clock = clockRef.current;
     if (!clock) return;
     const at = pauseCtlRef.current?.pausedAtMs ?? 0;
+    // A11: user-resume is dispatched BEFORE the 3-2-1 (recovery-paused → resyncing is legal
+    // only from recovery-paused; it must NOT run from "paused" — user pause stays off-machine)
+    const fromRecovery = phaseMachineRef.current!.current === "recovering";
+    if (fromRecovery) resyncRef.current!.dispatch("user-resume");
     setResuming(true);
     runCountdown(() => {
       clock.start(at);
+      pairKeeperRef.current?.invalidate(); // D21 round 5 P0-1: after clock.start() (resume path)
       pauseCtlRef.current?.clear();
       setResuming(false);
       applyPhase("playing");
+      if (fromRecovery) resyncRef.current!.dispatch("alignment-ok"); // resyncing → aligned
     });
   };
 
@@ -138,24 +295,62 @@ export default function PlayPage() {
     mountedRef.current = true; // re-arm on (Strict Mode) remount
     const params = new URLSearchParams(window.location.search);
     const benchmark = params.get("chart") === "benchmark";
-    // W2 T18: truthy ?import= → resolve chart from sessionStorage before fixture selection;
-    // missing/invalid → inline error + link to /import (no renderer, no start overlay)
-    let chart: Beatmap;
-    if (!benchmark && params.get("import")) {
-      try {
-        const raw = sessionStorage.getItem("w2-import");
-        if (!raw) throw new Error("w2-import missing from sessionStorage");
-        if (raw.length > MAX_IMPORT_JSON_CHARS) throw new Error("w2-import exceeds size limit");
-        chart = parseBeatmap(JSON.parse(raw));
-      } catch (err) {
-        console.error("[play] imported chart failed to load:", err);
-        setImportError(true);
-        return; // mount effect exits without renderer / __w2 / listeners
-      }
-    } else {
-      chart = parseBeatmap(benchmark ? benchChart : w1Chart);
+    const fixtureAudio = params.get("fixtureAudio");
+    // W3 T2 (T15)/T20 source precedence (chart-source.ts) — one resolver, not two param reads:
+    //   chart: benchmark > default w1 (the W2 ?import sessionStorage path was removed in T20 —
+    //          /import now stores via the T18 library store and links ?libraryChartId below)
+    //   audio: fixtureAudio > click track
+    // ?fixtureAudio=<name> pairs /songs/<name>.webm with a chart from ANOTHER source (T15 claim 2
+    // runs the long.osu chart through /import + long.webm here; A6 pairs the benchmark chart with
+    // long audio). The name is validated BEFORE any URL join; production builds cannot select it.
+    const sourceParams = { benchmark, fixtureAudio };
+    const chartSource = resolveChartSource(sourceParams);
+    const audioSource = resolveAudioSource(sourceParams, { fixtureEnabled: FIXTURE_PARAMS_ENABLED });
+    if (audioSource.kind === "fixture" && !isSafeFixtureName(audioSource.name)) {
+      console.error(`[play] refusing unsafe fixtureAudio source: /songs/${audioSource.name}.webm`);
+      setStartError(`Could not load the audio fixture: ${audioSource.name}`);
+      return; // no renderer / __w2 / listeners on the unsafe branch
     }
-    const renderer = new WebGLRenderer(canvas, chart);
+    audioSourceRef.current = audioSource;
+    // W3 T19 (B2): the ?libraryChartId branch (highest chart-source precedence per the
+    // documented order in chart-source.ts) resolves the stored chartJson + verified audio
+    // bytes from the T18 store. It is async, so it wraps the shared mount body (renderer,
+    // __w2, listeners, frame loop) which runs once the source is settled. On missing/corrupt
+    // state the record is marked damaged (review P0) and the inline error renders — no
+    // renderer, __w2, or listeners attach on that path.
+    const libraryChartId = params.get("libraryChartId");
+    const runMount = (resolvedLibraryChart: Beatmap | null, libraryAudio: ArrayBuffer | null): void => {
+    // W3 T20: the W2 ?import sessionStorage branch is gone — library beats benchmark beats default
+    let chart: Beatmap;
+    if (resolvedLibraryChart !== null) {
+      chart = resolvedLibraryChart; // W3 T19 (B2): the ?libraryChartId branch won — highest precedence
+      libraryAudioBytesRef.current = libraryAudio; // startGame decodes THESE bytes, not the click track
+    } else {
+      chart = parseBeatmap(chartSource.kind === "benchmark" ? benchChart : w1Chart);
+    }
+    // A7 (W3 T10): context loss takes the standard pause path — no second pause semantic.
+    // onContextLost → enterPause("paused") (D7 flush-then-freeze ordering, as user pause).
+    // onContextRestored → GL rebuild is renderer-internal; UI stays paused/resumable. The
+    // restored context has no texture, and renderer.initGL() re-armed the atlas load, so we
+    // re-invoke initAtlas() here to re-fetch + re-upload it — initAtlas stays idempotent via
+    // atlasInitStarted (cannot double-fetch) and a failed re-fetch degrades to the permanent
+    // code-drawn path (T13's 5 s timeout) rather than hanging.
+    // Held-lanes were flushed at pause (heldLanesRef cleared); a still-held key re-syncs
+    // ONLY through normal input semantics on its next event (a still-held key produces no
+    // new keydown until re-pressed — no synthetic releases, no artificial keyup dispatch).
+    // W3 T22 (B5): the renderer is constructed at mount (B6 requires webglReady before the
+    // start click), so it takes the settings then; startGame re-applies the values it reads
+    // so a settings edit between page load and the start click still lands this run.
+    const renderer = new WebGLRenderer(canvas, chart, {
+      scrollSpeed: getSetting("scrollSpeed"),
+      downscroll: getSetting("downscroll"),
+      onContextLost: () => {
+        // only a RUNNING game pauses; loss while paused/recovering/completed is renderer-internal
+        // (phaseMachineRef is read-only here — the machine owns transitions; enterPause guards)
+        if (phaseMachineRef.current!.current === "playing") enterPause("paused");
+      },
+      onContextRestored: () => { renderer.initAtlas().catch(() => {}); },
+    });
     // signal ONLY after the renderer's constructor succeeded (it throws if WebGL2 is
     // unavailable) — the B6 e2e waits on this attribute instead of calling getContext()
     // itself, which would succeed even if the app never initialized the renderer
@@ -176,7 +371,7 @@ export default function PlayPage() {
     // Dev builds get it; production builds only when explicitly opted in — the
     // Playwright webServer sets NEXT_PUBLIC_E2E=1 (inlined at `pnpm build`, since its
     // webServer runs `pnpm build && pnpm start`). Vercel builds leave it unset → absent.
-    if (process.env.NODE_ENV === "development" || process.env.NEXT_PUBLIC_E2E === "1") {
+    if (DEBUG_SURFACE_ENABLED) {
       window.__w2 = {
         chartTimeMs: () => {
           if (!clockRef.current) throw new Error("__w2.chartTimeMs: clock not created yet");
@@ -186,11 +381,111 @@ export default function PlayPage() {
           if (!clockRef.current) throw new Error("__w2.playbackPositionMs: clock not created yet");
           return clockRef.current.playbackPositionMs();
         },
+        // W3 T26: RMS at the master gain, PRE-DAC. Float domain — silence is ~0 (byte-domain
+        // samples centre near 128 and would read ~128 at silence; review P0).
+        analyserRms: () => {
+          const analyser = analyserRef.current;
+          if (!analyser) throw new Error("__w2.analyserRms: analyser not created yet (startGame has not run)");
+          let buf = analyserBufRef.current;
+          if (buf === null || buf.length !== analyser.fftSize) {
+            buf = new Float32Array(new ArrayBuffer(analyser.fftSize * 4));
+            analyserBufRef.current = buf;
+          }
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (const v of buf) sum += v * v;
+          return Math.sqrt(sum / buf.length);
+        },
+        // F11 (final review): the renderer's committed atlas outcome — see the type comment.
+        atlas: () => rendererRef.current?.atlasState ?? null,
         phase: () => phaseRef.current,
         noteCount: () => chart.notes.length,
+        ctxSnapshot: () => {
+          const audioCtx = audioCtxRef.current;
+          if (!audioCtx) return { currentTime: 0, baseLatency: 0, outputLatency: 0, tsContextTime: null, tsPerformanceTime: null };
+          const ts = audioCtx.getOutputTimestamp?.() ?? null;
+          return {
+            currentTime: audioCtx.currentTime,
+            baseLatency: audioCtx.baseLatency,
+            outputLatency: audioCtx.outputLatency,
+            tsContextTime: ts?.contextTime ?? null,
+            tsPerformanceTime: ts?.performanceTime ?? null,
+          };
+        },
+        // probePair runs the REAL samplePair against live ctx state (round 4: the e2e must verify
+        // fallback SELECTION, not just raw residuals — one consistent accept/reject contract)
+        probePair: () => {
+          const audioCtx = audioCtxRef.current;
+          if (!audioCtx) return { source: "fallback", residualMs: null, reason: "missing-timestamp" as const };
+          // ONE clock snapshot for the whole probe (round 10 P2-7 + round 11 P2-18): the diagnostic
+          // residual and the samplePair call MUST use the same captured currentTime.
+          const ts = audioCtx.getOutputTimestamp?.() ?? null;
+          // AudioTimestamp fields are optional (lib.dom) — normalize so the reader type
+          // matches samplePair's contract (incomplete readings fall back inside samplePair)
+          const reading = ts && ts.performanceTime !== undefined && ts.contextTime !== undefined
+            ? { performanceTime: ts.performanceTime, contextTime: ts.contextTime }
+            : null;
+          const perfNow = performance.now();
+          const ctxNow = audioCtx.currentTime; // captured ONCE, used for both paths
+          const lat = { baseLatencySeconds: audioCtx.baseLatency, outputLatencySeconds: audioCtx.outputLatency };
+          // Validate BOTH latency components before computing any residual (round 10 P2-7):
+          // a partial sum (one valid, one invalid) is NEVER reported as a residual — it would
+          // be fabricated, not a measurement.
+          const base = lat.baseLatencySeconds, out = lat.outputLatencySeconds;
+          const latOk = base !== undefined && Number.isFinite(base) && base >= 0 && out !== undefined && Number.isFinite(out) && out >= 0;
+          const pair = samplePair(audioCtx, perfNow, () => reading, lat, { currentTime: ctxNow }); // round 11 P2-18: pass snapshot
+          let residualMs: number | null = null;
+          let reason: ProbePairResult["reason"];
+          if (!reading) {
+            reason = "missing-timestamp";
+          } else if (!latOk) {
+            reason = "invalid-latency"; // residualMs stays null — no fabricated partial sum
+          } else {
+            // Only now is the residual valid: both latency components present; same ctxNow as samplePair
+            residualMs = (ctxNow - (reading.contextTime + (perfNow - reading.performanceTime) / 1000 + base! + out!)) * 1000;
+            if (pair.source === "getOutputTimestamp") reason = "accepted";
+            else reason = "residual-guard"; // conversion available but rejected by the 25 ms guard
+          }
+          return { source: pair.source, residualMs, reason };
+        },
+        pairSampledAt: () => {
+          const keeper = pairKeeperRef.current;
+          if (!keeper) return 0;
+          return keeper.get(performance.now()).sampledAt;
+        },
+        // W3 T15 (A5) claim 2: the committed fixture map (long.osu, 562 notes) and the dt of every
+        // hit this run produced (the judge wrapper below collects them), plus raw AudioContext
+        // suspend/resume so the standing suite can freeze the real audio clock.
+        notes: () => chart.notes.map((n) => ({ t: n.t, lane: n.lane })),
+        dts: () => dtsRef.current.slice(),
+        suspend: async () => {
+          const audioCtx = audioCtxRef.current;
+          if (audioCtx) await audioCtx.suspend();
+        },
+        resume: async () => {
+          const audioCtx = audioCtxRef.current;
+          if (audioCtx) await audioCtx.resume();
+        },
+        inputErrorLog: () => inputProbeBufferRef.current.map((x) => ({ ...x })),
+        // W3 T7 (A11) E2E hook: same handler body the 2 s poll runs — forced variant with an
+        // optional fake latency jump. Returns true only when the alignment-lost verdict entered
+        // the recovery pause; false on alignment-ok or when no check ran (already resyncing or
+        // not playing). The continuity check + dispatch sequence is a pure function of clock +
+        // resync machine, so both the poll and this hook drive ONE shared body.
+        simulateDeviceChange: (fakeJump?: boolean) => resyncCheckRef.current?.run(fakeJump ?? false) ?? Promise.resolve(false),
+        // W3 T16 (A6) E2E hook (T12 carry-over): emit the current report once with completion
+        // "forced" and stop the loop. forcePerfReportRef is set only once the frame loop exists —
+        // before that there is no perf sample to report, so the call is a no-op rather than a
+        // fabricated all-zero report.
+        forcePerfReport: () => {
+          cancelAnimationFrame(rafRef.current);
+          perfReportRef.current?.("forced");
+        },
+        appliedPresentation: () => renderer.appliedPresentation,
       };
     }
     const onResize = () => renderer.resize();
+    onResizeRef.current = onResize;
     window.addEventListener("resize", onResize);
     window.addEventListener("blur", pauseGame); // tab/window blur while playing → pause (T10)
     // F-04: user-invokable pause. Its own listener — never routed through the lane key map.
@@ -199,24 +494,66 @@ export default function PlayPage() {
     const onEscape = (e: KeyboardEvent): void => {
       if (e.repeat) return; // OS auto-repeat while held must not cycle pause↔resume
       if (e.key !== "Escape") return;
-      if (phaseRef.current === "playing") pauseGame();
-      else if (phaseRef.current === "paused") resumeGame();
+      if (phaseMachineRef.current!.current === "playing") pauseGame();
+      else if (phaseMachineRef.current!.current === "paused" || phaseMachineRef.current!.current === "recovering") resumeGame();
     };
     window.addEventListener("keydown", onEscape);
+    onEscapeRef.current = onEscape;
     const onVisibility = () => {
       if (document.visibilityState === "hidden") pauseGame();
     };
+    onVisibilityRef.current = onVisibility;
     document.addEventListener("visibilitychange", onVisibility);
+    }; // end runMount — the shared mount body is now callable for any resolved chart source
+    // W3 T19 (B2): dispatch by source. ?libraryChartId (highest precedence) resolves the
+    // stored chartJson + verified audio bytes from the T18 store (ASYNC — IndexedDB read);
+    // on missing/corrupt state it marks the record damaged (review P0) and renders the inline
+    // import-error UI instead of a renderer. The non-library path calls runMount straight-line
+    // (zero awaits — B6's renderer-readiness ordering is unchanged).
+    if (libraryChartId) {
+      void (async () => {
+        // F1 (final review): verify the chart body BEFORE parsing it. loadVerifiedChart
+        // re-hashes chartJson against chartHash and flips the record to damaged on a
+        // mismatch — a tampered-but-parseable chartJson must not reach the renderer.
+        const rec = await loadVerifiedChart(libraryChartId);
+        const loaded = rec.ok ? await loadVerifiedAudio(libraryChartId) : null;
+        if (!rec.ok || !loaded || !loaded.ok) {
+          setLibraryError(true); // missing/corrupt/damaged → inline import-error UI
+          return; // no renderer / __w2 / listeners on the error branch
+        }
+        if (!mountedRef.current) return; // unmounted mid-store-read
+        let resolved: Beatmap;
+        try {
+          resolved = parseBeatmap(JSON.parse(rec.chart.chartJson));
+        } catch (err) {
+          // loadVerifiedChart already re-hashed + JSON.parse'd successfully, so this
+          // catch is belt-and-braces: a parse failure after verification means
+          // parseBeatmap itself threw — flip to damaged and show the library error.
+          console.error("[play] verified chartJson failed to parse:", err);
+          setLibraryError(true);
+          return;
+        }
+        if (!mountedRef.current) return; // unmounted mid-parse
+        runMount(resolved, loaded.bytes);
+      })();
+      // The run-scoped listeners attached inside runMount are detached by the effect cleanup
+      // below (it runs regardless of which source resolved the chart).
+      // ponytail: on the async library path runMount may finish after this effect's cleanup
+      // already ran; the mountedRef guard right before the runMount call (no await between
+      // them) prevents that late mount, so no listener leak on the async path.
+    } else {
+      runMount(null, null);
+    }
     return () => {
       mountedRef.current = false; // abort startGame's in-flight awaits before tearing down
       cancelAnimationFrame(rafRef.current);
       if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
       if (onKeyRef.current) window.removeEventListener("keydown", onKeyRef.current);
       if (onKeyUpRef.current) window.removeEventListener("keyup", onKeyUpRef.current);
-      window.removeEventListener("resize", onResize);
+      if (onResizeRef.current) window.removeEventListener("resize", onResizeRef.current);
       window.removeEventListener("blur", pauseGame);
-      window.removeEventListener("keydown", onEscape);
-      document.removeEventListener("visibilitychange", onVisibility);
+      if (onEscapeRef.current) window.removeEventListener("keydown", onEscapeRef.current);
+      if (onVisibilityRef.current) document.removeEventListener("visibilitychange", onVisibilityRef.current);
       for (const t of activeTimers.current) window.clearTimeout(t); // key-flash timers must not outlive the effect
       activeTimers.current.clear();
       clockRef.current?.stop(); // teardown path — the only place stop() is used (T10)
@@ -224,20 +561,29 @@ export default function PlayPage() {
       audioCtxRef.current = null;
       if (audioCtx && audioCtx.state !== "closed") void audioCtx.close();
       // null the init-chain refs so a continuation that slips past mountedRef fails the init guard
+      rendererRef.current?.dispose(); // release GL program/buffer before nulling the ref
       clockRef.current = null;
       rendererRef.current = null;
       chartRef.current = null;
+      libraryAudioBytesRef.current = null; // W3 T19 (B2): stored bytes are run-scoped
       perfRef.current = null;
+      perfReportRef.current = null; // the emitter closes over the run's PerfMonitor — do not outlive the effect
       engineRef.current = null;
       heldLanesRef.current = new Set();
+      analyserRef.current = null;
+      analyserBufRef.current = null;
       delete window.__w2;
-      renderer.dispose(); // release GL program/buffer (Strict Mode double-mount would leak them)
     };
   }, [store]);
 
-  // output-device change (spec §4.7): poll observe() every 2 s while playing; sinkchange
-  // (best-effort, Chromium) marks dirty so the next poll fires even without a latency shift.
-  // Polling runs only while playing — paused sessions don't poll (minimal choice, T12).
+  // W2 T12 + W3 T7 (A11): output-device change detection — poll observe() every 2 s while
+  // playing. POLL-FALLBACK RATIONALE: no reliable cross-browser output-device-change event
+  // exists (sinkchange is Chromium-only and best-effort), so the 2 s poll is retained and
+  // subsumed into the A11 resync state machine: the poll only probes from "aligned",
+  // coalesces repeats while a check is in flight, and a detected change runs the declared
+  // continuity measurement (|ΔchartTime − Δwall| ≤ 100 ms across one frame, no NaN, no
+  // backwards jump) — ok → alignment-ok (stay playing, hint recalibrate), lost → recovery
+  // pause. sinkchange stays best-effort: it only marks the detector dirty.
   useEffect(() => {
     if (phase !== "playing") return;
     const audioCtx = audioCtxRef.current;
@@ -245,8 +591,14 @@ export default function PlayPage() {
     const detector = new DeviceChangeDetector(() => audioCtx.outputLatency);
     const onSink = (): void => detector.markDirty();
     audioCtx.addEventListener?.("sinkchange", onSink);
+    let checkInFlight = false;
+    const resync = resyncRef.current!;
+    const check = resyncCheckRef.current!;
     const id = window.setInterval(() => {
-      if (detector.observe()) setDeviceToast(true);
+      if (checkInFlight || resync.current !== "aligned") return; // coalesce + skip resyncing/recovery states
+      if (!detector.observe()) return; // no device change detected
+      checkInFlight = true;
+      void check.run(false).finally(() => { checkInFlight = false; });
     }, 2000);
     return () => {
       window.clearInterval(id);
@@ -265,9 +617,12 @@ export default function PlayPage() {
       audioCtxRef.current = audioCtx;
       await audioCtx.resume(); // user gesture from the click unlocks playback
       if (!mountedRef.current) return; // unmounted mid-await: cleanup already closed the ctx
-      const res = await fetch("/audio/click-track.wav");
-      if (!res.ok) throw new Error(`Could not load the click track (HTTP ${res.status})`);
-      const audioData = await res.arrayBuffer();
+      const storedBytes = libraryAudioBytesRef.current; // W3 T19 (B2): ?libraryChartId decodes verified stored bytes
+      const audioData = storedBytes ?? await (async () => {
+        const res = await fetch(audioSourceRef.current.kind === "fixture" ? `/songs/${audioSourceRef.current.name}.webm` : "/audio/click-track.wav");
+        if (!res.ok) throw new Error(`Could not load the audio track (HTTP ${res.status})`);
+        return res.arrayBuffer();
+      })();
       if (!mountedRef.current) return;
       const buffer = await audioCtx.decodeAudioData(audioData); // "Preparing…" while decoding
       if (!mountedRef.current) return; // never schedule the countdown on a dead page
@@ -275,6 +630,38 @@ export default function PlayPage() {
       const renderer = rendererRef.current;
       const perf = perfRef.current;
       if (!chart || !renderer || !perf) throw new Error("play page not initialized");
+      // W3 T22 (B5): settings read ONCE here, at run start. Presentation opts are re-applied
+      // to the mount-time renderer; volumes shape the audio graph built just below; and the
+      // keybind map is resolved once and shared by judging, held-lane tracking and the
+      // input-latency probe (they must agree on what counts as a lane key).
+      const presentation = { scrollSpeed: getSetting("scrollSpeed"), downscroll: getSetting("downscroll") };
+      renderer.setPresentation(presentation);
+      const volumes = {
+        master: getSetting("masterVolume"),
+        music: getSetting("musicVolume"),
+        sfx: getSetting("sfxVolume"),
+      };
+      const laneMap = lanesToKeyMap(getSetting("keybinds").lanes);
+      // master gain sits between every source and ctx.destination; the song feeds musicGain
+      // (SFX gain is wired but unfed — no SFX sources exist yet, spec §4 B5)
+      const masterGain = audioCtx.createGain();
+      masterGain.gain.value = volumes.master;
+      masterGain.connect(audioCtx.destination);
+      // W3 T26: the E2E analyser tap, PRE-DAC (parallel branch off the master gain — it adds
+      // no path to the destination, so playback is untouched). Same predicate as the `__w2`
+      // surface above: an extra AnalyserNode is a timing side-channel to production, so it
+      // exists exactly where `__w2.analyserRms()` can be called.
+      if (DEBUG_SURFACE_ENABLED) {
+        const analyser = audioCtx.createAnalyser();
+        masterGain.connect(analyser);
+        analyserRef.current = analyser;
+      }
+      const musicGain = audioCtx.createGain();
+      musicGain.gain.value = volumes.music;
+      musicGain.connect(masterGain);
+      const sfxGain = audioCtx.createGain();
+      sfxGain.gain.value = volumes.sfx;
+      sfxGain.connect(masterGain);
       const pairKeeper = new ClockPairKeeper(audioCtx, {
         // lib.dom types AudioTimestamp fields as optional; incomplete readings fall back (§4.1)
         readOutputTimestamp: () => {
@@ -283,34 +670,75 @@ export default function PlayPage() {
             ? { performanceTime: t.performanceTime, contextTime: t.contextTime }
             : null;
         },
+        readLatency: () => ({ baseLatencySeconds: audioCtx.baseLatency, outputLatencySeconds: audioCtx.outputLatency }), // D21: pair conversion only — both components
       });
+      pairKeeperRef.current = pairKeeper;
+      inputProbeBufferRef.current = [];
+      dtsRef.current = [];
       const clock = new AudioClock(audioCtx, pairKeeper);
-      clock.load(buffer, chart.song.audioOffsetMs);
+      clock.setOutput(musicGain); // T22: the song feeds the music gain, not ctx.destination directly
+      clock.load(buffer, asAudioOffsetMs(chart.song.audioOffsetMs));
       clockRef.current = clock;
-      // outputLatency → first-run default guess (spec §4.5); stored calibration wins inside loadCalibration
       const engine = new GameEngine({
         chart,
         clock,
         renderer,
         perf,
-        deviceCalibrationOffsetMs: loadCalibration(audioCtx.outputLatency),
+        deviceCalibrationOffsetMs: loadCalibration(),
       });
       store.set(engine.snapshot()); // HUD shows 0s once the game is built
       engineRef.current = engine;
       heldLanesRef.current = new Set();
 
+      // D21 lifecycle invalidation (round 5 P0-1): a pair sampled before a suspension
+      // must never map inputs after it (suspended time breaks the perf↔ctx linear
+      // extrapolation). AudioContext statechange (both directions) and visibilitychange
+      // invalidate the pair keeper.
+      const onCtxStateChange = (): void => {
+        pairKeeper.invalidate();
+        // W3 T7 (A11): AudioContext statechange away from "running" while playing is an
+        // interruption — dispatch into the recovery machine, then enter the recovery pause.
+        // enterPause's phase guard makes re-entry from the recovery-paused state a no-op,
+        // so the repeated "interruption" self-loop is safe.
+        if (audioCtx.state !== "running" && phaseMachineRef.current!.current === "playing") {
+          resyncRef.current!.dispatch("interruption"); // legal from aligned, resyncing, and recovery-paused
+          enterPause("recovering");
+        }
+      };
+      audioCtx.addEventListener?.("statechange", onCtxStateChange);
+      const onVisibilityForPair = (): void => {
+        pairKeeper.invalidate(); // hidden or visible: re-sample so suspended time never enters extrapolation
+      };
+      document.addEventListener("visibilitychange", onVisibilityForPair);
+
       // 3-2-1 countdown (wall-clock, solo form), then AudioClock.start(0)
       runCountdown(() => {
         clock.start(0);
+        pairKeeper.invalidate(); // after clock.start() (start path — round 5 P0-1)
         applyPhase("playing");
+        // Per-event probe state: the handler's inputChartTime closure records the EXACT
+        // pair it mapped through, and the onKey wrapper's recorder reads that same pair
+        // (one keeper.get per event, shared by conversion and recorder — round 9 P1-2).
+        const probeRef: { pairUsed: ClockPair | null } = { pairUsed: null };
         const rawKey = createKeyHandler({
-          inputChartTime: (ts) => clock.chartTimeAt(ts),
+          inputChartTime: (ts) => {
+            const pair = pairKeeperRef.current!.get(performance.now()); // D21: exact pair at mapping time
+            probeRef.pairUsed = pair; // recorder measures the EXACT mapped pair
+            return clock.chartTimeAt(asPerfMs(ts), pair);
+          },
+          lanes: laneMap, // T22: settings keybinds — the SAME map the telemetry sites below use
           engine: {
             // wrap judge: emit snapshot at keydown so HUD updates without waiting a frame (§2.3)
             isFrozen: () => engine.isFrozen(),
             judge: (lane, time) => {
               engine.judge(lane, time);
               store.set(engine.snapshot());
+              // A5 claim 2 (T15): collect the dt of every HIT this run produced. The snapshot the
+              // engine just published carries exactly this call's events (emit slices its own list),
+              // so the loop records this hit only — no second judging path, no stale-flash read.
+              for (const ev of engine.snapshot().events) {
+                if (ev.type === "hit") dtsRef.current.push(ev.dt);
+              }
             },
           },
           onAccepted: (lane) => {
@@ -325,7 +753,8 @@ export default function PlayPage() {
         });
         // W2 T17: keyup → engine.release via inputChartTime (never render chartTimeMs)
         const rawRelease = createReleaseHandler({
-          inputChartTime: (ts) => clock.chartTimeAt(ts),
+          inputChartTime: (ts) => clock.chartTimeAt(asPerfMs(ts)),
+          lanes: laneMap, // T22: releases resolve through the same settings map as judging
           engine: {
             isFrozen: () => engine.isFrozen(),
             release: (lane, time) => {
@@ -334,13 +763,46 @@ export default function PlayPage() {
             },
           },
         });
+        // D21 real-input probe (rounds 8–9, round 10 P1-1): the onKey wrapper obtains the
+        // pair ONCE per event (pairKeeper.get(handlerNow)), passes THAT pair to both the
+        // conversion (clock.chartTimeAt(ts, pairUsed)) and the recorder — the measured
+        // pair is provably the one the game used. The reference snapshot is captured
+        // BEFORE rawKey(e) runs so the handler-internal time never contaminates it.
+        // D21 real-input probe (rounds 8–9, round 10 P1-1): the onKey wrapper captures the
+        // reference snapshot BEFORE rawKey(e) runs so handler-internal time + clock
+        // advancement never contaminate it. The mapping itself goes through the KEY HANDLER's
+        // inputChartTime closure (clock.chartTimeAt(ts, pairKeeper.get(...)) — same fresh
+        // pair every call); the recorder's `cached` pair is the handlerNow pair, the exact
+        // object the mapping used at handler entry (keeper cache: same object until expiry).
+        const inputProbeRecord = (ev: KeyboardEvent, cached: ClockPair, handlerNow: number, ref: { perfBefore: number; perfAfter: number; ctxNow0: number }): void => {
+          if (phaseRef.current !== "playing") return;
+          const buf = inputProbeBufferRef.current;
+          buf.push(computeProbeEntry(ev, cached, handlerNow, ref));
+          if (buf.length > 200) buf.shift();
+        };
         const onKey = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return; // paused/countdown: no judging (T10); chartTimeAt would throw
-          rawKey(e);
+          const handlerNow = performance.now();
+          probeRef.pairUsed = null;
+          const ref = {
+            perfBefore: handlerNow,
+            perfAfter: 0,
+            ctxNow0: 0,
+          };
+          ref.ctxNow0 = audioCtx.currentTime; // captured BEFORE rawKey (round 10 P1-1)
+          ref.perfAfter = performance.now(); // bracket width bounds the clock-advance uncertainty
+          rawKey(e); // the handler's inputChartTime closure records the EXACT pair it mapped through
+          const pairUsed = probeRef.pairUsed;
+          if (pairUsed) inputProbeRecord(e, pairUsed, handlerNow, ref);
+          // A13: record input latency on accepted lane keys (real event time, not handler-local
+          // timing) — dispatch → handler completion; non-lane keys (Escape etc.) don't count.
+          // T22: consults the SAME resolved map the handler judged through, so a rebound key
+          // still counts as a lane key (and Escape/others never do).
+          if (laneMap[e.key.toLowerCase()] !== undefined) perf.recordInputLatency(performance.now() - e.timeStamp);
         };
         const onKeyUp = (e: KeyboardEvent): void => {
           if (phaseRef.current !== "playing") return;
-          const lane = laneForKey(e.key);
+          const lane = laneMap[e.key.toLowerCase()];
           if (lane !== undefined) heldLanesRef.current.delete(lane);
           rawRelease(e);
         };
@@ -349,8 +811,48 @@ export default function PlayPage() {
         window.addEventListener("keydown", onKey);
         window.addEventListener("keyup", onKeyUp);
         let lastRaf: number | undefined;
+        let loopStart = 0; // play-start wall clock; the first PERF_WARMUP_MS of intervals are discarded
+        // Report-once guard (T16): the frozen branch below stops the loop (no rAF re-arm), and this
+        // boolean makes a stray second entry (e.g. a force call after a natural freeze) log nothing.
+        let reportLogged = false;
+        const emitPerfReport = (completion: "natural" | "forced"): void => {
+          if (reportLogged) return;
+          reportLogged = true;
+          const tail = perf.frameIntervalsOver(16.7); // T12 helper — already carries the report's key names
+          const report = {
+            p95RenderDurationMs: perf.p95RenderDurationMs(),
+            p95UpdateDurationMs: perf.p95UpdateDurationMs(),
+            p95FrameIntervalMs: perf.p95FrameIntervalMs(),
+            p99FrameIntervalMs: perf.p99FrameIntervalMs(),
+            p95InputLatencyMs: perf.p95InputLatencyMs(),
+            inputLatencySamples: perf.inputLatencyCount(),
+            heapUsedMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+              ? Math.round(((performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize) / 1048576)
+              : null,
+            samples: perf.sampleCounts(),
+            // A6 gate field (T16): pass = FRAME-INTERVAL p95 ≤ 16.7 ms; render duration is data (renderPass)
+            pass: perf.p95FrameIntervalMs() <= RENDER_BUDGET_MS,
+            renderPass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
+            // Report-shape tail (T16). The T12 helper already returns the report's threshold-specific
+            // key names (a recorded T12 minor: they hardcode 16.7 while the method takes budgetMs —
+            // left alone here on purpose, not reshaped by T16); only p99 is added on this side.
+            tail: {
+              over16_7Count: tail.over16_7Count,
+              over16_7Share: tail.over16_7Share,
+              p99FrameIntervalMs: perf.p99FrameIntervalMs(),
+              maxFrameIntervalMs: tail.maxFrameIntervalMs,
+            },
+            completion,
+            chart: benchmarkRef.current ? "benchmark" : "w1",
+          };
+          console.log("[perf] " + JSON.stringify(report)); // one serialized line — natural and forced alike
+        };
+        perfReportRef.current = emitPerfReport;
         const frame = (rafMs: number) => {
-          if (lastRaf !== undefined) perf.recordFrameInterval(rafMs - lastRaf);
+          if (lastRaf !== undefined) {
+            // Protocol warm-up exclusion: only frames past PERF_WARMUP_MS enter the series.
+            if (loopStart !== 0 && rafMs - loopStart >= PERF_WARMUP_MS) perf.recordFrameInterval(rafMs - lastRaf);
+          }
           lastRaf = rafMs;
           if (phaseRef.current !== "playing") {
             // paused/resume-countdown: skip update + render (HUD frozen), keep the loop alive (T10)
@@ -358,16 +860,33 @@ export default function PlayPage() {
             return;
           }
           if (engine.isFrozen()) {
-            const report = {
-              p95RenderDurationMs: perf.p95RenderDurationMs(),
-              p95UpdateDurationMs: perf.p95UpdateDurationMs(),
-              p95FrameIntervalMs: perf.p95FrameIntervalMs(),
-              samples: perf.sampleCounts(),
-              pass: perf.p95RenderDurationMs() <= RENDER_BUDGET_MS,
-              chart: benchmarkRef.current ? "benchmark" : "w1",
-            };
-            console.log("[perf]", report);
-            store.set(engine.snapshot()); // final frozen snapshot reaches HUD
+            if (phaseRef.current === "playing") applyPhase("completed"); // A9: distinct end-of-run state (machine-legal, T8)
+            emitPerfReport("natural");
+            const finalSnap = engine.snapshot(); // frozen snapshot — single source of truth for B4 results
+            store.set(finalSnap); // final frozen snapshot reaches HUD + results overlay
+            // W3 T21 (B4): mint the RunResult ONCE at completion (round 3 P1-4) and hand it
+            // to B6's store. W3 T23 (B6): sessionOnly now reflects REAL auth state, so a
+            // signed-in completion is eligible for score sync.
+            const finishedChart = chartRef.current;
+            void (async () => {
+              let chartHash = "";
+              try {
+                if (finishedChart) chartHash = await hashBeatmap(canonicalJson(finishedChart));
+              } catch (err) {
+                // best-effort hand-off to B6: hash failure must not drop the run or go unhandled
+                console.error("[play] chart hash failed, publishing run without it:", err);
+              }
+              try {
+                // W3 T23 carry-over fix: BUILDING the result can itself throw (crypto.randomUUID
+                // is unavailable on a non-secure origin). The build now has a fallback id, and
+                // this catch makes the publish non-droppable regardless — a completed run must
+                // reach the results screen even if identity minting somehow fails.
+                lastRunStore.set(buildRunResult(finalSnap, chartHash, { authenticated: isAuthenticated() }));
+              } catch (err) {
+                console.error("[play] publishing the completed run failed:", err);
+              }
+            })();
+            // no rAF re-arm: the loop stops, [perf] logs exactly once
             return;
           }
           const t0 = performance.now();
@@ -375,6 +894,7 @@ export default function PlayPage() {
           perf.recordUpdateDuration(performance.now() - t0);
           rafRef.current = requestAnimationFrame(frame);
         };
+        loopStart = performance.now(); // warm-up window starts at play start, not at module load
         rafRef.current = requestAnimationFrame(frame);
       });
     } catch (err) {
@@ -423,29 +943,82 @@ export default function PlayPage() {
           Output device changed — <a href="/calibrate">recalibrate</a>
         </div>
       )}
-      {importError && (
+      {/* A9 (T13): end-of-run results overlay — DISTINCT from pause. T21 fills the body;
+          today it is minimal (title + final score + a way back). The start/pause overlay below
+          is excluded from "completed" so the two never share a block. */}
+      {libraryError && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}
-          data-testid="import-error"
+          data-testid="library-error"
         >
           <p role="alert" style={{ color: "var(--warn)", fontFamily: "var(--font-mono)" }}>
-            Could not load the imported chart.
+            Could not load the library chart.
           </p>
           <Link
-            href="/import"
+            href="/library"
             className="rounded-[10px] border px-6 py-3 text-sm"
             style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
           >
-            Import a chart
+            Back to library
           </Link>
         </div>
       )}
-      {!importError && phase !== "playing" && (
+      {!libraryError && phase === "completed" && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ background: "var(--bg)" }}
-          data-testid={phase === "paused" ? "pause-overlay" : "start-overlay"}
+          data-testid="results-overlay"
+        >
+          <p
+            data-testid="results-title"
+            style={{ color: "var(--text)", fontFamily: "var(--font-mono)" }}
+          >
+            Run complete
+          </p>
+          <p data-testid="results-score" style={{ color: "var(--text)", fontFamily: "var(--font-mono)" }}>
+            Score {snapshot?.score ?? 0}
+          </p>
+          <p data-testid="results-max-combo" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            Max combo {snapshot?.maxCombo ?? 0}
+          </p>
+          <p data-testid="results-accuracy" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            Accuracy {((snapshot?.accuracy ?? 0) * 100).toFixed(1)}%
+          </p>
+          <p data-testid="results-rank" style={{ color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "2rem" }}>
+            {rankFor(snapshot?.accuracy ?? 0)}
+          </p>
+          <p data-testid="results-breakdown" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            {(["perfect", "great", "good", "miss"] as const)
+              .map((g) => `${JUDGE_LABEL[g]} ${snapshot?.judgementCounts[g] ?? 0}`)
+              .join("  ·  ")}
+          </p>
+          {runSyncError !== null && (
+            // W3 T23 (B6): score sync is personal history — an unverified copy the player asked
+            // for. A failure is shown here (the run itself is safe locally) and never blocks play.
+            <p
+              role="status"
+              data-testid="run-sync-error"
+              data-run-id={runSyncError.runId}
+              style={{ color: "var(--warn)", fontFamily: "var(--font-mono)", textAlign: "center" }}
+            >
+              {runSyncError.message} (unverified personal history)
+            </p>
+          )}
+          <Link
+            href="/"
+            className="rounded-[10px] border px-6 py-3 text-sm"
+            style={{ borderColor: "var(--line)", background: "var(--surface)", color: "var(--text-dim)" }}
+          >
+            Back to library
+          </Link>
+        </div>
+      )}
+      {!libraryError && phase !== "playing" && phase !== "completed" && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+          style={{ background: "var(--bg)" }}
+          data-testid={phase === "paused" ? "pause-overlay" : phase === "recovering" ? "recovering-overlay" : "start-overlay"}
         >
           {phase === "loading" && (
             <p style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>Preparing…</p>
@@ -458,10 +1031,11 @@ export default function PlayPage() {
               {countdown}
             </p>
           )}
-          {phase === "paused" && (
+          {(phase === "paused" || phase === "recovering") && (
             <button
               type="button"
               onClick={resumeGame}
+              data-testid={phase === "recovering" ? "recovering-resume-button" : undefined}
               className="cursor-pointer rounded-[6px] border px-6 py-3 text-lg"
               style={{
                 borderColor: "var(--line)",
@@ -470,7 +1044,7 @@ export default function PlayPage() {
                 fontFamily: "var(--font-mono)",
               }}
             >
-              Paused — click to resume
+              {phase === "recovering" ? "Recovering — click to resume" : "Paused — click to resume"}
             </button>
           )}
           {startError && (

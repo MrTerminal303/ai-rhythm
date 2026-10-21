@@ -13,8 +13,10 @@ export interface GameSnapshot {
   accuracy: number;
   frozen: boolean;
   endTimeMs: number;
-  noteStates: readonly NoteState[]; // index = chart.notes index (aligned with chart.notes[i], NOT note.id)
   events: readonly JudgementEvent[];
+  // W3 T21 (B4): additive run-level aggregates (NOT a per-note array — T6 compact shape kept).
+  maxCombo: number;
+  judgementCounts: Record<Grade, number>;
 }
 
 export interface Renderer {

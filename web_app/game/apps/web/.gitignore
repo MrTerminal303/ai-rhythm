@@ -2,3 +2,8 @@
 
 .vercel
 .env*
+
+# B7 spike: ORT's ~14 MB wasm asset is a build artifact of the pinned dep
+# (scripts/copy-ort-wasm.mjs); the 240 s benchmark track is copied from /songs.
+public/ort/
+public/spike/long.webm

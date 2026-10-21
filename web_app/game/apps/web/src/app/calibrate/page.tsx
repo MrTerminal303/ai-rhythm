@@ -1,10 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import Link from "next/link";
-import { associateTaps, computeCalibration, saveCalibration } from "../../calibration-store.js";
+import { associateTaps, computeCalibration, saveCalibration, CALIBRATION_KEY } from "../../calibration-store.js";
 import { ClockPairKeeper } from "../../engine/clock-pair.js";
 import { audioClockSeconds } from "../../engine/time-math.js";
+import { asPerfMs } from "../../engine/branded.js";
+
+// A9 test seam: let a unit test drive the page to a done-with-result state without running
+// the metronome (AudioContext/keydown aren't expressible in jsdom). No-op in production.
+declare global {
+  interface Window {
+    __calibrateTest?: { seedResult(v: number | null): void };
+  }
+}
 
 const BEAT_COUNT = 20; // scheduled metronome clicks (Interfaces)
 const BEAT_INTERVAL_MS = 500;
@@ -22,7 +32,15 @@ export default function CalibratePage() {
   const [validPairs, setValidPairs] = useState(0);
   const [result, setResult] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null); // A9: failed save affordance
   const [startError, setStartError] = useState<string | null>(null); // start failure surfaced near the Start button
+
+  // A9 test seam — let a unit test seed the result state directly. Gated on NEXT_PUBLIC_E2E
+  // (inlined at build; e2e webServer sets it, prod builds leave it unset → seam absent).
+  // Re-registered every render so the seam drives the LATEST mount's setters.
+  if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_E2E === "1") {
+    window.__calibrateTest = { seedResult: (v: number | null) => flushSync(() => { setResult(v); setPhase("done"); }) };
+  }
 
   const phaseRef = useRef<Phase>("idle");
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -62,7 +80,7 @@ export default function CalibratePage() {
       const pairKeeper = pairKeeperRef.current;
       if (!pairKeeper) return; // tapped before the context resumed
       const pair = pairKeeper.get(performance.now());
-      tapsRef.current.push(audioClockSeconds(e.timeStamp, pair) * 1000);
+      tapsRef.current.push(audioClockSeconds(asPerfMs(e.timeStamp), pair) * 1000);
       const pairs = associateTaps(tapsRef.current, beatsRef.current, { windowMs: WINDOW_MS });
       setValidPairs(pairs.length);
       if (pairs.length >= TARGET_PAIRS) finishRun();
@@ -149,8 +167,21 @@ export default function CalibratePage() {
 
   const onSave = (): void => {
     if (result === null) return;
-    saveCalibration(result);
-    setSaved(true);
+    setSaved(false);
+    setSaveError(null);
+    try {
+      saveCalibration(result);
+      // A9: verify persistence by reading back — success ONLY if the stored value matches.
+      // Quota failures (setItem throws) or a mismatch must never report "Saved".
+      const stored = localStorage.getItem(CALIBRATION_KEY);
+      if (stored !== null && Number.parseFloat(stored) === result) {
+        setSaved(true);
+      } else {
+        setSaveError("Save failed — the value could not be persisted. Try again.");
+      }
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err)); // A9: never report persisted on failure
+    }
   };
 
   return (
@@ -189,6 +220,16 @@ export default function CalibratePage() {
           >
             {saved ? "Saved" : "Save"}
           </button>
+          {/* A9: a failed save is NEVER reported persisted — the affordance says what happened */}
+          {saveError && (
+            <p
+              role="alert"
+              data-testid="save-error"
+              style={{ color: "var(--warn)", fontFamily: "var(--font-mono)", textAlign: "center" }}
+            >
+              {saveError}
+            </p>
+          )}
         </div>
       )}
 

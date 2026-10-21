@@ -2,7 +2,9 @@ import { KEY_COUNT, type Beatmap } from "@airhythm/shared";
 import { nineSliceRect, type Slice } from "./slice9.js";
 import type { NoteState, Renderer } from "./types.js";
 
-const SCROLL_PX_PER_MS = 0.5; // presentation-only constant; log any change in DECISIONS.md
+/** Default scroll speed (px/ms) — presentation-only; the settings default reads THIS value.
+ *  A per-instance `scrollSpeed` option overrides it (T22), so this stays the unchanged base. */
+export const SCROLL_PX_PER_MS = 0.5;
 const MAX_QUADS = 4096;
 const MAX_VERTICES = MAX_QUADS * 6; // 2 triangles × 3 verts per quad
 const FLOATS_PER_VERTEX = 6; // x,y,r,g,b,a
@@ -22,9 +24,18 @@ interface AtlasJson {
 }
 
 // §2.8 position rule as a pure function — exported so engine-render.test.ts pins the
-// real production math (y = hitLineY - dt * scrollPxPerMs), not a test re-implementation
-export function noteY(noteT: number, chartTimeMs: number, hitLineY: number, scrollPxPerMs: number): number {
-  return hitLineY - (noteT - chartTimeMs) * scrollPxPerMs;
+// real production math (y = hitLineY - dt * scrollPxPerMs), not a test re-implementation.
+// `downscroll` (W3 T22) mirrors the result about the hit line, so notes approach the
+// judgement line from ABOVE; both directions meet exactly at the hit line.
+export function noteY(
+  noteT: number,
+  chartTimeMs: number,
+  hitLineY: number,
+  scrollPxPerMs: number,
+  downscroll = false,
+): number {
+  const y = hitLineY - (noteT - chartTimeMs) * scrollPxPerMs;
+  return downscroll ? 2 * hitLineY - y : y;
 }
 
 const HIT_FLASH_MS = 200; // hit flash fades out over 200 ms from the transition frame
@@ -38,10 +49,23 @@ export function flashAlpha(kind: "hit" | "missed", elapsedMs: number): number {
   return 1 - elapsedMs / duration;
 }
 
+interface RendererOptions {
+  /** A7: fired on `webglcontextlost` (once per loss); the page maps it to enterPause("paused") */
+  onContextLost?: () => void;
+  /** A7: fired on `webglcontextrestored` (GL resources rebuilt by then) */
+  onContextRestored?: () => void;
+  /** W3 T22: px/ms travel speed; defaults to SCROLL_PX_PER_MS (presentation only, C10) */
+  scrollSpeed?: number;
+  /** W3 T22: notes fall toward the hit line from above (presentation only, C10) */
+  downscroll?: boolean;
+}
+
 export class WebGLRenderer implements Renderer {
   private readonly gl: WebGL2RenderingContext;
-  private readonly program: WebGLProgram;
-  private readonly buffer: WebGLBuffer;
+  // A7: NOT readonly — initGL() reassigns these on context restore; definite-assignment
+  // asserts because the assignment happens inside the private initGL() call in the ctor
+  private program!: WebGLProgram;
+  private buffer!: WebGLBuffer;
   private readonly verts = new Float32Array(MAX_VERTICES * FLOATS_PER_VERTEX);
   private vertCount = 0; // counts VERTICES (increments of 6)
   private width = 0;
@@ -52,23 +76,46 @@ export class WebGLRenderer implements Renderer {
   private laneW = 0;
   // W2 T22 atlas path — everything here builds SYNCHRONOUSLY at construction so the
   // play page can set webglReady with no await (B6); only the texture load is async
-  private readonly texProgram: WebGLProgram;
-  private readonly texBuffer: WebGLBuffer;
+  private texProgram!: WebGLProgram;
+  private texBuffer!: WebGLBuffer;
   private readonly texVerts = new Float32Array(MAX_VERTICES * FLOATS_PER_VERTEX_TEX);
   private texVertCount = 0;
-  private readonly locPos: number;
-  private readonly locCol: number;
-  private readonly texSamplerLoc: WebGLUniformLocation;
+  private locPos!: number;
+  private locCol!: number;
+  private texSamplerLoc!: WebGLUniformLocation;
   private atlasTex: WebGLTexture | null = null;
   private atlasFrames: AtlasFrames | null = null;
   private atlasSize: { w: number; h: number } | null = null;
   private atlasInitStarted = false; // race guard: initAtlas transitions state at most once
   private atlasInitPromise: Promise<boolean> | null = null;
+  // A9: permanent atlas outcome — "loaded" (texture path active) or "fallback" (code-drawn,
+  // set once on timeout/error and NEVER retried per session). Public read-only seam for
+  // atlas-fallback.test.ts and the e2e "no unhandled rejection" check.
+  private _atlasState: "loaded" | "fallback" | null = null;
+  /** A9 test seam: current atlas outcome (null until initAtlas settles). */
+  get atlasState(): "loaded" | "fallback" | null { return this._atlasState; }
   private disposed = false;
   /** test seam (W2 T22): cumulative gl.drawArrays calls per pipeline since construction */
   readonly drawCounts = { solid: 0, textured: 0 };
+  /** W3 T22: the presentation opts this instance actually resolved (e2e reads them back) */
+  get appliedPresentation(): { scrollSpeed: number; downscroll: boolean } {
+    return { scrollSpeed: this.scrollPxPerMs, downscroll: this.downscroll };
+  }
+
+  /**
+   * W3 T22: apply the presentation opts read at run start. Called by the play page's
+   * startGame (settings are read THERE — the constructor runs at mount, before the click).
+   * Presentation only (C10): the note path and the frozen flash Y read the same pair, so a
+   * change can never leave a flash drawn at a stale position.
+   */
+  setPresentation(opts: { scrollSpeed?: number; downscroll?: boolean }): void {
+    if (opts.scrollSpeed !== undefined) this.scrollPxPerMs = opts.scrollSpeed;
+    if (opts.downscroll !== undefined) this.downscroll = opts.downscroll;
+  }
   /** test seam: solid-batch vertex count left by the most recent render() */
   get solidVertCount(): number { return this.vertCount; }
+  /** A7: whether the WebGL context is currently lost (prevents GL calls while context is down) */
+  private lost = false;
   /** peak color of the hit flash — noteColor lightened toward white for punch */
   private readonly hitFlashColor: readonly [number, number, number];
   // W1→W2 deferral: per-note flash transition tracking — O(1) state allocated once in
@@ -76,14 +123,53 @@ export class WebGLRenderer implements Renderer {
   private readonly flashKind: Uint8Array; // 0 none/pending, 1 hit, 2 missed
   private readonly flashStartedAt: Float64Array; // performance.now() at the transition
   private readonly flashY: Float32Array; // y frozen at the transition frame (§flash position)
+  /** W3 T22 presentation options — constructed from the initial opts, then set by startGame */
+  private scrollPxPerMs: number;
+  private downscroll: boolean;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly chart: Beatmap,
+    private readonly opts: RendererOptions = {},
   ) {
     const gl = canvas.getContext("webgl2");
     if (!gl) throw new Error("WebGL2 not available");
     this.gl = gl;
+    this.initGL();
+    // §6.1 tokens are the color source of truth: read --you once at construction
+    // (canvas inherits it); fallback keeps rendering identical if the var is absent
+    this.noteColor = hexToRgb(getComputedStyle(canvas).getPropertyValue("--you")) ?? NOTE_COLOR;
+    // hit flash peak: same accent lightened 35% toward white (bright pop at the hit line)
+    const nc = this.noteColor;
+    this.hitFlashColor = [
+      nc[0] + (1 - nc[0]) * 0.35,
+      nc[1] + (1 - nc[1]) * 0.35,
+      nc[2] + (1 - nc[2]) * 0.35,
+    ];
+    // flash state sized to the chart — one allocation at construction, O(1) per note after
+    this.flashKind = new Uint8Array(this.chart.notes.length);
+    this.flashStartedAt = new Float64Array(this.chart.notes.length);
+    this.flashY = new Float32Array(this.chart.notes.length);
+    // W3 T22 presentation options — resolved ONCE here (the page reads settings at startGame)
+    this.scrollPxPerMs = opts.scrollSpeed ?? SCROLL_PX_PER_MS;
+    this.downscroll = opts.downscroll ?? false;
+    // A7: context-loss boundary — handlers registered on the GL CONTEXT, so they survive
+    // the program/buffer objects (a restored context keeps its event listeners)
+    this.attachContextHandlers();
+    this.resize();
+  }
+
+  /**
+   * A7: rebuild the GL resources on a fresh context. Called from the constructor and from
+   * the `webglcontextrestored` handler — on restore the context is a NEW implementation with
+   * zero prior state, so every program/buffer/attrib must be re-created and re-bound.
+   * The atlas state is CLEARED and its load RE-ARMED here (dead texture object, atlasInitStarted
+   * reset); the page's onContextRestored callback re-invokes initAtlas() to re-fetch and re-upload
+   * it — until that settles the textured path falls back to code-drawn, and a failed re-fetch
+   * (T13's 5 s timeout) commits the permanent code-drawn state instead of hanging.
+   */
+  private initGL(): void {
+    const gl = this.gl;
     this.program = buildProgram(gl);
     this.buffer = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
@@ -99,20 +185,6 @@ export class WebGLRenderer implements Renderer {
     // lane/note colors use alpha — blending required or colors render wrong
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    // §6.1 tokens are the color source of truth: read --you once at construction
-    // (canvas inherits it); fallback keeps rendering identical if the var is absent
-    this.noteColor = hexToRgb(getComputedStyle(canvas).getPropertyValue("--you")) ?? NOTE_COLOR;
-    // hit flash peak: same accent lightened 35% toward white (bright pop at the hit line)
-    const nc = this.noteColor;
-    this.hitFlashColor = [
-      nc[0] + (1 - nc[0]) * 0.35,
-      nc[1] + (1 - nc[1]) * 0.35,
-      nc[2] + (1 - nc[2]) * 0.35,
-    ];
-    // flash state sized to the chart — one allocation at construction, O(1) per note after
-    this.flashKind = new Uint8Array(this.chart.notes.length);
-    this.flashStartedAt = new Float64Array(this.chart.notes.length);
-    this.flashY = new Float32Array(this.chart.notes.length);
     // textured pipeline (W2 T22): program + buffer sync like the solid path —
     // the atlas TEXTURE itself loads later via initAtlas (off the readiness path)
     this.texProgram = buildTextureProgram(gl);
@@ -120,7 +192,51 @@ export class WebGLRenderer implements Renderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.texBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.texVerts.byteLength, gl.DYNAMIC_DRAW);
     this.texSamplerLoc = gl.getUniformLocation(this.texProgram, "u_tex")!;
-    this.resize();
+    // On restore the prior texture object is dead — clear the atlas state and RE-ARM the load
+    // (atlasInitStarted back to false) so the page's onContextRestored → initAtlas() re-fetches
+    // and re-uploads it; until then the textured path falls back to code-drawn.
+    this.atlasTex = null;
+    this.atlasSize = null;
+    this.atlasFrames = null;
+    this.atlasInitStarted = false;
+    this.atlasInitPromise = null;
+    // F3 (final review): also clear the permanent-outcome seam. A context restore is a fresh
+    // implementation — a prior "loaded"/"fallback" verdict does not survive it. Clearing it
+    // here (rather than only in the initAtlas settle path) keeps the atlasState getter in
+    // agreement with the real texture state: it reports null (undecided) until initAtlas()
+    // settles again after the restore.
+    this._atlasState = null;
+  }
+
+  /**
+   * A7: register the two GL context lifecycle handlers on the CANVAS (the real
+   * `webglcontextlost`/`webglcontextrestored` dispatch on the canvas element — the
+   * renderer must be constructible on unit-test stub contexts that lack addEventListener).
+   *  - `webglcontextlost`: preventDefault() (required — without it the browser will not
+   *    attempt to restore the context), then fire onContextLost ONCE per loss.
+   *  - `webglcontextrestored`: rebuild program/buffers via initGL() (which also clears the dead
+   *    atlas texture and re-arms its load), then fire onContextRestored — the page callback
+   *    re-invokes initAtlas() so the atlas is re-fetched and re-uploaded.
+   */
+  private attachContextHandlers(): void {
+    this.canvas.addEventListener("webglcontextlost", ((e: Event) => {
+      (e as { preventDefault(): void }).preventDefault();
+      if (!this.lost) {
+        this.lost = true;
+        this.opts.onContextLost?.();
+      }
+    }) as EventListener);
+    this.canvas.addEventListener("webglcontextrestored", (() => {
+      this.lost = false;
+      this.initGL();
+      // F3 (final review): initGL rebuilds programs/buffers/attribs but does not re-set
+      // u_res or gl.viewport — those live only in resize(). Without this, the fresh
+      // programs default to u_res=(0,0) and every vertex clips to +-Inf: a BLACK playfield
+      // after a context restore. Re-do the resize here so the restored context draws
+      // correctly immediately.
+      this.resize();
+      this.opts.onContextRestored?.();
+    }) as EventListener);
   }
 
   resize(): void {
@@ -146,6 +262,7 @@ export class WebGLRenderer implements Renderer {
   }
 
   render(chartTimeMs: number, noteStates: readonly NoteState[]): void {
+    if (this.lost) return; // context down — the page has paused the game; no GL calls
     const gl = this.gl;
     this.vertCount = 0;
     this.texVertCount = 0;
@@ -174,7 +291,9 @@ export class WebGLRenderer implements Renderer {
         if (this.flashKind[i] !== kind) {
           this.flashKind[i] = kind;
           this.flashStartedAt[i] = now;
-          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+          // the flash freezes at the SAME y the note path would draw — one speed + one flip,
+          // so a hit note's flash can never appear at a stale position (T22 presentation)
+          this.flashY[i] = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
         }
         const a = flashAlpha(state, now - this.flashStartedAt[i]!);
         if (a <= 0) continue; // fade complete — zero draws for this note from here on
@@ -185,13 +304,13 @@ export class WebGLRenderer implements Renderer {
         continue;
       }
       if (state !== "pending") continue; // short noteStates array: undefined skipped as before
-      const y = noteY(note.t, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+      const y = noteY(note.t, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
       if (y < -40 || y > this.height + 40) continue;
       const x = this.laneX[note.lane]!;
       const c = this.noteColor;
       if (note.type === "hold" && note.d !== undefined) {
         // hold body (W2 T17): rect from head y to tail y at 35% opacity (§6.2)
-        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, SCROLL_PX_PER_MS);
+        const yTail = noteY(note.t + note.d, chartTimeMs, this.hitLineY, this.scrollPxPerMs, this.downscroll);
         const top = Math.min(y, yTail);
         const h = Math.abs(yTail - y);
         if (top < this.height + 40 && top + h > -40) {
@@ -314,7 +433,8 @@ export class WebGLRenderer implements Renderer {
    * via `atlasInitStarted`: a second call returns the in-flight/settled promise, so state
    * transitions at most once and concurrent calls can't race. Resolves false on any failure
    * → the renderer stays code-drawn permanently; a settled-true atlas is never cleared
-   * (no mid-play revert). Never rejects.
+   * (no mid-play revert) — the ONE exception is a context loss, where initGL discards the dead
+   * texture and re-arms this method for a fresh fetch. Never rejects.
    */
   initAtlas(): Promise<boolean> {
     if (this.atlasInitStarted && this.atlasInitPromise) return this.atlasInitPromise;
@@ -324,22 +444,27 @@ export class WebGLRenderer implements Renderer {
   }
 
   private async loadAtlas(): Promise<boolean> {
+    // A9: bounded wait — a stuck/blocked atlas route must not hang the opportunistic load.
+    // Both fetches share ONE AbortController; a 5 s window aborts them and the renderer
+    // commits the permanent "fallback" state (code-drawn path, set once per session).
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 5000); // A9: bounded wait
     try {
-      const res = await fetch("/atlas/atlas.json");
-      if (!res.ok) return false;
+      const res = await fetch("/atlas/atlas.json", { signal: controller.signal });
+      if (!res.ok) throw new Error(`atlas.json HTTP ${res.status}`);
       const json = (await res.json()) as AtlasJson;
       const tapRect = json.frames[TAP_FRAME];
       const holdRect = json.frames[HOLD_FRAME];
       const size = json.meta?.size;
-      if (!tapRect || !holdRect || !size?.width || !size?.height) return false;
-      const imgRes = await fetch("/atlas/sprites.png");
-      if (!imgRes.ok) return false;
+      if (!tapRect || !holdRect || !size?.width || !size?.height) throw new Error("atlas.json missing required frames");
+      const imgRes = await fetch("/atlas/sprites.png", { signal: controller.signal });
+      if (!imgRes.ok) throw new Error(`sprites.png HTTP ${imgRes.status}`);
       const bitmap = await createImageBitmap(await imgRes.blob());
       const gl = this.gl;
       const tex = gl.createTexture();
       if (!tex) {
         bitmap.close();
-        return false;
+        throw new Error("texture creation failed");
       }
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
@@ -352,15 +477,20 @@ export class WebGLRenderer implements Renderer {
       if (this.disposed) {
         // Strict Mode remount can dispose the renderer mid-load — don't leak the texture
         gl.deleteTexture(tex);
+        this._atlasState = "fallback"; // aborted by teardown — permanent code-drawn path
         return false;
       }
       // commit LAST: success-only state transition (atlasFrames/atlasTex are never cleared)
       this.atlasTex = tex;
       this.atlasSize = { w: size.width, h: size.height };
       this.atlasFrames = { tap: withSlice(tapRect), hold: withSlice(holdRect) };
+      this._atlasState = "loaded";
       return true;
     } catch {
+      this._atlasState = "fallback"; // permanent for the session — code-drawn path (W2)
       return false;
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 

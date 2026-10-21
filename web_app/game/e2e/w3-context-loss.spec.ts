@@ -1,0 +1,91 @@
+// e2e/w3-context-loss.spec.ts
+// W3 T10 (A7): WebGL context loss takes the standard pause path; restore+resume preserves
+// score/position. Simulated via the WEBGL_lose_context extension (gl.getExtension +
+// loseContext/restoreContext) — the same event path a real GPU/context loss drives.
+//
+// A hold fixture DOES exist (apps/web/public/songs/short.osu carries a 1000 ms hold at
+// t=3000), but it is only reachable through the /import + libraryChartId path — the
+// .osu/.webm pair must be uploaded and stored first, which is a different journey than
+// this spec's. This spec therefore uses the DEFAULT w1 chart and drives the D7
+// flush-then-freeze assertion with a LIVE tap judgment on lane 1 (t=1500, note id 1 in
+// w1-chart.json): pressing "f" at t≈1500 hits the tap, and the key is still HELD when the
+// context is lost, so lane 1 is in heldLanesRef; the context loss triggers
+// enterPause("paused") whose flushHeldLanesBeforePause releases that lane BEFORE
+// clock.pause (D7 order). A held TAP exercises exactly the same release path as a held
+// HOLD would — the lane set, not the note type, is what D7 flushes.
+import { expect, test } from "@playwright/test";
+
+type W2 = {
+  phase(): string;
+  chartTimeMs(): number;
+};
+
+// W3 T25b fix r1: the e2e directory is now type-checked (e2e/tsconfig.json, run
+// by the app's `typecheck` script). This spec stores the WEBGL_lose_context
+// extension on `window` between two `page.evaluate` calls — the declaration
+// belongs here, not in a per-evaluate cast that TS rejects.
+declare global {
+  interface Window {
+    __a7?: {
+      ext: { restoreContext(): void };
+      canvas: HTMLCanvasElement;
+    };
+  }
+}
+
+test("context loss takes the standard pause path; restore preserves score/combo/position (A7)", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/play");
+  await page.getByRole("button", { name: /click to start/i }).click();
+  await page.waitForFunction(() => (window as never as { __w2?: W2 }).__w2?.phase() === "playing");
+
+  // live tap on lane 1 (t=1500, w1-chart note id 1): judge it, keep the key held so
+  // heldLanesRef contains lane 1 when the context is lost — D7 flush releases it pre-pause
+  await page.waitForFunction(() => (window as never as { __w2: W2 }).__w2.chartTimeMs() >= 1490);
+  await page.keyboard.down("f");
+  await page.waitForFunction(() => {
+    const w = (window as never as { __w2: W2 }).__w2;
+    return w.chartTimeMs() > 1560; // past the tap's judgement window
+  });
+
+  const scoreBefore = await page.locator('[data-testid="score"]').textContent();
+  // real webglcontextlost event via the extension — the renderer's preventDefault allows restore.
+  // The extension object is captured ONCE, in the same evaluate that loses the context: after
+  // loss the live context returns null from getExtension until restore (a fresh evaluate would
+  // re-fetch it and get null).
+  await page.evaluate(() => {
+    const gl = (document.querySelector("canvas") as HTMLCanvasElement).getContext("webgl2")!;
+    const ext = gl.getExtension("WEBGL_lose_context")!;
+    window.__a7 = { ext, canvas: document.querySelector("canvas") as HTMLCanvasElement };
+    ext.loseContext();
+  });
+  await page.waitForFunction(() => (window as never as { __w2?: W2 }).__w2?.phase() === "paused");
+  // D7 ordering: the held lane's release ran BEFORE clock.pause — release the key for real
+  await page.keyboard.up("f");
+
+  const pausedChart = await page.evaluate(() => (window as never as { __w2: W2 }).__w2.chartTimeMs());
+  await page.waitForTimeout(600);
+  const stillPaused = await page.evaluate(() => (window as never as { __w2: W2 }).__w2.chartTimeMs());
+  expect(stillPaused).toBe(pausedChart); // audio clock frozen on loss
+
+  // wait for the REAL webglcontextrestored event before resuming — listen on the CANVAS
+  // (the element the real events dispatch on); the extension object was captured at loss
+  // (a fresh getExtension call after loss returns null until the context is restored)
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const saved = window.__a7;
+    if (!saved) throw new Error("window.__a7 seam absent — the context was never lost");
+    saved.canvas.addEventListener("webglcontextrestored", () => resolve(), { once: true });
+    saved.ext.restoreContext();
+  }));
+  await page.getByRole("button", { name: /click to resume/i }).click();
+  await page.waitForFunction(
+    () => (window as never as { __w2?: W2 }).__w2?.phase() === "playing",
+    undefined,
+    { timeout: 10_000 },
+  );
+  const after = await page.evaluate(() => (window as never as { __w2: W2 }).__w2.chartTimeMs());
+  expect(after).toBeGreaterThanOrEqual(stillPaused - 1); // position preserved, not restarted
+  expect(after).toBeLessThan(stillPaused + 3000);
+  const scoreAfter = await page.locator('[data-testid="score"]').textContent();
+  expect(scoreAfter).toBe(scoreBefore); // score preserved (no reset)
+});

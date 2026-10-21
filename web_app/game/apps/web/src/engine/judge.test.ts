@@ -3,6 +3,7 @@ import type { Beatmap } from "@airhythm/shared";
 import { GameEngine } from "./engine.js";
 import { PerformanceClock } from "./clock.js";
 import type { Renderer } from "./types.js";
+import type { Grade } from "@airhythm/shared";
 
 const mk = (notes: Beatmap["notes"], durationMs = 30_000): Beatmap => ({
   version: 1,
@@ -33,7 +34,7 @@ describe("engine.judge (§2.3)", () => {
   it("wrong-lane press does NOT judge the note", () => {
     const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
     engine.judge(1, 1000);
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     expect(engine.snapshot().score).toBe(0);
   });
 
@@ -41,7 +42,7 @@ describe("engine.judge (§2.3)", () => {
     const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
     engine.judge(0, 1111);
     const snap = engine.snapshot();
-    expect(snap.noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
     expect(snap.score).toBe(0);
     expect(snap.combo).toBe(0);
     expect(snap.events.some((e) => e.type === "miss")).toBe(true);
@@ -52,7 +53,7 @@ describe("engine.judge (§2.3)", () => {
     const { engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
     engine.judge(0, 1110);
     const snap = engine.snapshot();
-    expect(snap.noteStates[0]).toBe("hit");
+    expect(engine.noteStates()[0]).toBe("hit");
     expect(snap.events).toEqual([{ type: "hit", grade: "good", lane: 0, dt: 110, noteId: 0 }]);
     expect(snap.combo).toBe(1);
     expect(snap.score).toBe(Math.floor(1_000_000 * 0.4 * 1.05)); // good 0.40, combo 1/1 → +5% (D16)
@@ -66,7 +67,7 @@ describe("engine.judge (§2.3)", () => {
     engine.judge(0, 1000);
     engine.judge(2, 1000);
     const snap = engine.snapshot();
-    expect(snap.noteStates).toEqual(["hit", "hit"]);
+    expect(engine.noteStates()).toEqual(["hit", "hit"]);
     expect(snap.combo).toBe(2);
     expect(snap.score).toBe(1_050_000); // both perfect, maxCombo 2/2 → +5% (D16)
   });
@@ -80,7 +81,7 @@ describe("engine.judge (§2.3)", () => {
     ]);
     engine.judge(0, 1060); // |dt| to id0 = 240 (>110, dropped), to id1 = 10
     const snap = engine.snapshot();
-    expect(snap.noteStates).toEqual(["pending", "hit"]);
+    expect(engine.noteStates()).toEqual(["pending", "hit"]);
     expect(snap.events).toContainEqual({ type: "hit", grade: "perfect", lane: 0, dt: 10, noteId: 1 });
   });
 
@@ -124,7 +125,8 @@ describe("engine.judge (§2.3)", () => {
   it("render-loop sweep and input expiry agree; no duplicate miss events", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
     src.t = 1111;
-    expect(engine.update().noteStates[0]).toBe("missed");
+    engine.update();
+    expect(engine.noteStates()[0]).toBe("missed");
     // engine is now frozen (chartTime > endTimeMs); further update() throws
     expect(engine.isFrozen()).toBe(true);
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
@@ -149,10 +151,10 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 100);
     src.t = 1111;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     src.t = 1211; // past t+210
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1211 }]);
   });
 
@@ -160,15 +162,15 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
     src.t = 1111;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     expect(engine.isFrozen()).toBe(false);
     src.t = 1200;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     expect(engine.isFrozen()).toBe(false);
     src.t = 1261; // past t+110+150 = t+260
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
     expect(engine.isFrozen()).toBe(true);
   });
 
@@ -176,7 +178,7 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }]);
     src.t = 1111;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1111 }]);
   });
 
@@ -185,10 +187,10 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], -150);
     src.t = 1000;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     src.t = 1111;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
   });
 
   it("freeze gate extends by calibration: calib=150 does not freeze before t+260", () => {
@@ -196,11 +198,11 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     src.t = 1250; // raw past endTimeMs (t+110) but calibrated not
     engine.update();
     expect(engine.isFrozen()).toBe(false);
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     src.t = 1261;
     engine.update();
     expect(engine.isFrozen()).toBe(true);
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
   });
 
   it("judges a calibrated-perfect tap beyond the raw window (selection uses judgeDt)", () => {
@@ -209,10 +211,10 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], 150);
     src.t = 1149;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     engine.judge(0, 1150);
     const snap = engine.snapshot();
-    expect(snap.noteStates[0]).toBe("hit");
+    expect(engine.noteStates()[0]).toBe("hit");
     expect(snap.events[0]).toMatchObject({ type: "hit", grade: "perfect", dt: 0 });
     expect(snap.events.some((e) => e.type === "miss")).toBe(false);
   });
@@ -222,12 +224,12 @@ describe("deviceCalibrationOffsetMs (W2 T9)", () => {
     // the window: no hit event, no score, note stays pending; render sweep then misses it
     const { src, engine } = setup([{ id: 0, t: 1000, lane: 0, type: "tap" }], -150);
     engine.judge(0, 1000);
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     expect(engine.snapshot().events.some((e) => e.type === "hit")).toBe(false);
     expect(engine.snapshot().score).toBe(0);
     src.t = 1111;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
   });
 });
 
@@ -247,7 +249,7 @@ describe("hold judging (W2 T17)", () => {
     const snap = engine.snapshot();
     expect(snap.events).toEqual([{ type: "hit", grade: "perfect", lane: 0, dt: -5, noteId: 0 }]);
     expect(engine.previousSnapshot()).toEqual(afterHead); // head event preserved in prev
-    expect(snap.noteStates[0]).toBe("hit");
+    expect(engine.noteStates()[0]).toBe("hit");
     expect(snap.combo).toBe(2);
     // totalTargets = 2 (head+tail); both perfect → accuracy 1, score floor(1e6×1.05)
     expect(snap.accuracy).toBe(1);
@@ -279,7 +281,7 @@ describe("hold judging (W2 T17)", () => {
     const snap = engine.snapshot();
     expect(snap.events).toEqual([{ type: "hit", grade: "perfect", lane: 0, dt: -5, noteId: 0 }]);
     expect(snap.combo).toBe(1); // tail hit starts combo at 1 (head miss reset it)
-    expect(snap.noteStates[0]).toBe("missed"); // not all targets hit → note missed (renderer stops drawing)
+    expect(engine.noteStates()[0]).toBe("missed"); // not all targets hit → note missed (renderer stops drawing)
   });
 
   it("tail auto-misses only after t+d+150 (own deadline, not head's)", () => {
@@ -287,12 +289,12 @@ describe("hold judging (W2 T17)", () => {
     src.t = 1500; // head already past t+110, tail still before t+d+150=1650
     engine.update();
     expect(engine.snapshot().events).toEqual([{ type: "miss", lane: 0, chartTime: 1500 }]); // head
-    expect(engine.snapshot().noteStates[0]).toBe("pending"); // tail pending → note pending
+    expect(engine.noteStates()[0]).toBe("pending"); // tail pending → note pending
     src.t = 1651;
     engine.update();
     const snap = engine.snapshot();
     expect(snap.events).toEqual([{ type: "miss", lane: 0, chartTime: 1651 }]); // tail at its own deadline
-    expect(snap.noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
   });
 
   it("calibrated tail expiry: calib=100 → tail pending at 1700, missed at 1751 (ruling 1)", () => {
@@ -300,10 +302,10 @@ describe("hold judging (W2 T17)", () => {
     const { src, engine } = setup([hold(0, 1000, 500)], 100);
     src.t = 1700; // raw > 1650, calibrated 1600 < 1650 → still pending
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("pending");
+    expect(engine.noteStates()[0]).toBe("pending");
     src.t = 1751;
     engine.update();
-    expect(engine.snapshot().noteStates[0]).toBe("missed");
+    expect(engine.noteStates()[0]).toBe("missed");
   });
 
   it("calibrated release window: calib=50 shifts dt (ruling 2)", () => {
@@ -339,7 +341,7 @@ describe("hold judging (W2 T17)", () => {
     expect(full.accuracy).toBe(1); // 3/3 — denominator is 3, not notes.length (2)
     expect(full.combo).toBe(3);
     expect(full.score).toBe(1_050_000);
-    expect(full.noteStates).toEqual(["hit", "hit"]);
+    expect(engine.noteStates()).toEqual(["hit", "hit"]);
 
     // all-miss path: sum of resolved === totalTargets
     const { src: src2, engine: e2 } = setup([
@@ -349,7 +351,7 @@ describe("hold judging (W2 T17)", () => {
     src2.t = 2651; // past tap (1110) and tail (2650) deadlines
     const miss = e2.update();
     expect(miss.frozen).toBe(true);
-    expect(miss.noteStates).toEqual(["missed", "missed"]);
+    expect(e2.noteStates()).toEqual(["missed", "missed"]);
     expect(miss.events.filter((e) => e.type === "miss")).toHaveLength(3); // tap + head + tail
     expect(miss.accuracy).toBe(0);
     expect(miss.score).toBe(0);
@@ -389,6 +391,40 @@ describe("hold judging (W2 T17)", () => {
     expect(engine.snapshot().combo).toBe(0);
     engine.judge(1, 3010); // next hit starts combo at 1
     expect(engine.snapshot().combo).toBe(1);
+  });
+
+  it("W3 T21: snapshot carries maxCombo (high-water) and judgementCounts; counts sum to totalTargets at freeze", () => {
+    // mixed chart: 2 taps + 1 hold (head+tail) = 4 targets
+    const { src, engine } = setup([
+      { id: 0, t: 1000, lane: 0, type: "tap" },
+      { id: 1, t: 2000, lane: 1, type: "tap" },
+      hold(2, 3000, 500),
+    ]);
+    engine.judge(0, 1010); // tap perfect → combo 1
+    engine.judge(1, 2010); // tap perfect → combo 2
+    engine.judge(0, 3010); // hold head perfect → combo 3
+    engine.release(0, 3520); // hold tail perfect: t+d = 3500, dt = +20
+    const full = engine.snapshot();
+    expect(full.maxCombo).toBe(4); // high-water: combo peaked at 4
+    const counts: Record<Grade, number> = full.judgementCounts;
+    expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(4); // all targets resolved
+    expect(counts.perfect).toBe(4);
+
+    // miss path resets combo but maxCombo keeps the high-water mark; counts accumulate all grades
+    const { src: src2, engine: e2 } = setup([
+      { id: 0, t: 1000, lane: 0, type: "tap" },
+      { id: 1, t: 2000, lane: 1, type: "tap" },
+    ]);
+    e2.judge(0, 1060); // great (|dt|=60) → combo 1
+    src2.t = 3000; // past both deadlines (1110 / 2110) → sweep marks both missed, then freezes
+    e2.update();
+    const snap2 = e2.snapshot();
+    expect(snap2.maxCombo).toBe(1); // high-water survives the reset
+    expect(snap2.combo).toBe(0);
+    expect(snap2.judgementCounts.great).toBe(1);
+    expect(snap2.judgementCounts.miss).toBe(1);
+    expect(snap2.judgementCounts.perfect).toBe(0);
+    expect(Object.values(snap2.judgementCounts).reduce((a, b) => a + b, 0)).toBe(2);
   });
 
   it("release on a tap lane is a no-op; release on a hold without judged head still hits tail", () => {

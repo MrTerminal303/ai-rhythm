@@ -3,18 +3,27 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/copy-ort-wasm.mjs && node scripts/gen-audio-fixture.mjs",
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "prebuild": "node scripts/gen-audio-fixture.mjs",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ../../e2e/tsconfig.json",
     "test": "vitest run",
     "gen:audio": "node scripts/gen-audio-fixture.mjs",
-    "e2e": "playwright test"
+    "gen:songs": "node scripts/gen-audio-fixture.mjs --songs",
+    "encode:songs": "node scripts/encode-songs.mjs",
+    "copy:ort": "node scripts/copy-ort-wasm.mjs",
+    "e2e": "playwright test",
+    "e2e:timing": "playwright test --project=chromium --workers=1 w3-timing.spec.ts w3-clock-invariant.spec.ts",
+    "e2e:fixture-decode": "playwright test --config w3-fixture-decode.config.ts"
   },
   "dependencies": {
+    "@airhythm/chartgen": "workspace:*",
     "@airhythm/shared": "workspace:*",
+    "@supabase/supabase-js": "2.118.0",
     "next": "16.3.8",
+    "onnxruntime-web": "1.30.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
@@ -26,6 +35,7 @@
     "@types/node": "26.6.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "fake-indexeddb": "6.2.6",
     "jsdom": "30.1.1",
     "postcss": "8.5.28",
     "tailwindcss": "4.3.3",

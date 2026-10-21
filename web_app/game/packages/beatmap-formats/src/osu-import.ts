@@ -6,7 +6,7 @@ export interface ImportWarning {
 export interface ParsedOsu {
   meta: { title: string; artist: string; creator: string; difficulty: string; tags: string[]; previewMs: number };
   keys: number;
-  timing: { t: number; bpm: number; meter: number }[];
+  timing: { t: number; bpm: number; meter: number; sliderVelocity?: number }[];
   notes: { id: number; t: number; lane: number; type: "tap" | "hold"; d?: number }[];
   warnings: ImportWarning[];
   audioFilename: string | null;
@@ -76,27 +76,55 @@ export function parseOsu(text: string): ParsedOsu {
   }
   const previewMs = Math.max(0, Math.round(Number(meta("PreviewTime", "0")) || 0));
 
-  // timing: fields are time,beatLength,meter,sampleSet,sampleIndex,volume,uninherited,effects
+  // timing: official 8-field form time,beatLength,meter,sampleSet,sampleIndex,
+  // volume,uninherited,effects — `uninherited` is FIELD 6 (field 5 is volume;
+  // the round-13 table had them transposed).
+  //   uninherited = 1 (BPM point): beatLength is ms-per-beat, must be finite
+  //     and positive — otherwise reject (the silent drop+warning is gone).
+  //   uninherited = 0 (inherited point): beatLength must be finite and
+  //     NEGATIVE; slider velocity = -100 / beatLength (−100 → 1, −50 → 2).
+  //   any other value → reject the row (never-silent contract).
   const timing: ParsedOsu["timing"] = [];
+  // last known BPM/meter carry forward onto inherited points
+  let inheritedBpm = 120;
+  let inheritedMeter = 4;
   for (const [i, line] of (sections.TimingPoints ?? []).entries()) {
-    const [msStr, beatMsStr, meterStr, , , , uninheritedStr] = line.split(",");
+    const fields = line.split(",");
+    const [msStr, beatMsStr, meterStr, , , , uninheritedStr] = fields;
     const t = Math.round(Number(msStr));
     if (!Number.isFinite(t)) {
-      warnings.push({ code: "invalid-line", message: `malformed timing point at [TimingPoints] line ${i + 1} dropped` });
-      continue;
+      throw new Error(`osu: timing points line ${i + 1}: time=${msStr} must be an integer`);
     }
-    if (Number(uninheritedStr) !== 1) {
-      // 7TH field (index 6) — NOT index 5 (that is volume)
-      warnings.push({ code: "sv-dropped", message: `inherited timing point at ${t} ms dropped (scroll-velocity changes unsupported)` });
-      continue;
+    const beatMs = Number(beatMsStr);
+    const uninherited = Number(uninheritedStr);
+    if (uninherited === 1) {
+      // beatLength 0/negative/NaN — non-finite bpm would hang pulse derivation
+      if (!Number.isFinite(beatMs) || beatMs <= 0) {
+        throw new Error(`osu: timing points line ${i + 1}: beatLength=${beatMsStr} must be a finite positive number`);
+      }
+      const bpm = 60_000 / beatMs;
+      // A8 (T11): no meter coercion — invalid/absent meter warns and drops the
+      // whole line (value is never rewritten to 4), keeping the never-silent
+      // contract.
+      const meter = Number(meterStr);
+      if (!Number.isFinite(meter) || meter <= 0) {
+        warnings.push({ code: "invalid-line", message: `invalid meter at [TimingPoints] line ${i + 1} dropped` });
+        continue;
+      }
+      inheritedBpm = bpm;
+      inheritedMeter = meter;
+      timing.push({ t, bpm, meter });
+    } else if (uninherited === 0) {
+      // Inherited: negative beatLength (inverse-velocity encoding); a
+      // non-negative value is malformed under the official format
+      if (!Number.isFinite(beatMs) || beatMs >= 0) {
+        throw new Error(`osu: timing points line ${i + 1}: inherited beatLength=${beatMsStr} must be a finite negative number`);
+      }
+      const sliderVelocity = -100 / beatMs;
+      timing.push({ t, bpm: inheritedBpm, meter: inheritedMeter, sliderVelocity });
+    } else {
+      throw new Error(`osu: timing points line ${i + 1}: invalid uninherited flag ${uninheritedStr}`);
     }
-    const bpm = 60_000 / Number(beatMsStr); // full float precision — no 2-decimal quantization (T16 round-trip)
-    // reject beatLength 0/negative/NaN — non-finite bpm would hang pulse derivation
-    if (!Number.isFinite(bpm) || bpm <= 0) {
-      warnings.push({ code: "invalid-line", message: `invalid beatLength at [TimingPoints] line ${i + 1} dropped` });
-      continue;
-    }
-    timing.push({ t, bpm, meter: Number(meterStr) || 4 });
     if (timing.length > MAX_TIMING_POINTS) throw new Error(`osu: too many timing points (limit ${MAX_TIMING_POINTS})`);
   }
   if (timing.length === 0) {
@@ -114,12 +142,23 @@ export function parseOsu(text: string): ParsedOsu {
   for (const [i, line] of (sections.HitObjects ?? []).entries()) {
     const parts = line.split(",");
     const x = Number(parts[0]);
-    const t = Math.round(Number(parts[2]));
+    const tRaw = parts[2];
+    const t = Math.round(Number(tRaw));
     const typeFlags = Number(parts[3]);
     const hitSound = Number(parts[4] ?? 0);
-    if (!Number.isFinite(x) || !Number.isFinite(t)) {
+    if (!Number.isFinite(x)) {
       warnings.push({ code: "invalid-line", message: `malformed hit object at [HitObjects] line ${i + 1} dropped` });
       continue;
+    }
+    // malformed time was a silent 0-coercion — indistinguishable from a real
+    // time 0; reject it (the x-malformed warn+drop path above is kept).
+    if (!Number.isFinite(t)) {
+      throw new Error(`osu: hit objects line ${i + 1}: time=${tRaw} must be an integer`);
+    }
+    // A8 (T11): the silent clamp is deleted — out-of-range x rejects. x=512 is
+    // legal osu! (right edge) and maps to the last lane via Math.min below.
+    if (x < 0 || x > 512) {
+      throw new Error(`osu: hit objects line ${i + 1}: x=${x} outside 0..512`);
     }
     if (hitSound !== 0) {
       warnings.push({ code: "feature-dropped", message: `hitsound data at ${t} ms dropped` });
@@ -137,7 +176,8 @@ export function parseOsu(text: string): ParsedOsu {
     if (sampleFields.some((v) => Number.isFinite(v) && v !== 0)) {
       warnings.push({ code: "feature-dropped", message: `hitSample data at ${t} ms dropped` });
     }
-    const lane = Math.max(0, Math.min(3, Math.floor((x * 4) / 512)));
+    // range checked above (x ∈ [0,512]); x=512 → floor(4) is clamped to lane 3
+    const lane = Math.min(3, Math.floor((x * 4) / 512));
     if (isHold) {
       const end = Number(payload.split(":")[0]); // endTime precedes hitSample
       if (!Number.isFinite(end) || end <= t) {
@@ -171,14 +211,27 @@ export function parseOsu(text: string): ParsedOsu {
  * Assemble §12.1 candidate shape for canonicalizeBeatmap. Pulses are derived
  * from timing points: one per beat until the next point, s = 1.0 on the
  * bar-first beat else 0.5 (PLAN §12.1 permits recompute with strength default).
+ * A8: sub-ms beat rate (or inherited velocity implying < 1 ms per beat) is
+ * rejected before entering the loop — MAX_PULSES is the backstop, this guard
+ * catches it without iterating.
  */
+const MIN_EFF_BEAT_MS = 1;
+
 export function candidateFromParsed(p: ParsedOsu, songKey: string): unknown {
   const durationMs = Math.max(0, ...p.notes.map((n) => n.t + (n.d ?? 0)), ...p.timing.map((tm) => tm.t)) + 1;
   const pulses: { t: number; s: number }[] = [];
   for (let i = 0; i < p.timing.length; i++) {
     const tp = p.timing[i]!;
     const nextT = p.timing[i + 1]?.t ?? durationMs;
-    const beatMs = 60_000 / tp.bpm;
+    // inherited points: beat spacing is 100/sliderVelocity ms (the negative
+    // beatLength in osu! encodes scroll velocity, not bpm). Non-inherited
+    // points: 60_000 / bpm ms.
+    const beatMs = tp.sliderVelocity !== undefined ? 100 / tp.sliderVelocity : 60_000 / tp.bpm;
+    if (beatMs < MIN_EFF_BEAT_MS) {
+      throw new Error(
+        `osu: beat rate too fast at timing point ${i} (effective beatMs=${beatMs} < ${MIN_EFF_BEAT_MS} ms)`,
+      );
+    }
     for (let t = tp.t, beat = 0; t < nextT && t <= durationMs; t += beatMs, beat++) {
       if (pulses.length >= MAX_PULSES) throw new Error(`osu: too many pulses (limit ${MAX_PULSES})`);
       pulses.push({ t: Math.round(t), s: beat % tp.meter === 0 ? 1.0 : 0.5 });

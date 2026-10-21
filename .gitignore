@@ -9,6 +9,7 @@ data/
 docs/
 *.zip
 CLAUDE.md
+AGENTS.md
 GAME_PLAN.md
 PLAN.md
 download_minimal.py

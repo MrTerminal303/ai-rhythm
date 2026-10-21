@@ -37,7 +37,12 @@ const rootArgIndex = args.indexOf("--root");
 const root = rootArgIndex >= 0 ? args[rootArgIndex + 1] ?? "." : ".";
 
 function walk(dir, out = []) {
-  if (!existsSync(dir)) return out;
+  if (!existsSync(dir)) {
+    // A8: a missing configured root is a failure, not an empty walk (the vacuous
+    // pass is gone) — every configured root must exist.
+    console.error(`check-assets: missing required root ${dir}`);
+    process.exit(1);
+  }
   for (const e of readdirSync(dir)) {
     const p = join(dir, e);
     if (statSync(p).isDirectory()) walk(p, out);
@@ -47,7 +52,12 @@ function walk(dir, out = []) {
 }
 
 const csvPath = join(root, "assets", "ASSETS.csv");
-if (!existsSync(csvPath)) { console.error("check-assets: assets/ASSETS.csv missing"); process.exit(1); }
+if (!existsSync(csvPath)) {
+  // Missing ASSETS.csv means the `assets` root itself does not satisfy the
+  // gate — report it under the same "missing required root" contract.
+  console.error(`check-assets: missing required root ${join(root, "assets")} (no ASSETS.csv)`);
+  process.exit(1);
+}
 const rows = new Map();
 for (const line of readFileSync(csvPath, "utf8").split(/\r?\n/).slice(1)) {
   if (!line.trim()) continue;
@@ -55,7 +65,13 @@ for (const line of readFileSync(csvPath, "utf8").split(/\r?\n/).slice(1)) {
   rows.set(file, { license: (license ?? "").trim(), attribution: (attribution ?? "").trim() });
 }
 
-const files = [...walk(join(root, "assets")), ...walk(join(root, "public")), ...walk(join(root, "apps/web/public"))];
+const files = [...walk(join(root, "assets"))];
+// public/ and apps/web/public/ are walked only when present — the real repo
+// tree has apps/web/public (atlas output, T21); a bare test fixture with just
+// assets/ is legitimate. `assets` is the hard root (must hold ASSETS.csv).
+for (const optional of [join(root, "public"), join(root, "apps/web/public")]) {
+  if (existsSync(optional)) files.push(...walk(optional));
+}
 const offenders = [];
 for (const abs of files) {
   const rel = relative(root, abs).split(sep).join("/");
